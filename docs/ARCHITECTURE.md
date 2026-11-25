@@ -269,7 +269,7 @@ host.dispose();
 ### A10. Screenshots (tools/shots/shoot.mjs)
 
 Renders through the same mocks (Node), `render/html.mjs` maps the recorded tree to HTML/CSS
-(GPUI defaults: `div` = block; `flex`, `flex_col`, ramps in rem = 4 px multiples; `h_flex` = row
+(GPUI defaults: `div` = block; `flex`, `flex_col`, ramps in rem, where herdr's rem = ui_font_size (13) × zoom, so `p_1` = 3.25 px × zoom (src/window.rs:5645, settings.rs:835); our UI uses numeric px only; `h_flex` = row
 + items-center; numbers = px × zoom; absolute/relative; truncate; `paint_path` → inline SVG path;
 `svg()` → mask tinted with text colour; `image()` → `<img>`; loops shown at their `to` value).
 Views listed in `mods/<mod>/glue/views.js` (a pure table of named scenarios) × {dark, light};
@@ -306,6 +306,238 @@ VM restart, frozen-prototype safety).
 
 ---
 
-## Part B — engine and game API
+## Part B — Creaseworks engine and game API
 
-Filled in from `docs/DESIGN.md` once the design is final.
+`<mod>` = `creaseworks`, `<Name>` = `Creaseworks` (`tools/game.json`). `docs/DESIGN.md` is the
+source of every rule and number; this part fixes **names, shapes and ownership** so that the
+engine, glue, UI, art, simulator and tests can be built in parallel and fit together. If a
+builder needs something this part does not define, it adds it here (in its own subsection) and
+says so in its report — it never invents a private variant.
+
+### B1. Files and owners
+
+```
+mods/creaseworks/
+  main.js                 View: routes props().role → panel | ribbon (glue/session.js does the work)
+  mod.json                DESIGN §2.5 verbatim
+  engine/
+    content.js            ALL tables: workshops, tiers, upgrades, charms, curios, automations,
+                          perks, species, hues-by-index names, name syllables, envelope types,
+                          spawn constants. Frozen plain data. Item ids are kebab-case (B3).
+    prng.js               mulberry32: next(state) → [0,1); state is a uint32 in state.rng
+    hash.js               fnv1a32(str) → 8-char lower hex; fnv1a32n(str) → uint32
+    state.js              newGame(opts) and state shape helpers; MAP fields list
+    economy.js            rates(state) → {G, Rw, Hs0, Hs, Rp, hand, echo, V}; costs; buy; payback
+    clicking.js           hand hits, rhythm, combo, In step, afterglow, figures, chains, scraps,
+                          cranes, boats, ream, spawn clocks (active time)
+    helpers.js            observe reconciliation, identity, production b_i, rest/warm/thanks,
+                          fledglings, Album, Elsewhere
+    envelopes.js          turn deltas → units, stacking, overflow, open, boosts
+    away.js               away segments, cap sharing, pot, collect, clock-back rebase
+    prestige.js           cranes(L), wish gate, gain, perks, garlands, reset
+    automations.js        Mail Sorter, Thrifty Fox, Boost Keeper, Crease Helper
+    engine.js             PUBLIC API (B2): apply, advance, replay, rates, view, newGame, migrate
+    view.js               view(state, now, opts) → ViewModel (B5)
+    format.js             formatCount(n, style), formatRate, formatDuration(ms)
+    text.js               clip(str, maxGraphemes), graphemes(str)
+    save-codec.js         serialize(state) → text; parseSave(text) → {ok, state|null, reason};
+                          canonical JSON; FNV check; MAP field rebuild to null-prototype
+    index.js              re-exports engine.js + format + text + save-codec (the ONLY engine
+                          import path used by glue, ui, sim and tests)
+  glue/
+    clock.js              now() = Date.now(); localDay(ms) → "YYYY-MM-DD" via getTimezoneOffset
+    live.js               the handover slot (A6): adopt/create, writerId, seq, dispatch, rev,
+                          heartbeats, ticker election, vm cache per role
+    store.js              A4 load/save/backup/damaged/notices/shared path (location.json)
+    observe.js            buildObservation(agents(), terminals()) (pure, exported) + change diff
+    commands.js           nextCommand loop: fold, answer, envelope; openHelper(helperId) with
+                          liveness check → pane.focus / terminal.peek; layout.show/resize
+    notify.js             opt-in notifications, ≤ 3 per local day via the save
+    session.js            per-copy controller used by main.js (B6)
+    views.js              screenshot scenarios (A10, DESIGN §15.3)
+  ui/
+    palette.js            frozen S tokens light/dark + Hue light/dark (DESIGN §13.2)
+    color.js              hex6, withAlpha, mix, contrast, statusColor(T, status, surface)
+    art.js                FACETS constant, sprite(name, size, color) helpers (svg paths)
+    widgets.js            button, switch, radio, chip, bar, tooltip-wrapped icon, pop
+    panel.js              panel frame: header, banner slot, mat slot, boost bar, tabs, content, footer
+    mat.js  flock.js  shop.js  string.js  settings.js  away.js  banner.js  rail.js  ribbon.js
+  art/ …                  generated by tools/art/generate.mjs (DESIGN §13.3)
+```
+
+Dependency rule: `engine/*` imports only `engine/*`. `ui/*` imports `gpui-kit`, `gpui-base`,
+`ui/*` and `engine/index.js` (for `clip`, `formatCount`) — never `herdr`, never `glue/*`.
+`glue/*` imports `herdr`, `engine/index.js` and `glue/*`. `main.js` imports `glue/session.js`
+and `gpui-kit`. Every `import` statement is on one line.
+
+### B2. Engine public API (`engine/index.js`)
+
+All functions are pure in the sense of A3: deterministic, no ambient time or randomness. They
+**mutate the state passed in** (for speed in QuickJS) and return values; callers that need the
+old state clone it with `cloneState` first.
+
+```js
+newGame({ seed, now, day }) → GameState            // seed: uint32 from the glue (Math.random in glue only)
+apply(state, action) → Event[]                     // A5 idempotent; advances to max(clock, action.t) first
+advance(state, now) → Event[]                      // closed form per segment; away segments when gap > 60 s
+replay(state, actions) → Event[]                   // apply each in order
+rates(state) → { G, Rw, Hs0, Hs, Rp, hand, echo, V, crowd, nWorking }
+view(state, now, opts) → ViewModel                 // B5; opts = { role, width, dense, style }
+cloneState(state) → GameState                      // JSON round trip + MAP rebuild
+migrate(state) → GameState                         // older versions → current; throws on newer
+serialize(state) → string                          // the full save file text (A4 envelope)
+parseSave(text) → { ok: true, state } | { ok: false, reason: "parse"|"format"|"check"|"newer"|"shape" }
+VERSION                                            // integer save version
+clip, graphemes, formatCount, formatRate, formatDuration
+CONTENT                                            // the frozen tables from content.js
+```
+
+`Event` is a plain object the UI and simulator may use and must not require:
+`{ kind: "earn", source, amount }` (sources: `sheet`, `mini`, `node`, `scrap`, `crane`, `ream`,
+`boat`, `helpers`, `env`, `workshops`, `away`, `overflow`), `{ kind: "figure", species }`,
+`{ kind: "spawn", what, id }`, `{ kind: "chain", result: "done"|"torn" }`,
+`{ kind: "crane", outcome }`, `{ kind: "envelope", helperId, units }`,
+`{ kind: "boost", type, ms }`, `{ kind: "buy", item, count }`, `{ kind: "wish", gain }`,
+`{ kind: "away", seconds, credited, capped }`, `{ kind: "notice", notice }`,
+`{ kind: "ignored", reason }`. The engine also accumulates `state.stats.bySource[source]`
+(lifetime and per run) so the simulator can compute income shares without events.
+
+### B3. Item ids (content.js; also the simulator's `buy:<id>` keys)
+
+Workshops: `paper-stack bone-folder scissor-stand glue-pot fold-bench washi-vat flower-press
+crane-loft kite-tower`. Tiers: `<workshop>-t1|t2|t3`. Tools: `crisp-corners bone-tip-nail
+valley-fold mountain-fold squash-fold petal-fold thousandth-fold echo-1 … echo-5 steady-rhythm
+long-streak endless-streak`. Folk: `rice-treats soft-brushes snug-bench paper-hats gold-leaf-hats
+shared-rhythm deep-rest dreamy-rest warm-hands fledgling-wings flight-school night-shift
+night-owl`. Charms: `wax-seal ribbon-tie long-ribbon longer-ribbon brisk-charm gale-charm`.
+Curios: `long-crease grand-crease quick-creases scrap-basket crane-bait crane-song slow-wings
+harbour-ribbon`. Automations: `mail-sorter thrifty-fox boost-keeper crease-helper`.
+Envelope types: `bundle rush storm chorus`. Boost kinds: `rush storm chorus song tailwind`.
+Species (index order): `crane frog fox koi rabbit turtle butterfly whale owl boat mouse snail`.
+Shop segments: `works tools folk charms curios auto`.
+
+### B4. GameState (plain JSON; `MAP` fields are null-prototype objects in memory)
+
+```js
+{
+  version, seed, rng,                       // rng: uint32
+  clock,                                    // ms; last advanced wall time
+  created, day,                             // ms; "YYYY-MM-DD" of the last observe
+  applied: MAP<writerId, seq>, writersSeen: MAP<writerId, ms>,
+  bank, runFolds, lifetime,                 // L = lifetime
+  wishes, wishCount,
+  owned: MAP<workshopId, n>, bought: MAP<itemId, true>,   // upgrades/tiers/automations
+  auto: MAP<automationId, boolean>,         // switches
+  settings: { calm, gather, nodes, pops, notify: { master, full, pile, save },
+              order: "urgency"|"workspace", density: "auto"|"always"|"never", style: "short"|"sci" },
+  presence: { visible, active, matShown, lastHandAt },    // from observe actions
+  hand: { lastHitAt, r, frame, figures: [species…≤12], afterglowMs },
+  spawn: { activeMs, nextChainAt, nextScrapAt, nextCraneAt, nextBoatAt, cranesSeen,
+           chain: null | { id, k, next, nodes: [{ i, slot, bornActiveMs }], torn },
+           chain2: null | same (storm only),
+           scraps: [{ id, slot, bornActiveMs }], crane: null | { id, slot, bornActiveMs, outcome? },
+           boat: null | { id, bornActiveMs }, ream: null | { id, day } , reamDay },
+  boosts: { rush, storm, chorus, song, tailwind },        // remaining live ms; tailwind = opens left
+  helpers: MAP<helperId, HelperRecord>,                   // DESIGN §5.1 record
+  envelopes: MAP<helperId, { type, units, landedAt }>,
+  away: { pot: null | AwayReport, capUsedMs, lastLiveAt, lastSegmentEnd },
+  notices: [ { kind, at, text?, data? } ],                // save notices are glue-owned (B6)
+  notify: { day, sent, firedFull, pileSince, pileDay, saveEpisode },
+  garlands: [ { wish, day, stripes: [[colourKey, weight]…], wishes } ],
+  stats: { bySource: MAP<source, number>, runBySource: MAP<source, number>, tasks, hits },
+  ui: { hints: { fold, crane }, narrowHintDay }
+}
+```
+
+`HelperRecord` = DESIGN §5.1 exactly, plus `missingSince` (ms or null) and `group`
+(`needs|finished|working|resting|elsewhere|album`, derived and cached by `observe`).
+
+### B5. Actions (all carry `w`, `s`, `t`; A5)
+
+DESIGN §15.1, with these exact shapes:
+
+```js
+{ type: "click", target: "sheet"|"mini"|"node"|"scrap"|"crane"|"boat"|"ream", id?, x?, y? }
+{ type: "open", helperId }                // opens that helper's envelope
+{ type: "buy", item, count }              // count: 1 | 10 | "max" (workshops); 1 otherwise
+{ type: "switch", id, on }                // automations
+{ type: "setting", key, value }           // dotted key into settings, e.g. "notify.master"
+{ type: "wish" }  { type: "collect" }  { type: "rebase" }
+{ type: "observe", helpers: Observation[] | null, visible, active, matShown, day }
+{ type: "dismiss", notice }  { type: "notified", event, day }
+{ type: "hint", key }                     // first-run hints seen
+```
+
+`Observation` (from `glue/observe.js buildObservation`): `{ addr, created, status
+("working"|"blocked"|"done"|"idle"), raw, turn, parent (helper addr or null), pane (string|null),
+title, paneName, space, tab, kind: "pane"|"kid" }`. `status` is already mapped
+(`error → blocked`; paneless kid `done → idle`).
+
+### B6. ViewModel (`view(state, now, opts)`; plain, pre-formatted, cheap to render)
+
+```js
+{
+  rev,                                     // state-derived change counter (for render caching)
+  header: { folds: "12,480", rate: "+86.2/s", wishes: 12, counts: { needs, finished, working, resting } },
+  sheet: { frame, ticks: 0..8, firstRunHint: bool, short: bool },
+  mat: { chips: [{ helperId, name, pulse }], more, shelf: [species…],
+         nodes: [{ id, i, x, y, due, fading }], scraps: [{ id, x, y }],
+         crane: null|{ id, x, y, x1, msLeft }, boat: null|{ id, x, x1, msLeft },
+         ream: null|{ id, x, y }, storm: bool, creaseLine: null|[[x,y]…] },
+  tray: { envelopes: [{ helperId, type, units, bob }], more },
+  streak: { fill: 0..1, label: "×1.4", inStep: bool, afterglow: "12m" | null },
+  boosts: [{ type, label, msLeft, msTotal }],
+  helpers: { groups: [{ key, title, count, folded, tiles: [Tile] }], dense, legend: bool, empty: bool,
+             elsewhere: [Tile], album: [{ helperId, name, species, hue, leftAgo, folds }] },
+  shop: { segments: { works: [Row], tools: [Row], folk: [Row], charms: [Row], curios: [Row], auto: [Row] } },
+  string: { cranes, of, nextIn, lifetime, gain, can, perks: [{ at, text, have }], garlands: [...] },
+  settings: { …current values, notifySentToday, automations: [{ id, name, owned, on }] },
+  away: null | { kind: "away"|"busy", duration, capped, folds, split, envelopes, needs: [...],
+                 rested, best, affordable: [...], collectable: bool },
+  notices: [{ kind, text, actions }],      // engine notices (clock); save notices merged in by glue
+  ribbon: { marks: [Mark], level: "A"|"B"|"C", tallies: [...] }, // computed for opts.width
+  rail: { pips: [Mark] }
+}
+Tile = { helperId, name, species, hue, status, statusWord, envelope: bool, pips: [...],
+         rest: 0..1|null, pulse, spin, dashed, opacity, tooltip, pane, addr, kind }
+Mark = { helperId, status, hue, envelope, dashed, opacity, tooltip }
+Row  = { id, name, owned, cost: "31.2K", affordable, best, eta: "in 2m 10s"|null, effect, icon,
+         tier: bool, revealed: bool, sub: [Row] }
+```
+
+Positions in `mat` are logical px inside the mat (304×232 or the short variant); `pulse`/`spin`/
+`bob` flags already respect the loop budget (DESIGN §13.5) and calm mode, so the UI only obeys
+them. Strings are already clipped with `clip()`.
+
+### B7. Glue per copy (`glue/session.js`)
+
+```js
+export class Session {
+  constructor(role)                         // "panel" | "ribbon"
+  init(cx)                                  // checking() → static demo state, no timers/writes/run
+                                            // else: live.adopt() or store.load(); timers; command loop
+  vm()                                      // cached ViewModel for this role/width (recomputed when rev/width changes)
+  dispatch(action, cx)                      // live.dispatch + cx.notify()
+  onSize(size, cx)                          // width from on_size_change ÷ settings().zoom
+  openHelper(helperId)                      // DESIGN §5.6
+  close(cx)                                 // final write if ticker
+  ui                                        // per-copy UI state: tab, selected tile, folded, pops, confirm
+}
+```
+
+The data tick (every 1000 ms visible / 5000 ms hidden, per copy): heartbeat; if ticker: observe
+(only on change), `advance(now)`, automation and notification checks, save cadence; every copy:
+re-render (`cx.notify()`) when `slot.rev` or the formatted clock bucket changed (5 s buckets in
+calm mode).
+
+Save notices (`recovered fresh conflict merged error newer`) live in the slot (`slot.notice`),
+not in the engine state; `view()` receives them via `opts.saveNotice` so the vm is complete.
+
+### B8. Simulator contract (`tools/sim/pacing.mjs`)
+
+Imports only `mods/creaseworks/engine/index.js`. Exposes `runProfile(profileId, seed, opts) →
+{ milestones: { [key]: playClockSeconds }, shares, dayShares, sessionRatios, purchases,
+finalState }` and a CLI `node tools/sim/pacing.mjs [--profile P1] [--seeds 1-20] [--assert]`.
+Milestone keys are the sim keys in BALANCE.md (`buy:<id>`, `own:workshops>=10`, `spawn:crane#1`,
+`run:1e6`, `wish:available`, `wish2:available`). Profiles and windows are parsed from
+`docs/BALANCE.md` tables; the pass rule is BALANCE §2.
