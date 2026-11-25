@@ -33,8 +33,10 @@ const BOAT = Object.freeze({ w: 48, h: 32, x0: 8, x1: 248 });
 const ENV_TYPES = Object.freeze(["bundle", "rush", "storm", "chorus"]);
 const HINT_TEXT = "Click the paper to fold it";
 const CRANE_HINT = "A gilded crane! Click it before it flies off.";
-/** The first gilded crane's callout chip (§3.2): two lines, 11/600. */
-const CRANE_CHIP = Object.freeze({ w: 176, h: 34 });
+/** The first gilded crane's callout chip (§3.2): 176 wide (two lines of 11/600) where it fits. */
+const CRANE_CHIP = Object.freeze({ w: 176 });
+/** The chip's text box: 8 px side padding, 14 px lines (127 % of 11), 6 px for border and air; ≈ 6.4 px a grapheme at 11/600. */
+const CHIP_TEXT = Object.freeze({ padX: 8, padY: 6, line: 14, px: 6.4, minW: 64, maxLines: 6 });
 
 function handler(ctx, name) {
   const h = ctx && ctx.handlers;
@@ -274,26 +276,120 @@ function craneBox(c, g) {
 }
 
 /**
+ * Where the first gilded crane's callout chip goes: `{ x, y, w, h, lines,
+ * follow }` in mat px, or null without a crane. Tried in order, the first box
+ * that stays inside the play field (between the bands) and covers neither the
+ * Sheet nor the crane wins:
+ *   1. the 176 px chip above the crane, then below it (it glides with it);
+ *   2. a narrow chip in the side margin the crane is in (or, while it crosses
+ *      the Sheet's columns, the margin it is flying to): below, above or
+ *      level with the crane;
+ *   3. the 176 px chip in the strip above or below the Sheet;
+ *   4. a narrow chip in the other margin.
+ * At 320 px the 176 px chip always spans some of the Sheet's columns and the
+ * strips beside it are 30 px, so it is usually the margin (r2-22: the chip
+ * used to drop onto the middle of the Sheet). Where nothing fits (below
+ * 280 px) it takes the box that covers least of the Sheet's edge. Heights
+ * come from a word-wrap estimate at 11/600 (`CHIP_TEXT.px` a grapheme, 14 px
+ * lines).
+ */
+export function craneHintBox(c, g, hint = CRANE_HINT) {
+  if (!c || !g) return null;
+  const [left, top] = craneBox(c, g);
+  const crane = [left, top, CRANE.w, CRANE.h];
+  const sheet = [g.sx, g.sy, g.sheet, g.sheet];
+  const fieldTop = TOP_BAND;
+  const fieldBot = g.h - BOTTOM_BAND;
+  const hit = (a, b) => Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]) > 0 && Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]) > 0;
+  const fits = (b) => b.w >= CHIP_TEXT.minW && b.lines <= CHIP_TEXT.maxLines && b.x >= 0 && b.x + b.w <= g.w && b.y >= fieldTop && b.y + b.h <= fieldBot &&
+    !hit([b.x, b.y, b.w, b.h], sheet) && !hit([b.x, b.y, b.w, b.h], crane);
+  const sized = (x, w) => {
+    const lines = chipLines(hint, w - 2 * CHIP_TEXT.padX);
+    return { x: r1(x), w: r1(w), lines, h: lines * CHIP_TEXT.line + CHIP_TEXT.padY };
+  };
+  const out = [];
+  // 1. The wide chip, centred over the crane (it glides with it).
+  const ww = Math.min(CRANE_CHIP.w, g.w - 8);
+  const wide = sized(Math.max(4, Math.min(g.w - ww - 4, left + CRANE.w / 2 - ww / 2)), ww);
+  out.push({ ...wide, y: top - wide.h - 4, follow: true }, { ...wide, y: top + CRANE.h + 4, follow: true });
+  // 2. The crane's side margin, 4. the other one.
+  const margins = {
+    left: sized(4, g.sx - 8),
+    right: sized(g.sx + g.sheet + 4, g.w - g.sx - g.sheet - 8),
+  };
+  const mid = left + CRANE.w / 2;
+  const heading = num(c.x1, num(c.x)) - num(c.x);
+  const side = mid < g.sx ? "left" : mid > g.sx + g.sheet ? "right" : heading > 0 ? "right" : heading < 0 ? "left" : mid < g.sx + g.sheet / 2 ? "left" : "right";
+  const around = (m) => [top + CRANE.h + 4, top - m.h - 4, Math.max(fieldTop, Math.min(fieldBot - m.h, top + CRANE.h / 2 - m.h / 2))].map((y) => ({ ...m, y, follow: false }));
+  out.push(...around(margins[side]));
+  // 3. The strips under and over the Sheet, the wide chip as close as it gets.
+  const strip = sized(Math.max(4, Math.min(g.w - ww - 4, left + CRANE.w / 2 - ww / 2)), ww);
+  const below = top >= g.sy + g.sheet / 2;
+  const under = { ...strip, y: g.sy + g.sheet + Math.max(0, Math.floor((fieldBot - g.sy - g.sheet - strip.h) / 2)), follow: false };
+  const over = { ...strip, y: g.sy - strip.h - Math.max(0, Math.floor((g.sy - fieldTop - strip.h) / 2)), follow: false };
+  out.push(...(below ? [under, over] : [over, under]));
+  out.push(...around(margins[side === "left" ? "right" : "left"]));
+  for (const b of out) {
+    b.y = r1(b.y);
+    if (fits(b)) return b;
+  }
+  // Nothing fits (a narrow mat: 56 px margins, 14 px strips): each box pulled
+  // into the field, the one that covers the least of the Sheet (never the crane).
+  const area = (a, b) => Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]));
+  let best = null;
+  let bestCost = Infinity;
+  for (const b of out) {
+    if (b.w < CHIP_TEXT.minW || b.lines > CHIP_TEXT.maxLines || b.h > fieldBot - fieldTop) continue;
+    const y = r1(Math.max(fieldTop, Math.min(fieldBot - b.h, b.y)));
+    const box = [b.x, y, b.w, b.h];
+    const cost = area(box, sheet) + 4 * area(box, crane);
+    if (cost < bestCost) {
+      best = { ...b, y };
+      bestCost = cost;
+    }
+  }
+  return best || { ...wide, y: r1(Math.max(fieldTop, Math.min(fieldBot - wide.h, top + CRANE.h + 4))), follow: true };
+}
+
+/** Lines a greedy word wrap of `s` takes in `px` px at 11/600 (an over-estimate). */
+function chipLines(s, px) {
+  const per = Math.max(1, Math.floor(px / CHIP_TEXT.px));
+  let lines = 1;
+  let used = 0;
+  for (const word of String(s).split(" ")) {
+    const n = Array.from(word).length;
+    if (used === 0) used = n;
+    else if (used + 1 + n <= per) used += 1 + n;
+    else {
+      lines++;
+      used = n;
+    }
+    while (used > per) {
+      lines++;
+      used -= per;
+    }
+  }
+  return lines;
+}
+
+/**
  * The first gilded crane's one-time line (§3.2, `vm.mat.crane.hint` while
- * `ui.hints.crane` is unset): a T.popover chip above the crane (below it when
- * the top band is in the way), moving with it. No handlers: clicks reach the
- * mat and the crane as before.
+ * `ui.hints.crane` is unset): a T.popover chip beside the crane, never over
+ * the Sheet, the crane or the bands (`craneHintBox`). No handlers: clicks
+ * reach the mat and the crane as before.
  */
 function craneHint(c, g, T, calm) {
   if (!c || typeof c.hint !== "string" || !c.hint) return null;
-  const [left, top] = craneBox(c, g);
-  const w = Math.min(CRANE_CHIP.w, g.w - 8);
-  const x = r1(Math.max(4, Math.min(g.w - w - 4, left + CRANE.w / 2 - w / 2)));
-  const above = top - CRANE_CHIP.h - 4;
-  const y = r1(above >= TOP_BAND ? above : Math.min(g.h - BOTTOM_BAND - CRANE_CHIP.h, top + CRANE.h + 4));
+  const hint = clip(c.hint, MAT_CLIP.craneHint);
+  const b = craneHintBox(c, g, hint);
   const el = div()
     .id("cw-crane-hint")
     .absolute()
-    .left(x)
-    .top(y)
-    .w(w)
-    .h(CRANE_CHIP.h)
-    .px(8)
+    .left(b.x)
+    .top(b.y)
+    .w(b.w)
+    .h(b.h)
+    .px(CHIP_TEXT.padX)
     .flex()
     .items_center()
     .justify_center()
@@ -301,9 +397,10 @@ function craneHint(c, g, T, calm) {
     .bg(T.popover)
     .border(1)
     .border_color(T.border)
-    // fixed copy, two lines at most: wraps instead of cutting (§13.4)
-    .child(text(clip(c.hint, MAT_CLIP.craneHint), { size: 11, weight: 600, color: T.foreground }).whitespace_normal().text_center());
-  if (!calm && num(c.x1, c.x) !== num(c.x)) el.transition("left", { duration: 1000, easing: "linear" });
+    // fixed copy: wraps instead of cutting (§13.4), on 14 px lines the box was sized for
+    .child(text(hint, { size: 11, weight: 600, color: T.foreground }).whitespace_normal().line_height("127%").text_center());
+  // It glides with the crane only while it sits over or under it.
+  if (b.follow && !calm && num(c.x1, c.x) !== num(c.x)) el.transition("left", { duration: 1000, easing: "linear" });
   return el;
 }
 

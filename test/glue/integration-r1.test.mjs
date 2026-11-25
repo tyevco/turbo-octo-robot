@@ -55,3 +55,35 @@ test("the Album's rows are built only while its section is unfolded; its count i
   assert.ok(Array.isArray(v.session.vm().helpers.album));
   assert.ok(st);
 });
+
+// r2-19 across owners: main.js builds the Session with the Flock's
+// `sectionIndex` and a ScrollHandle (`newFlockScroll`), so in the shipped game
+// a counts chip and a ribbon tally scroll the Flock to their group. Built
+// through main.js's own init, never by putting a handle on the session.
+test("r2-19: the View main.js builds scrolls the Flock: the panel copy gets a ScrollHandle and sectionIndex, a chip and a tally scroll", async () => {
+  const { agent, term } = await import("./_util.mjs");
+  const { findById } = await import("../../tools/mock/gpui-kit.js");
+  w = win({
+    agents: [agent(1, "blocked"), agent(2, "working"), agent(3, "done")],
+    terminals: [term(1, "blocked"), term(2, "working"), term(3, "idle", { turn: 1 })],
+  });
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  await w.advance(2000);
+  const s = panel.session;
+  assert.equal(typeof s.sectionIndex, "function", "main.js passes ui/flock.js sectionIndex");
+  assert.ok(s.scroll && typeof s.scroll.scroll_to_item === "function", "main.js passes newFlockScroll()'s handle");
+  assert.equal(panel.session.ctx().scroll, s.scroll, "the panel's #cw-content tracks it");
+  const calls = () => s.scroll.__mock.calls.filter((c) => c[0] === "scroll_to_item");
+  await w.handler(panel, "showGroup", "finished");
+  assert.equal(calls().length, 1, "a counts chip scrolls");
+  const content = findById(w.render(panel).tree, "cw-content");
+  assert.equal(content.children[calls()[0][1]].id, "cw-flock-sec-finished");
+  await w.handler(ribbon, "showGroup", "working");
+  await w.advance(1000);
+  assert.equal(calls().length, 2, "a ribbon tally scrolls the panel copy at its next tick");
+  assert.equal(findById(w.render(panel).tree, "cw-content").children[calls()[1][1]].id, "cw-flock-sec-working");
+  assert.equal(s.ui.scrollTo, null, "nothing stays pinned");
+  assert.equal(ribbon.session.scroll, null, "the ribbon draws no Flock: no handle");
+  assert.equal(w.ctl.runErrors().length, 0);
+});

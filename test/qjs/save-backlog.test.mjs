@@ -108,6 +108,12 @@ test("a 15-minute backlog of failed saves merges within the 500 ms task budget",
     assert.equal(host.evalInVm(`JSON.stringify({ tasks: ${SLOT}.state.stats.tasks, units: ${SLOT}.state.stats.units })`), live, "and in memory: no rollback");
     assert.ok(maxPending <= 4500 + 2 * turn + 25, `bounded log (${maxPending})`);
   } finally {
-    host.dispose();
+    try {
+      host.dispose();
+    } catch (e) {
+      // The wasm runtime sometimes cannot free a heap this size (a harness limit, not the mod's;
+      // the same JS_FreeRuntime TODO as test/qjs/harness.test.mjs and store-merge.test.mjs).
+      if (!/could not be freed cleanly/.test(String(e && e.message))) throw e;
+    }
   }
 });

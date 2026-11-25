@@ -206,7 +206,8 @@ function perks(list, T) {
             have ? icon("check", 11, T.foreground) : text("·", { size: 11, color: T.muted }, T),
           ),
         )
-        .child(text(clip(str(p.text), STRING_CLIP.perk), { size: 11, color: have ? T.foreground : T.muted, truncate: true }, T).flex_1()),
+        // Wraps instead of cutting: a perk's condition is often at its end (r2-24, §3.5 lists them in full).
+        .child(text(clip(str(p.text), STRING_CLIP.perk), { size: 11, color: have ? T.foreground : T.muted }, T).flex_1().min_w(0).whitespace_normal()),
     );
   }
   return box;

@@ -631,6 +631,18 @@ function genericMethod(name) {
 let itemRendererDepth = 0;
 
 /**
+ * Clears the render guards a host's interrupt can leave set: an interrupt
+ * unwinds the script stack without running its `finally` blocks, so the item
+ * renderer depth (and `constructView`'s deferred-init flag) would otherwise
+ * stay raised and refuse every later handler. The QuickJS harness calls this
+ * from its recover op.
+ */
+export function resetRenderGuards() {
+  itemRendererDepth = 0;
+  deferInit = false;
+}
+
+/**
  * The shell's current scope phase as far as the mocks can tell: "layout"
  * inside a lazy list's item renderer, else the mock herdr controller's open
  * scope (render / event / task / layout), else null (no host call known).
@@ -1273,9 +1285,73 @@ function jsonSafe(value) {
   return value;
 }
 
-/** Renders a lazy list's items (all of them, capped) as the shell would for a visible range. */
-function materializeList(r, cx, maxItems) {
-  const count = Math.min(r.args[1], maxItems);
+// The mock never scrolls, so a lazy list shows its first screenful. A list
+// with no definite extent of its own is taken to fill the window; a list with
+// no item sizes (`list`, `uniform_list`) is taken to have rows one rem high,
+// which over- rather than under-states the rows the shell would ask for.
+const LIST_VIEWPORT = Object.freeze({ width: 1440, height: 900 });
+const LIST_REM = 16;
+const LIST_FALLBACK_ITEM = 16;
+
+function listLengthPx(value, whole) {
+  let length;
+  try {
+    length = lengthOf(value);
+  } catch {
+    return null;
+  }
+  if ("px" in length) return length.px;
+  if ("rem" in length) return length.rem * LIST_REM;
+  if ("frac" in length) return length.frac * whole;
+  return null;
+}
+
+/**
+ * The extent (script pixels) a lazy list shows along its axis: its last
+ * `h` / `size` (`w` / `size` across), capped by `max_h` (`max_w`), else
+ * the window's.
+ */
+function listExtent(r, viewport) {
+  const across = r.kind === "h_virtual_list";
+  const whole = across ? viewport.width : viewport.height;
+  let definite = null;
+  let cap = null;
+  for (const [name, ...args] of r.styles) {
+    if (name === (across ? "w" : "h") || name === "size") {
+      definite = listLengthPx(args[0], whole);
+    } else if (name === (across ? "w_full" : "h_full") || name === "size_full") {
+      definite = whole;
+    } else if (name === (across ? "max_w" : "max_h")) {
+      cap = listLengthPx(args[0], whole);
+    }
+  }
+  let extent = definite ?? whole;
+  if (cap !== null && cap < extent) extent = cap;
+  return Math.max(0, extent);
+}
+
+/**
+ * base's visible_range (gpui-kit crates/base/src/virtual_list.rs) at scroll
+ * offset 0: the items that end inside the extent, the one crossing its edge
+ * and one more of overdraw, never past the end (nor past `maxItems`).
+ */
+function visibleListRange(r, options = {}) {
+  const count = Math.min(r.args[1], options.maxItems ?? 500);
+  const extent = listExtent(r, { ...LIST_VIEWPORT, ...(options.viewport ?? {}) });
+  const sizes = r.args[2];
+  const sizeOf = (index) => {
+    const size = Array.isArray(sizes) ? sizes[index] : sizes;
+    return typeof size === "number" && Number.isFinite(size) && size >= 0 ? size : LIST_FALLBACK_ITEM;
+  };
+  let end = 0;
+  let edge = 0;
+  while (end < count && edge + sizeOf(end) <= extent) edge += sizeOf(end++);
+  return { start: 0, end: end === count ? count : Math.min(end + 2, count) };
+}
+
+/** Renders the rows of a lazy list the shell would ask for on its first frame (see visibleListRange). */
+function materializeList(r, cx, options) {
+  const { end: count } = visibleListRange(r, options);
   const { getKey, render, perItem } = r.list;
   let items;
   itemRendererDepth += 1;
@@ -1319,8 +1395,10 @@ function materializeList(r, cx, maxItems) {
 /**
  * A JSON-able tree (ARCHITECTURE A8). Handlers become
  * `{ handler: "<event>", path: "<index path>" }`. Lazy lists are expanded with
- * `options.cx` (up to `options.maxItems`, default 500) into `children`, with
- * their item keys in `keys`.
+ * `options.cx` into `children` (the rows in view at scroll offset 0 — see
+ * visibleListRange; `options.viewport` = { width, height } stands in for the
+ * window, `options.maxItems`, default 500, caps the rows), with their item
+ * keys in `keys`.
  */
 export function serialize(node, options = {}, path = "0") {
   if (!isElement(node)) {
@@ -1332,7 +1410,7 @@ export function serialize(node, options = {}, path = "0") {
   let kids = r.children;
   let keys;
   if (r.list) {
-    kids = r.items ?? materializeList(r, options.cx, options.maxItems ?? 500);
+    kids = r.items ?? materializeList(r, options.cx, options);
     keys = r.keys;
   }
   const handlers = {};

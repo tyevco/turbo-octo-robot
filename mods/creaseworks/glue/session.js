@@ -25,6 +25,10 @@ export const POP_MS = 1200;
 export const POP_RISE_MS = 16;
 /** Risen pops are removed after their 700 ms transition (one after(800) per burst). */
 export const POP_PRUNE_MS = 800;
+/** A pop's rise and fade is over this long after its click (rise at 16, 700 ms transition). */
+export const POP_DONE_MS = POP_RISE_MS + 700;
+/** At most this many pops alive (DESIGN §13.5; ui/mat.js draws the last 5). */
+export const POP_CAP = 5;
 export const SHORT_BELOW = 640;
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
 const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };
@@ -99,6 +103,7 @@ export class Session {
     this.lastBucket = -1;
     this.cache = null;
     this.popSeq = 0;
+    this.popCarry = null;
     this.handledRequest = 0;
     this.handlers = this.makeHandlers();
   }
@@ -112,6 +117,8 @@ export class Session {
       const p = props();
       this.role = p && typeof p === "object" && p.role === "ribbon" ? "ribbon" : "panel";
     }
+    // Only the panel copy draws the Flock: a ribbon copy lets its handle go.
+    if (this.role !== "panel") this.releaseScroll();
     if (checking()) {
       // Static preview: no timers, no writes, no run (§3.11; A2 rule 11).
       const t = clockNow();
@@ -297,12 +304,33 @@ export class Session {
     }
     if (!vm) return;
     u.scrollTo = null;
+    // A needs tally whose longest wait is a fledgling (a pip on its parent's
+    // tile, r2-17) scrolls to the section holding that tile, unfolded.
+    let k = key;
+    const ng = vm.helpers ? vm.helpers.needsGroup : null;
+    if (key === "needs" && typeof ng === "string" && ng !== "needs") {
+      k = ng;
+      u.folded[k] = false;
+    }
     if (!this.scroll || !this.sectionIndex || u.tab !== "flock") return;
     try {
-      const i = this.sectionIndex(vm, u, key);
+      const i = this.sectionIndex(vm, u, k);
       if (typeof i === "number" && i >= 0) this.scroll.scroll_to_item(i);
     } catch {
       // a released handle (hot reload): the group is unfolded all the same
+    }
+  }
+
+  /** Lets the Flock's ScrollHandle go (a ribbon copy, close). */
+  releaseScroll() {
+    const h = this.scroll;
+    this.scroll = null;
+    if (h && typeof h.release === "function") {
+      try {
+        h.release();
+      } catch {
+        // already released
+      }
     }
   }
 
@@ -321,6 +349,7 @@ export class Session {
       }
       this.timer = null;
     }
+    this.releaseScroll();
     for (const k of ["popRise", "popPrune"]) {
       const h = this[k];
       this[k] = null;
@@ -507,9 +536,34 @@ export class Session {
   }
 
   /**
+   * A "+N" pop at the click point (r2-20). Pops through their transition are
+   * dropped; one still rising is never cut: with POP_CAP alive (10+ clicks a
+   * second) the amount is carried into the next pop that has room, so every
+   * fold earned is shown once and each number finishes its rise. A carry
+   * older than a second is dropped (it would read as a new click's).
+   */
+  addPop(sum, x, y, style, cx) {
+    const t = clockNow();
+    const u = this.ui;
+    const alive = u.pops.filter((p) => !(p.risen && t - p.at >= POP_DONE_MS));
+    const carry = this.popCarry && t - this.popCarry.at < 1000 ? this.popCarry.sum : 0;
+    if (alive.length >= POP_CAP) {
+      this.popCarry = { sum: carry + sum, at: t };
+      u.pops = alive;
+      this.schedulePrune(cx && cx.timer);
+      return;
+    }
+    this.popCarry = null;
+    this.popSeq += 1;
+    u.pops = alive.concat([{ id: `pop${this.popSeq}`, label: `+${formatCount(sum + carry, style)}`, x, y, risen: false, at: t }]);
+    this.schedulePops(cx);
+  }
+
+  /**
    * DESIGN §13.5: one cx.timer.after(16) per burst raises every new pop
-   * (`risen`: top − 28, opacity 0 over 700 ms), one after(800) removes the
-   * risen ones; at most one of each is pending, so fast clicking keeps two
+   * (`risen`: top − 28, opacity 0 over 700 ms), one after(≤ 800), due when
+   * the oldest pop's transition ends, removes the finished ones; at most one
+   * of each is pending, so fast clicking keeps two
    * timers (r2-20: they used to wait for the 1 s data tick). The data tick's
    * prunePops stays the fallback when a timer cannot be set.
    */
@@ -538,13 +592,26 @@ export class Session {
 
   schedulePrune(timer) {
     if (this.popPrune !== null || !timer || typeof timer.after !== "function") return;
+    // Due when the oldest pop's transition ends (at most POP_PRUNE_MS away),
+    // so a burst frees room for the next number as soon as one is done.
+    const t0 = clockNow();
+    let due = POP_PRUNE_MS;
+    for (const p of this.ui.pops) due = Math.min(due, Math.max(POP_RISE_MS, p.at + POP_DONE_MS - t0));
     try {
-      this.popPrune = timer.after(POP_PRUNE_MS, (tcx) => {
+      this.popPrune = timer.after(due, (tcx) => {
         this.popPrune = null;
         const t = clockNow();
         const before = this.ui.pops.length;
         // Risen and through their 700 ms transition (a later click's pops wait for the next one).
-        this.ui.pops = this.ui.pops.filter((p) => !(p.risen && t - p.at >= POP_PRUNE_MS - 100));
+        this.ui.pops = this.ui.pops.filter((p) => !(p.risen && t - p.at >= POP_DONE_MS));
+        let rose = false;
+        for (const p of this.ui.pops) {
+          if (!p.risen && t - p.at >= POP_RISE_MS) {
+            p.risen = true; // the after(16) could not be set: never re-arm on an unrisen pop
+            rose = true;
+          }
+        }
+        if (rose) notifyCx(tcx);
         if (this.ui.pops.length) this.schedulePrune(tcx && tcx.timer);
         if (this.ui.pops.length !== before) notifyCx(tcx);
       });
@@ -663,12 +730,7 @@ export class Session {
         if (s && MAT_TARGETS[a.target] === 1 && !s.settings.calm && s.settings.pops !== false && a.x !== undefined) {
           let sum = 0;
           for (const e of ev) if (e && e.kind === "earn" && typeof e.amount === "number") sum += e.amount;
-          if (sum > 0) {
-            self.popSeq += 1;
-            const pops = ui().pops.concat([{ id: `pop${self.popSeq}`, label: `+${formatCount(sum, s.settings.style)}`, x: a.x, y: a.y, risen: false, at: clockNow() }]);
-            ui().pops = pops.slice(-5);
-            self.schedulePops(cx);
-          }
+          if (sum > 0) self.addPop(sum, a.x, a.y, s.settings.style, cx);
         }
         self.changed(cx);
       },
@@ -717,7 +779,7 @@ export class Session {
         self.changed(cx);
       },
       fold(cx) {
-        if (self.slot && !self.demo) foldPanel(self.slot);
+        if (self.slot && !self.demo) foldPanel(self.slot, undefined, clockNow());
         self.changed(cx);
       },
       show(cx) {

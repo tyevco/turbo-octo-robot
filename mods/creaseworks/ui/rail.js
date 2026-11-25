@@ -14,13 +14,28 @@ import { iconButton, text, hoverOn } from "./widgets.js";
 import { bannerNotices } from "./banner.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140, flash: 80 });
+export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140, flash: 80, flashShort: 32 });
+/** Every "the full panel cannot open" flash starts with this (glue/commands.js tightText). */
+export const TIGHT_PREFIX = "Too narrow";
 
 const PITCH = 14;
 const COLS = 4;
 const MAX_COLS = 12;
-/** A rail at least this wide (tight: unfolded, under 200) also shows the flash line. */
+/** A rail at least this wide (tight: unfolded, under 200) shows the whole flash line; a narrower one its short form. */
 const FLASH_ABOVE = 120;
+
+/**
+ * The flash as the rail draws it at `width`: whole from FLASH_ABOVE, else
+ * its short form (the words before a colon: "Too narrow"), so a rail click
+ * at any width (64, or 72-119 at zoom 1.5) says something (r2-12).
+ */
+export function railFlash(textIn, width) {
+  const t = String(textIn ?? "");
+  if (!t) return "";
+  if (typeof width === "number" && width >= FLASH_ABOVE) return clip(t, RAIL_CLIP.flash);
+  const k = t.indexOf(":");
+  return clip(k > 0 ? t.slice(0, k) : t, RAIL_CLIP.flashShort);
+}
 
 /** Pip columns for a rail `width` px wide: 4 in the 64 px rail, more in a tight one (r2-14: it uses its column). */
 export function pipColumns(width) {
@@ -124,12 +139,16 @@ export function renderRail(vm, ui, ctx) {
       .child(text(clip(String(rail.count ?? header.folds ?? ""), RAIL_CLIP.count), { size: 11, weight: 600, color: T.foreground }, T))
       .child(text(clip(String(rail.rate ?? header.rate ?? ""), RAIL_CLIP.rate), { size: 11, color: T.muted }, T)),
   );
-  // 2b. A tight rail shows the flash (why a click could not open the full
-  // panel, r2-12) under the count; the 64 px rail has no room for it.
+  // 2b. The flash (why a click could not open the full panel, r2-12) under
+  // the count: whole in a rail 120 or wider, its short form ("Too narrow")
+  // in a narrower one, so no rail click is without a visible effect.
   const flashNote = Array.isArray(vm.notices) ? vm.notices.find((n) => n && n.kind === "flash" && typeof n.text === "string") : null;
-  if (flashNote && typeof ctx.width === "number" && ctx.width >= FLASH_ABOVE) {
-    root.child(text(clip(flashNote.text, RAIL_CLIP.flash), { id: "cw-rail-flash", size: 11, color: T.foreground }, T).w_full().px(6).text_center());
+  const flashText = flashNote ? railFlash(flashNote.text, ctx.width) : "";
+  if (flashText) {
+    const wide = typeof ctx.width === "number" && ctx.width >= FLASH_ABOVE;
+    root.child(text(flashText, { id: "cw-rail-flash", size: 11, color: T.foreground }, T).w_full().px(wide ? 6 : 2).text_center().flex_none());
   }
+  const tightFlash = !!flashNote && flashNote.text.startsWith(TIGHT_PREFIX);
   // 3. Mini Sheet: one fold per click.
   const frame = num(vm.sheet && vm.sheet.frame, 0);
   const { base, shade } = sheetPaths(frame);
@@ -203,8 +222,12 @@ export function renderRail(vm, ui, ctx) {
   // cannot unfold further: its chevron folds it to 64 and gives the terminals
   // the room. Folded or not is the layout's weight (ctx.folded, r2-13); a ctx
   // without it falls back to the width.
+  // While a "Too narrow" flash shows, the chevron is ringed in the accent
+  // (a visible answer at any width, r2-12): it is the panel's fold control.
   const tight = typeof ctx.folded === "boolean" ? !ctx.folded : typeof ctx.width === "number" && ctx.width >= 140;
-  const tip = tight ? "Too narrow for the full panel: fold to a slim rail and give the terminals room (close Files or widen the window for the full panel)" : "Unfold Creaseworks";
-  root.child(iconButton("cw-rail-unfold", tight ? "fold" : "chevron", tip, { size: 16, onClick: (e, cx) => fold(cx) }, T));
+  const tip = tight ? "Too narrow for the full panel: fold to a slim rail to give the terminals room, or drag its edge or widen the window" : "Unfold Creaseworks";
+  const chevron = iconButton("cw-rail-unfold", tight ? "fold" : "chevron", tip, { size: 16, onClick: (e, cx) => fold(cx) }, T);
+  if (tightFlash) chevron.bg(T.raised).border(1).border_color(T.accent);
+  root.child(chevron);
   return root;
 }

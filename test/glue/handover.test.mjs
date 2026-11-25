@@ -279,15 +279,56 @@ test("r1-01: a claim that never settles is released after WRITE_STALL_MS, with t
   await w.hits(v, 2);
   const { codeGeneration } = await import("../../mods/creaseworks/glue/live.js");
   const { WRITE_STALL_MS } = await import("../../mods/creaseworks/glue/store.js");
-  Object.assign(w.slot.save, { writing: 99, writingBy: v.session.copyId, writingGen: codeGeneration(), writingAt: Date.now(), status: "saving" });
+  Object.assign(w.slot.save, { writing: 99, writingBy: v.session.copyId, writingFor: "check", writingGen: codeGeneration(), writingAt: Date.now(), status: "saving" });
   await w.advance(WRITE_STALL_MS - 5000);
   assert.equal(parsed(w.ctl).state.stats.hits, 0, "a live-looking claim is waited for");
   await w.advance(10000);
   assert.equal(w.slot.save.writing, null);
   assert.equal(parsed(w.ctl).state.stats.hits, 2);
-  // r2-03: never silent (an interrupted merge or Settings tool did not finish).
+  // r2-03: never silent (a Settings save tool may not have finished): said until dismissed.
   assert.equal(w.slot.notice && w.slot.notice.kind, "recovered");
   assert.match(w.slot.notice.text, /A save step stopped before finishing; saving again/);
+});
+
+test("r2-06 review: a plain save cycle that stalls is released with a short flash, no lasting notice", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 2);
+  const { codeGeneration } = await import("../../mods/creaseworks/glue/live.js");
+  const { WRITE_STALL_MS } = await import("../../mods/creaseworks/glue/store.js");
+  Object.assign(w.slot.save, { writing: 99, writingBy: v.session.copyId, writingFor: "cycle", writingGen: codeGeneration(), writingAt: Date.now(), status: "saving" });
+  let flashed = null;
+  for (let ms = 0; ms < WRITE_STALL_MS + 5000 && w.slot.save.writing === 99; ms += 1000) {
+    await w.advance(1000);
+    if (w.slot.flash) flashed = w.slot.flash.text;
+  }
+  assert.equal(w.slot.save.writing === 99, false, "released");
+  assert.match(String(flashed), /A save step stalled; saving again/);
+  await w.advance(5000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 2, "saved again, nothing lost");
+  assert.equal(w.slot.notice, null, "nothing to dismiss: a plain save lost nothing");
+});
+
+test("r2-06 review: the panel closing during an ordinary background save is not a lasting alarm", async () => {
+  const { ORPHAN_MS } = await import("../../mods/creaseworks/glue/store.js");
+  w = win({ latency: { write: 400, read: 0 } });
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  await w.advance(3000);
+  await w.hits(panel, 5);
+  for (let i = 0; i < 400 && w.slot.save.writing === null; i++) await w.advance(50);
+  assert.notEqual(w.slot.save.writing, null, "a background save is under way");
+  assert.equal(w.slot.save.writingFor, "cycle");
+  assert.equal(w.slot.save.writingBy, panel.session.copyId);
+  await w.ctl.closeView(panel);
+  assert.notEqual(w.slot.save.writing, null, "the closed copy's save task was cancelled: its claim is orphaned");
+  await w.advance(ORPHAN_MS + 5000);
+  assert.equal(w.slot.save.writing, null, "the orphaned claim was released");
+  assert.equal(w.slot.notice, null, `no notice for an ordinary close (${JSON.stringify(w.slot.notice)})`);
+  assert.equal(parsed(w.ctl).state.stats.hits, 5, "every hit on disk");
+  assert.equal(w.slot.save.status, "ok");
+  assert.match(ribbon.session.ctx().save.text, /Saved/);
 });
 
 test("r2-06: a copy closed during its Reset: herdr cancels the copy's owner:null tasks, and the claim is released and said", async () => {

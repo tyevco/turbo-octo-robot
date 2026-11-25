@@ -8,6 +8,12 @@
 // a px-sized panel would be pushed off-screen by a narrow window or zoom. The
 // rail is a tiny weight held at cw-panel's min (64), so a drag that opens it
 // is stored as weights too (src/window.rs drag_to keeps a {px} side as px).
+// Folded or not is read from that weight (`panelState`), not the measured
+// width: an unfolded panel can measure under 140 (zoom 1.5) and is drawn as
+// the rail under 200 ("tight"); only one measuring at most 72 (a drag of the
+// rail's edge) counts as folded by its width. `show` unfolds a folded or tight
+// panel to the remembered weight, or, when it already has it, flashes why it
+// cannot open the full panel instead of doing nothing.
 // The last unfolded weight, as a share of main's, is remembered in the slot
 // and localStorage, every call in try/catch; `answer` opens the helper that
 // has needed you longest; `envelope` opens the oldest envelope.
@@ -41,8 +47,16 @@ export const FULL_BELOW = 200;
  * measure under 140 (zoom 1.5) and a tight one under 200 (r2-12, r2-13).
  */
 export const FOLDED_SHARE = RAIL_WEIGHT * 10;
-/** The text flashed when the full panel was asked for but the window leaves it too little room. */
-export const TIGHT_TEXT = "Too narrow for the full panel: close Files or widen the window";
+/**
+ * The text flashed when the full panel was asked for but it already has its
+ * remembered weight and the window still leaves it too little room (Files
+ * open: TIGHT_FILES_TEXT). Every such text starts "Too narrow", the short
+ * form the rail shows at any width (ui/rail.js TIGHT_PREFIX).
+ */
+export const TIGHT_TEXT = "Too narrow: drag the panel's edge or widen the window";
+export const TIGHT_FILES_TEXT = "Too narrow: close Files, drag the panel's edge or widen the window";
+/** A panel measured at most this wide looks like the rail (64 + 8): show/select/fold treat it as folded. */
+export const RAIL_LOOK = RAIL_PX + 8;
 const WIDTH_KEY = "creaseworks.panelWidth";
 const WEIGHT_KEY = "creaseworks.panelWeight";
 const CYCLE_MS = 30000;
@@ -222,11 +236,15 @@ export function lastWeight(slot) {
   return recallWeight() ?? DEFAULT_PANEL_WEIGHT;
 }
 
-/** Remembers the panel's current weight share (from `layout()`) while it is unfolded at `px`. */
+/**
+ * Remembers the panel's current weight share (from `layout()`) while it shows
+ * the full panel at `px` (at least FULL_BELOW): a weight that leaves it tight
+ * (a drag on a wide window) is never the one show() and fold() go back to.
+ */
 function keepWeight(slot, px) {
   const L = slot.layout;
   const w = L ? L.panelWeight : null;
-  if (typeof px !== "number" || px < RAIL_BELOW || !goodWeight(w)) return;
+  if (typeof px !== "number" || px < FULL_BELOW || !goodWeight(w)) return;
   const share = Math.round((w / mainWeightOf(slot)) * 1000) / 1000;
   if (!goodWeight(share) || share === slot.widths.lastWeight) return;
   slot.widths.lastWeight = share;
@@ -253,25 +271,50 @@ function railArgs() {
   return { id: PANEL_ID, weight: RAIL_WEIGHT };
 }
 
+/** cw-panel's weight as a share of main's in `L`, or null (a {px} panel, or no size read yet). */
+function shareOf(slot, L) {
+  const pw = L ? L.panelWeight : null;
+  if (typeof pw !== "number" || !Number.isFinite(pw) || pw < 0) return null;
+  return pw / mainWeightOf(slot, L);
+}
+
 /**
  * The panel's state from the latest `layout()` read and its measured width:
  * "hidden"; "folded" (the rail weight: its weight is at most FOLDED_SHARE of
- * main's, or a {px} panel at the rail's 64); "tight" (unfolded, but the
- * window leaves it under FULL_BELOW, so it is drawn as the rail too: 1100 x
- * 700 with Files open, zoom 1.5); "full". With no size in the layout (not
- * read yet) a panel measured under 140 counts as folded.
+ * main's, or a {px} panel at the rail's 64; or any panel measured at most
+ * RAIL_LOOK, which looks like the rail: herdr's drag_to stores what a small
+ * drag of the rail's edge leaves, 0.025-0.07, with no min); "tight"
+ * (unfolded, but under FULL_BELOW, so it is drawn as the rail too: 1100 x 700
+ * with Files open, zoom 1.5, or a drag); "full". With no size in the layout
+ * (not read yet) a panel measured under 140 counts as folded.
  */
 export function panelState(slot, info) {
   const L = info ?? slot.layout ?? {};
   if (L.panelHidden) return "hidden";
   const w = slot.widths.panel;
-  const pw = L.panelWeight;
+  const share = shareOf(slot, L);
   let folded;
-  if (typeof pw === "number" && Number.isFinite(pw) && pw >= 0) folded = pw / mainWeightOf(slot, L) <= FOLDED_SHARE;
+  if (share !== null) folded = share <= FOLDED_SHARE;
   else if (typeof L.panelPx === "number" && Number.isFinite(L.panelPx)) folded = L.panelPx <= RAIL_PX;
   else folded = typeof w === "number" && w < RAIL_BELOW;
-  if (folded) return "folded";
+  if (folded || (typeof w === "number" && w <= RAIL_LOOK)) return "folded";
   return typeof w === "number" && w < FULL_BELOW ? "tight" : "full";
+}
+
+/**
+ * True when unfolding would widen the panel: its weight share is under the
+ * remembered one (lastWeight), or it is sized in px. False when it already
+ * has that weight and only the window (or Files) keeps it narrow.
+ */
+function canGrow(slot, L) {
+  const share = shareOf(slot, L);
+  if (share === null) return true;
+  return share < lastWeight(slot) - 0.001;
+}
+
+/** The "Too narrow" flash for a panel that already has its weight. */
+export function tightText(L) {
+  return L && L.filesShown ? TIGHT_FILES_TEXT : TIGHT_TEXT;
 }
 
 /** After a resize this copy ran: the slot's layout says so at once (the next tick reads it again). */
@@ -291,17 +334,24 @@ function unfold(slot, L, show) {
 
 /**
  * `creaseworks.fold`: panel ↔ rail; a hidden panel is shown (and unfolded)
- * first. An unfolded panel of any width folds (a tight one or one under 140
- * at zoom 1.5 too: the terminals get the room back); only the rail weight
- * unfolds.
+ * first. An unfolded panel wider than RAIL_LOOK folds (a tight one or one
+ * under 140 at zoom 1.5 too: the terminals get the room back); a folded one
+ * (or one a drag left looking like the rail) unfolds to the remembered
+ * weight, and when it already has it flashes why not (`t` given): "tight".
  */
-export function fold(slot, info) {
+export function fold(slot, info, t = undefined) {
   const L = info ?? slot.layout;
   const st = panelState(slot, L);
   if (st === "hidden") return unfold(slot, L, true) ? "shown" : "failed";
-  if (st === "folded") return unfold(slot, L, false) ? "unfolded" : "failed";
+  if (st === "folded") {
+    if (!canGrow(slot, L)) {
+      if (typeof t === "number") flash(slot, tightText(L), t);
+      return "tight";
+    }
+    return unfold(slot, L, false) ? "unfolded" : "failed";
+  }
   const w = slot.widths.panel;
-  if (typeof w === "number" && w >= RAIL_BELOW) {
+  if (typeof w === "number" && w >= FULL_BELOW) {
     slot.widths.lastPanel = w;
     rememberWidth(w);
     keepWeight(slot, w);
@@ -314,10 +364,12 @@ export function fold(slot, info) {
 
 /**
  * Shows the full panel (ribbon save chip, Welcome back pill, a rail/ribbon
- * tile): "shown" / "unfolded"; "noop" when it is shown; "tight" when it is
- * unfolded but the window leaves it too narrow for the full view (drawn as the
- * rail): nothing can widen it, so the click flashes TIGHT_TEXT (r2-12: never a
- * click without a visible effect). The game never widens itself past its weight.
+ * tile): "shown" / "unfolded"; "noop" when it is shown. A folded or tight
+ * panel whose weight is under the remembered one (the rail, or a drag on a
+ * wide window) unfolds to it. One that already has it is "tight": only the
+ * window (or Files) keeps it narrow, the game never widens itself past its
+ * weight, so the click flashes why (tightText; r2-12: never a click without
+ * a visible effect).
  */
 export function show(slot, info, t = undefined) {
   const L = info ?? slot.layout;
@@ -326,15 +378,13 @@ export function show(slot, info, t = undefined) {
     unfold(slot, L, true);
     return "shown";
   }
-  if (st === "folded") {
+  if (st === "full") return "noop";
+  if (canGrow(slot, L)) {
     unfold(slot, L, false);
     return "unfolded";
   }
-  if (st === "tight") {
-    if (typeof t === "number") flash(slot, TIGHT_TEXT, t);
-    return "tight";
-  }
-  return "noop";
+  if (typeof t === "number") flash(slot, tightText(L), t);
+  return "tight";
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +522,7 @@ export function actsOnCommands(slot, role, info, t, staleMs) {
 export function runCommand(slot, name, t) {
   const c = String(name).split(":")[0];
   if (!slot.state) return "loading";
-  if (c === "fold") return fold(slot);
+  if (c === "fold") return fold(slot, undefined, t);
   if (c === "answer") {
     const r = openHelper(slot, "needs", t);
     return r.ok ? "opened" : r.why;

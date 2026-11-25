@@ -148,6 +148,23 @@ test("r2-17: a waiting fledgling reaches every needs-you surface: counts, rail, 
   assert.equal(ids.length, 3);
 });
 
+test("needsGroup: the Flock section a needs tally scrolls to, the parent's group when only fledglings wait", () => {
+  const s = seeded(3);
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working"), agent(2, "idle"), kid(3, 1, "working")]));
+  assert.equal(v(s, T0 + 1000).helpers.needsGroup, null, "nobody needs you");
+  me.act(observeAction(T0 + 5000, [agent(1, "working"), agent(2, "idle"), kid(3, 1, "blocked")]));
+  let vm = v(s, T0 + 6000);
+  assert.equal(vm.header.counts.needs, 1);
+  assert.equal(vm.helpers.groups.some((g) => g.key === "needs"), false, "no Needs you section");
+  assert.equal(vm.helpers.needsGroup, "working", "the parent's tile, which carries the waiting pip");
+  me.act(observeAction(T0 + 7000, [agent(1, "working"), agent(2, "blocked"), kid(3, 1, "blocked")]));
+  vm = v(s, T0 + 8000);
+  assert.equal(vm.helpers.needsGroup, "needs", "Needs you holds a tile");
+  s.settings.order = "workspace";
+  assert.equal(v(s, T0 + 8000).helpers.needsGroup, "all");
+});
+
 test("r2-17: a waiting fledgling another window sees is not counted here", () => {
   const s = seeded(3);
   const me = writer(s, "wA");

@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { runView, validateViews, entryForBlock, viewDocument, launchBrowser } from "../../tools/shots/shoot.mjs";
 import VIEWS, { windowScenario } from "../../mods/creaseworks/glue/views.js";
 import Creaseworks from "../../mods/creaseworks/main.js";
-import { dropSlot } from "../../mods/creaseworks/glue/live.js";
+import { dropSlot, getSlot } from "../../mods/creaseworks/glue/live.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -59,6 +59,7 @@ async function shoot(entry, themeName) {
   let vm;
   let slot;
   let role;
+  let game;
   const wrapped = {
     name: entry.name,
     size: entry.size,
@@ -69,10 +70,12 @@ async function shoot(entry, themeName) {
       vm = view.session.vm();
       slot = view.session.slot;
       role = view.session.role;
+      const st = getSlot().state;
+      game = { bank: st.bank, lifetime: st.lifetime, workshops: Object.values(st.owned || {}).reduce((a, n) => a + (Number(n) || 0), 0) };
     },
   };
   const result = await runView(Creaseworks, wrapped, themeName, { mod: "creaseworks" });
-  return { ...result, vm, slot, role };
+  return { ...result, vm, slot, role, game };
 }
 
 const CHECKS = {
@@ -87,15 +90,20 @@ const CHECKS = {
   boat: (r) => !!r.vm.mat.boat,
   "chain-7": (r) => r.vm.mat.nodes.length >= 5 && r.vm.mat.nodes.at(-1).i === 7,
   "in-step": (r) => r.vm.streak.inStep === true,
-  "flock-12": (r) => r.vm.header.counts.needs + r.vm.header.counts.finished + r.vm.header.counts.working + r.vm.header.counts.resting === 12,
+  // Needs you counts waiting fledglings too (r2-17): twelve agents plus those.
+  "flock-12": (r) => r.vm.header.counts.needs - r.vm.header.kidsWaiting + r.vm.header.counts.finished + r.vm.header.counts.working + r.vm.header.counts.resting === 12,
   "flock-64-dense": (r) => r.vm.helpers.dense === true,
   "flock-elsewhere": (r) => r.vm.helpers.elsewhere.length === 4,
   album: (r) => r.vm.helpers.album.length === 9,
   "string-locked": (r) => r.vm.string.can === false && r.vm.string.cranes > 0,
   "string-ready": (r) => r.vm.string.can === true,
   // r1-29: several sources per garland (helpers, your hands, workshops), not one "everyone else" bar.
+  // r2-23: and the String at rest, past the last wish's moment (its rise draws the strands at opacity 0).
   garlands: (r) => r.vm.string.garlands.length >= 3 &&
-    r.vm.string.garlands.every((g) => g.stripes.filter((st) => st[1] > 0).length >= 5 && g.stripes.some((st) => st[0] === "hands" && st[1] > 0)),
+    r.vm.string.garlands.every((g) => g.stripes.filter((st) => st[1] > 0).length >= 5 && g.stripes.some((st) => st[0] === "hands" && st[1] > 0)) &&
+    r.vm.string.wishMoment === null && r.vm.string.cranes > 0,
+  // r2-23: a fresh start shows a new game (a few Sheet hits), not a stocked mid-game under the banner.
+  "banner-fresh": (r) => r.game.lifetime < 100 && r.game.workshops === 0 && r.vm.string.cranes === 0,
   settings: (r) => r.vm.settings.notify.master === true,
   away: (r) => r.vm.away && r.vm.away.kind === "away",
   busy: (r) => r.vm.away && r.vm.away.kind === "busy",

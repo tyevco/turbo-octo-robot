@@ -14,6 +14,9 @@
 
 import { createController, describe } from "mock:controller.js";
 import { installMockWindow, beginRender, renderRoot, constructView, serialize, fire } from "mock:gpui-kit.js";
+// Mock-only (not re-exported by gpui-kit): the same module instance gpui-kit
+// imports, so recover() can clear the guards an interrupt leaves raised.
+import { resetRenderGuards } from "mock:gpui-core.js";
 // Evaluate the remaining built-ins now (as native modules would be), so a
 // mod's import graph is only its own files.
 import "gpui-kit";
@@ -301,9 +304,13 @@ const ops = {
   },
 
   recover() {
-    // After an interrupt nothing on the script stack ran its finally blocks.
+    // After an interrupt nothing on the script stack ran its finally blocks:
+    // not the bridge's, the controller's scope frames, nor the mock's item
+    // renderer guard (left raised, it refuses every later handler as if it
+    // were registered from a virtual list's row).
     openFrame = null;
     if (ctl) ctl.scope = null;
+    resetRenderGuards();
   },
 
   pull() {

@@ -17,6 +17,7 @@
 // the rig's process).
 
 import { newGame, serialize, apply, wishInfo } from "../engine/index.js";
+import { WISH_MOMENT } from "../engine/view.js";
 import { localDay } from "./clock.js";
 import { getSlot, dropSlot } from "./live.js";
 import * as store from "./store.js";
@@ -355,6 +356,9 @@ add("garlands", { roster: { working: 6, resting: 4, needs: 1, finished: 1 }, siz
   }
   midGame(v, 8.4e8);
   S(v).ui.tab = "string";
+  // The String at rest: past the last wish's moment (strands rise from
+  // opacity 0 until WISH_MOMENT.settleMs), so the lit cranes show (r2-23).
+  await tools.advance(WISH_MOMENT.settleMs + 1000);
 });
 add("settings", { roster: STD }, async (v) => {
   midGame(v);
@@ -383,8 +387,8 @@ add("busy", { roster: STD }, async (v, tools) => {
 
 // Save banners (DESIGN §3.8): each produced by the real store.
 add("banner-recovered", { roster: STD, files: (name) => ({ [savePath(name)]: "{{{not json", [bakPath(name)]: newSave(7) }) }, async (v) => midGame(v));
+// A fresh start shows the new game the store began (r2-23: no mid-game folds under it).
 add("banner-fresh", { roster: STD, files: (name) => ({ [savePath(name)]: '"old shape"', [bakPath(name)]: "[]" }) }, async (v) => {
-  midGame(v);
   S(v).ui.details = true;
 });
 add("banner-conflict", { roster: STD }, async (v, tools) => {

@@ -58,9 +58,21 @@ export const WRITE_STALL_MS = 60000;
  */
 export const ORPHAN_MS = 15000;
 
-/** The notices of a released claim (the save it held is made again at once). */
+/**
+ * The notices of a released Settings save tool claim (Check, Reset, Restore,
+ * Share: it may not have taken effect). A plain save cycle's claim is
+ * released quietly: the save it held is made again at once and nothing is
+ * lost (`save.writingFor`, dropClaim).
+ */
 const STALLED = "A save step stopped before finishing; saving again. A Settings save tool used just then may not have taken effect.";
 const ORPHANED = "A save step was cut off when a Creaseworks view closed; saving again. A Settings save tool used just then may not have taken effect.";
+/** A plain save cycle that stalled (no progress for WRITE_STALL_MS): a short flash, nothing lost. */
+const STALLED_FLASH = "A save step stalled; saving again.";
+/** Claims whose release is said quietly (A4: the save they held is simply made again). */
+const PLAIN_CLAIMS = Object.freeze(["cycle", "resolve"]);
+
+/** The banner shows this many graphemes of a save notice (engine view.js CLIP.notice). */
+export const NOTICE_MAX = 140;
 
 const CAS_TEXTS = ["The file changed outside Herdr", "The file changed while saving", "File exists", "os error 17"];
 
@@ -110,12 +122,15 @@ const spoken = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.roun
 
 /**
  * Claims `save.writing`; returns the claim's number. The claim records the
- * copy that made it (`env.owner`), the code generation and the time, so a
- * claim whose task herdr cancelled can be told apart (adopt, due).
+ * copy that made it (`env.owner`), the code generation, the time and what it
+ * is for (`for`: "cycle", "resolve", "check", "reset", "restore", "share"), so
+ * a claim whose task herdr cancelled can be told apart (adopt, due) and its
+ * release said only when a Settings save tool may not have taken effect.
  */
-function claim(S, env) {
+function claim(S, env, what) {
   const gen = (S.gen += 1);
   S.writing = gen;
+  S.writingFor = what;
   S.writingBy = env && typeof env.owner === "string" ? env.owner : null;
   S.writingGen = codeGeneration();
   S.writingAt = env && typeof env.now === "function" ? env.now() : null;
@@ -133,6 +148,7 @@ function release(S, gen) {
 function abandonClaim(S) {
   S.writing = null;
   S.writingBy = null;
+  S.writingFor = null;
   S.writingGen = null;
   S.writingAt = null;
   S.orphanAt = null;
@@ -223,11 +239,16 @@ function ownApplied(state, writer) {
 
 /**
  * Releases an abandoned save claim: status put right, a save made due at once.
- * `why` (a stalled or orphaned claim) is said in a notice that stays until
- * dismissed: whatever the claim was doing (a merge, a Reset) did not finish.
+ * `why` (a stalled or orphaned Settings save tool: Check, Reset, Restore,
+ * Share) is said in a notice that stays until dismissed, since that tool may
+ * not have taken effect. A plain save cycle loses nothing (its save is made
+ * again, a cut-off share or Reset is carried by `sharing` / `overwrite`): an
+ * orphaned one is released quietly (closing the panel mid-save is ordinary,
+ * r2-06), a stalled one with `quiet` as a short flash.
  */
-function dropClaim(slot, t, inflightToo = false, why = null) {
+function dropClaim(slot, t, inflightToo = false, why = null, quiet = null) {
   const S = slot.save;
+  const plain = PLAIN_CLAIMS.includes(S.writingFor);
   abandonClaim(S);
   // A main write that never settled may have landed: the next write's CAS
   // finds out (a conflict with our own text merges without counting twice).
@@ -236,10 +257,9 @@ function dropClaim(slot, t, inflightToo = false, why = null) {
   if (slot.state && !slot.readOnly) {
     markDirty(slot, t, true);
     S.urgentAt = t;
-    if (why) {
-      S.retryAt = 0;
-      setNotice(slot, "load", { kind: "recovered", text: why, at: t });
-    }
+    if (why) S.retryAt = 0;
+    if (why && !plain) setNotice(slot, "load", { kind: "recovered", text: why, at: t });
+    else if (why && quiet) flash(slot, quiet, t);
   }
   touch(slot);
 }
@@ -560,7 +580,7 @@ export async function load(slot, opts) {
   if (missingShared) {
     const gone = `Shared save not found: ${tailClip(missingShared, 40)}. Using this window's own; share again in Settings when it's back.`;
     if (!notice) notice = { kind: "recovered", text: gone, at: t0 };
-    else if (typeof notice.text === "string" && notice.kind !== "error") notice = { ...notice, text: `${gone} ${notice.text}` };
+    else if (typeof notice.text === "string" && notice.kind !== "error") notice = { ...notice, text: goneJoined(notice.text) };
     else goneNotice = { kind: "recovered", text: gone, at: t0 }; // beside an unreadable local save (a newer one wins)
   }
   slot.state = state;
@@ -570,6 +590,7 @@ export async function load(slot, opts) {
   slot.inflight = null;
   S.writing = null;
   S.writingBy = null;
+  S.writingFor = null;
   S.status = slot.readOnly ? "readonly" : "ok";
   S.savedAt = S.baseOk ? t0 : null;
   slot.notices.bak = null;
@@ -602,6 +623,19 @@ export async function load(slot, opts) {
   return true;
 }
 
+/**
+ * A missing shared save said in front of another load notice: the short form,
+ * so the whole text stays within the banner's NOTICE_MAX graphemes and the
+ * second problem (a fresh start, a loaded backup) is never cut off (r2-07).
+ */
+export function goneJoined(text) {
+  for (const lead of ["Shared save not found; using this window's own.", "Shared save not found."]) {
+    const joined = `${lead} ${text}`;
+    if (graphemes(joined).length <= NOTICE_MAX) return joined;
+  }
+  return text; // (no load notice is this long; the problem it names comes first)
+}
+
 /** The fresh-start notice text: what was missing or damaged, and what was really kept. */
 export function freshText(hadMain, kept, hadBak, keptBak) {
   const what = hadMain && hadBak ? "Save and backup were damaged." : hadMain ? "Save was damaged and there was no backup." : "Save was missing and the backup was damaged.";
@@ -624,14 +658,27 @@ function unreadableNotice(paths, message, t) {
   };
 }
 
-/** True when the ticker should start a save now (A4 cadence and back-off). Rebases timers after a clock jump. */
-export function due(slot, t) {
+/**
+ * Releases a save claim that will never settle: one with no progress for
+ * WRITE_STALL_MS, or one whose copy has been gone ORPHAN_MS. Run by due() on
+ * every tick; a closing ticker can run it before deciding whether its final
+ * write may start (session.close skips that write while a claim is held).
+ * True when no claim is held afterwards.
+ */
+export function releaseAbandoned(slot, t) {
   const S = slot.save;
   if (S.writing !== null && typeof S.writingAt === "number") {
     if (S.writingAt > t) S.writingAt = t; // the clock moved back
-    else if (t - S.writingAt > WRITE_STALL_MS) dropClaim(slot, t, true, STALLED); // never settled: released, and said
+    else if (t - S.writingAt > WRITE_STALL_MS) dropClaim(slot, t, true, STALLED, STALLED_FLASH); // never settled: released, and said
   }
   if (orphaned(slot, t)) dropClaim(slot, t, true, ORPHANED);
+  return S.writing === null;
+}
+
+/** True when the ticker should start a save now (A4 cadence and back-off). Rebases timers after a clock jump. */
+export function due(slot, t) {
+  const S = slot.save;
+  releaseAbandoned(slot, t);
   if (!slot.state || slot.readOnly || slot.loading || S.writing !== null || slot.inflight) return false;
   rebaseClock(slot, t);
   if (t < S.retryAt) return false;
@@ -894,7 +941,18 @@ function fail(slot, message, t) {
 export async function cycle(slot, env) {
   const S = slot.save;
   if (!slot.state || slot.readOnly || S.writing !== null) return false;
-  const gen = claim(S, env);
+  const sleeps = typeof (env && env.sleep) === "function";
+  if (sleeps) {
+    // The serialisation runs in a task step of its own, never with the tick
+    // (or close) that started the save: on a save a year old each is a large
+    // share of herdr's 500 ms budget per step. The yield comes before the
+    // claim, so none is held across it: session.close skips its final write
+    // while a claim is held, and a view closing in that gap would otherwise
+    // cancel this task before any write started.
+    await pause(env);
+    if (!slot.state || slot.readOnly || S.writing !== null) return false;
+  }
+  const gen = claim(S, env, "cycle");
   S.status = "saving";
   touch(slot);
   const stale = () => S.writing !== gen;
@@ -902,21 +960,25 @@ export async function cycle(slot, env) {
   let merged = false;
   const refunds = [];
   try {
+    // True while this step has done nothing since the yield above.
+    let freshStep = sleeps;
     if (S.sharing) {
       // A "Share a save" cut off after its pointer write (r2-08): follow the pointer first.
+      freshStep = false;
       if (!(await settleShare(slot, env, stale))) return false;
     }
     if (S.unreadable) {
+      freshStep = false;
       const r = await recoveryWrite(slot, env, stale);
       if (r !== "main") return r === true;
     }
     for (let attempt = 0; attempt <= MERGE_RETRIES; attempt++) {
-      if (attempt > 0 || typeof (env && env.sleep) === "function") {
+      if (attempt > 0 || (sleeps && !freshStep)) {
         // The serialisation runs in a task step of its own, never after a
-        // merge (parse, replay, advance), an overwrite read or the tick that
-        // started the save: on a save a year old each of those is a large
-        // share of herdr's 500 ms budget per step, and its interrupt cannot be
-        // caught (the claim would stall for WRITE_STALL_MS).
+        // merge (parse, replay, advance) or an overwrite read: on a save a
+        // year old each of those is a large share of herdr's 500 ms budget
+        // per step, and its interrupt cannot be caught (the claim would stall
+        // for WRITE_STALL_MS).
         await pause(env);
         if (stale()) return false;
         progress(slot, env);
@@ -1030,12 +1092,18 @@ async function settleShare(slot, env, stale) {
       want = undefined;
     }
   }
-  S.sharing = null;
-  if (want === undefined) return true; // can't tell: the file in use stays (the next load says what it finds)
+  if (want === undefined) {
+    S.sharing = null;
+    return true; // can't tell: the file in use stays (the next load says what it finds)
+  }
   const was = slot.paths.shared || null;
-  slot.paths = slotPaths(slot.home, want);
-  const bak = await readOrError(slot.paths.bak);
-  if (stale()) return false;
+  const next = slotPaths(slot.home, want);
+  const bak = await readOrError(next.bak);
+  if (stale()) return false; // nothing switched yet: the next cycle settles it again
+  // From here to the end nothing awaits: the paths, base, backup and
+  // ownApplied switch together, and `sharing` is cleared only once they have
+  // (r2-08: a claim lost in between left new paths with the old file's base).
+  slot.paths = next;
   slot.bakText = bak.error === null ? bak.text : null;
   slot.bakAt = null;
   slot.bakState = null;
@@ -1044,6 +1112,7 @@ async function settleShare(slot, env, stale) {
   S.ownApplied = 0; // none of this window's saves may be in that file yet
   slot.baseText = null;
   S.baseOk = false;
+  S.sharing = null;
   const t = env.now();
   markDirty(slot, t, true);
   S.urgentAt = t;
@@ -1070,7 +1139,7 @@ export async function resolveInflight(slot, env = null) {
   const inf = slot.inflight;
   const S = slot.save;
   if (!inf || S.writing !== null) return; // a live claim settles its own write
-  const gen = claim(S, env);
+  const gen = claim(S, env, "resolve");
   try {
     const r = await readOrError(slot.paths.save);
     if (S.writing !== gen) return;
@@ -1112,7 +1181,7 @@ export async function checkSave(slot, env) {
   const S = slot.save;
   if (!slot.state) return "busy";
   if (S.writing !== null) return busy(slot, env);
-  const gen = claim(S, env);
+  const gen = claim(S, env, "check");
   const stale = () => S.writing !== gen;
   try {
     const r = await readOrError(slot.paths.save);
@@ -1159,7 +1228,7 @@ async function replaceGame(slot, env, make, reason) {
   const S = slot.save;
   if (!slot.state) return "busy";
   if (S.writing !== null) return busy(slot, env);
-  const gen = claim(S, env);
+  const gen = claim(S, env, reason);
   const stale = () => S.writing !== gen;
   try {
     const next = await make(stale);
@@ -1238,7 +1307,7 @@ export async function sharePath(slot, env, path) {
     env.flash("A shared save path must be absolute and end in .json.");
     return "invalid";
   }
-  const gen = claim(S, env);
+  const gen = claim(S, env, "share");
   const stale = () => S.writing !== gen;
   try {
     const joining = target !== "" && target !== local;

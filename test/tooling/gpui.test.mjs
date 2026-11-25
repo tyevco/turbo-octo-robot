@@ -12,7 +12,7 @@ import * as base from "../../tools/mock/gpui-base.js";
 import { extract, render } from "../../tools/mock/extract-methods.mjs";
 
 const { View, div, svg, image, list, uniform_list, PathBuilder, Background } = kit;
-const { h_flex, v_flex, Button, Switch, Checkbox, Scrollbar, ScrollHandle, v_virtual_list, VirtualListScrollHandle, TextView } = base;
+const { h_flex, v_flex, Button, Switch, Checkbox, Scrollbar, ScrollHandle, v_virtual_list, h_virtual_list, VirtualListScrollHandle, TextView } = base;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -504,4 +504,35 @@ test("scroll handles: not created in render or layout, unusable once released, s
   } finally {
     ctl.dispose();
   }
+});
+
+// Review r2-25: lazy lists rendered up to 500 rows, not the visible range the
+// shell asks for, so QuickJS layout timings overstated a long list's cost.
+test("lazy lists materialise only the rows in view at scroll offset 0 (base visible_range)", () => {
+  const ranges = [];
+  const make = (fn, id, n, sizes) => fn(id, n, sizes, (i) => `${id}${i}`, (range) => {
+    ranges.push([id, range.start, range.end]);
+    const out = [];
+    for (let i = range.start; i < range.end; i++) out.push(div());
+    return out;
+  });
+  const rows = (el, options = {}) => kit.serialize(el, { cx: {}, ...options }).children.length;
+  // 280 px of 28 px rows: ten end inside, one crosses, one of overdraw
+  assert.equal(rows(make(v_virtual_list, "a", 7300, 28).h(280)), 12);
+  assert.deepEqual(ranges.at(-1), ["a", 0, 12]);
+  assert.equal(rows(make(v_virtual_list, "b", 7300, 28).h("17.5rem")), 12);
+  assert.equal(rows(make(v_virtual_list, "c", 7300, 28).h(400).max_h(280)), 12);
+  assert.equal(rows(make(v_virtual_list, "d", 7300, 28).h(280).h_full()), 34, "h_full fills the 900 px window");
+  assert.equal(rows(make(v_virtual_list, "e", 7300, 28).h("50%"), { viewport: { height: 560 } }), 12);
+  assert.equal(rows(make(v_virtual_list, "f", 7300, 28)), 34, "no extent of its own: the window's");
+  assert.equal(rows(make(v_virtual_list, "g", 4, [100, 100, 100, 100]).h(150)), 3, "uneven sizes, never past the end");
+  assert.equal(rows(make(v_virtual_list, "h", 3, 28).h(280)), 3);
+  assert.equal(rows(make(v_virtual_list, "i", 0, 28).h(280)), 0);
+  assert.equal(rows(make(h_virtual_list, "j", 7300, 40).w(200).h(10)), 7, "horizontal lists use their width");
+  assert.equal(rows(make(v_virtual_list, "k", 7300, 0).h(280)), 500, "zero-size rows stop at maxItems");
+  assert.equal(rows(make(v_virtual_list, "l", 7300, 0).h(280), { maxItems: 20 }), 20);
+  // `list` / `uniform_list` carry no sizes: rows are taken as one rem high
+  assert.equal(rows(make((id, n, _s, k, r) => uniform_list(id, n, k, r), "m", 7300).h(160)), 12);
+  const perItem = list("n", 7300, (i) => `n${i}`, () => div());
+  assert.equal(rows(perItem.h(32)), 4);
 });

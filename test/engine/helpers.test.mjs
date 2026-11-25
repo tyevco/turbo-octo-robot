@@ -16,10 +16,17 @@ test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
   assert.match(look.name, /^[A-Za-z]+$/);
 });
 
-// Review r2-28: two syllables can spell a sexualised slang word or a
-// well-known character's name. Each such pair takes the next pair in table
-// order that is not skipped (§5.1); NAMES is that table, written out.
-const NEVER = ["Loli", "Nob", "Yuri", "Miku", "Riku", "Yuna", "Zero", "Mona", "Rito", "Pipo", "Loki", "Haku", "Tali"];
+// Review r2-28: two syllables can spell a slur, a sexualised or vulgar slang
+// word, a deity's or a well-known character's name. Each such pair takes the
+// next pair in table order that is not skipped (§5.1); NAMES is that table,
+// written out. NEVER is the review's list, kept here independently of
+// NAME_SKIP so that dropping one from the skip list fails this test (round 2
+// added the second and third rows: "Haku" was first remapped to "Haro").
+const NEVER = [
+  "Loli", "Nob", "Yuri", "Miku", "Riku", "Yuna", "Zero", "Mona", "Rito", "Pipo", "Loki", "Haku", "Tali",
+  "Haro", "Rin", "Moro", "Zemo", "Kapo", "Pito", "Misa", "Kon",
+  "Han", "Mob", "Momo", "Kato", "Koro", "Kali", "Kaki", "Feto", "Taki", "Suki", "Sub",
+];
 
 test("helper names: none of the 192 is a skipped word or borrowed name; NAMES is NAME_A × NAME_B with skips remapped (§5.1, r2-28)", () => {
   const { NAME_A, NAME_B, NAME_SKIP, NAMES } = engine.CONTENT;
@@ -47,6 +54,11 @@ test("helper names: none of the 192 is a skipped word or borrowed name; NAMES is
     }
   }
   assert.equal(seen.size, 192 - NAME_SKIP.length);
+  assert.equal(seen.size, 160);
+  // no name holds more than 4 of the 192 slots (remaps do not pile up on one name)
+  const per = new Map();
+  for (const x of NAMES) per.set(x, (per.get(x) || 0) + 1);
+  assert.ok(Math.max(...per.values()) <= 4, JSON.stringify([...per].filter(([, v]) => v > 3)));
 });
 
 test("a helper or Album record named before the skip list is renamed: present, whole and packed (§5.1, r2-28)", () => {

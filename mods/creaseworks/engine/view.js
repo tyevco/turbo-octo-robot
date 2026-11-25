@@ -383,7 +383,28 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
     // built there (opts.album false = folded: none), counted everywhere.
     album: tilesShown && o.album !== false ? albumOf(state, t, style, idx) : [],
     albumCount: albumCount(state, idx),
+    needsGroup: needsGroupOf(roster),
   };
+}
+
+/**
+ * The Flock section a "needs" tally or chip scrolls to: "needs" while Needs
+ * you holds a tile; "all" in workspace order; else (only waiting fledglings,
+ * each a pip on its parent's tile) the group holding the longest waiting
+ * one's parent, or "elsewhere". Null when nobody needs you.
+ */
+function needsGroupOf(roster) {
+  const first = roster.needs[0];
+  if (!first) return null;
+  if (roster.workspace) return roster.ordered.length ? "all" : null;
+  if (roster.groups.needs.length) return "needs";
+  const pid = first.parent;
+  for (const key of GROUP_ORDER) {
+    const list = roster.groups[key];
+    for (let i = 0; i < list.length; i++) if (list[i].id === pid) return key;
+  }
+  for (let i = 0; i < roster.elsewhere.length; i++) if (roster.elsewhere[i].id === pid) return "elsewhere";
+  return null;
 }
 
 function tile(state, t, h, elsewhere, roster, loops) {

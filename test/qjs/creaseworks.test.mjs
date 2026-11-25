@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readFileSync } from "node:fs";
 import { createHost, BUDGETS } from "../../tools/qjs/harness.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -505,7 +506,7 @@ async function churnRun(days, tag, maxKiB = 512) {
   } catch (e) {
     leak = e;
   }
-  return { slowest, leak };
+  return { slowest, leak, text };
 }
 
 test("a save after 120 days of 20 agents a day loads, saves within budget and frees cleanly (Album compaction, R13)", { timeout: 120000 }, async () => {
@@ -524,9 +525,10 @@ test("a save after a year of 20 agents a day loads and saves within budget (Albu
 // Format 3 re-hashes only the chunks that changed; twice the year (≈ 590 KiB)
 // must stay in budget, load included, and under herdr's 1 MiB write limit.
 let twoYearLeak = null;
+let twoYearText = null;
 
 test("a save after two years of 20 agents a day loads and saves within budget (chunked save check, R13)", { timeout: 300000 }, async () => {
-  ({ leak: twoYearLeak } = await churnRun(730, "churn730", 1024));
+  ({ leak: twoYearLeak, text: twoYearText } = await churnRun(730, "churn730", 1024));
 });
 
 test("the QuickJS runtime frees cleanly after the two-year save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
@@ -535,4 +537,77 @@ test("the QuickJS runtime frees cleanly after the two-year save cycle", { todo: 
 
 test("the QuickJS runtime frees cleanly after the year-size save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
   if (yearLeak) throw yearLeak;
+});
+
+// Review r2-01 (residual budget): a load and a CAS merge each parse and verify
+// the whole save. parseSaveSteps splits that work (STEP_HELPERS helpers per
+// step) so the glue can yield between steps. Measured here on the two-year
+// save in its own QuickJS-ng runtime with herdr's sandbox installed (frozen
+// prototypes): every step well inside the budget, and the result the same as
+// parseSave's (same save text when serialised again).
+test("parseSaveSteps: a two-year save parses in steps far below the 500 ms budget, with parseSave's result (r2-01)", { timeout: 120000 }, async () => {
+  if (twoYearText === null) ({ text: twoYearText } = await churnSave(730));
+  const { newQuickJSWASMModuleFromVariant } = await import("quickjs-emscripten-core");
+  const { default: variant } = await import("@jitl/quickjs-ng-wasmfile-release-sync");
+  const QJS = await newQuickJSWASMModuleFromVariant(variant);
+  const rt = QJS.newRuntime();
+  rt.setMemoryLimit(256 * 1024 * 1024);
+  rt.setMaxStackSize(256 * 1024);
+  rt.setModuleLoader((name) => readFileSync(name, "utf8"), (base, name) => join(dirname(base), name));
+  const vm = rt.newContext();
+  const evalOk = (code, opts) => {
+    const r = vm.evalCode(code, opts?.name ?? "eval.js", opts);
+    if (r.error) {
+      const e = vm.dump(r.error);
+      r.error.dispose();
+      throw new Error(JSON.stringify(e));
+    }
+    return r.value;
+  };
+  const dumpOk = (code) => {
+    const h = evalOk(code);
+    const v = vm.dump(h);
+    h.dispose();
+    return v;
+  };
+  try {
+    const install = evalOk(readFileSync(join(repo, "tools", "qjs", "sandbox.js"), "utf8"));
+    const policy = vm.newObject();
+    const installed = vm.callFunction(install, vm.undefined, policy);
+    (installed.value ?? installed.error).dispose();
+    policy.dispose();
+    install.dispose();
+    const textHandle = vm.newString(twoYearText);
+    vm.setProp(vm.global, "TEXT", textHandle);
+    textHandle.dispose();
+    evalOk(
+      `import { parseSave, parseSaveSteps, serialize } from "./engine/save-codec.js";
+       globalThis.STEPS = parseSaveSteps(TEXT);
+       globalThis.WHOLE = () => serialize(parseSave(TEXT).state) === TEXT;
+       globalThis.SAME = (r) => r.ok === true && serialize(r.state) === TEXT;`,
+      { type: "module", name: join(MOD, "qjs-steps.js") },
+    ).dispose();
+    assert.equal(dumpOk("Object.isFrozen(Object.prototype) && Object.isFrozen(Array.prototype)"), true);
+    const ms = [];
+    for (;;) {
+      const t = performance.now();
+      const h = evalOk("globalThis.LAST = STEPS.next(); LAST.done");
+      const done = vm.dump(h);
+      h.dispose();
+      ms.push(performance.now() - t);
+      if (done) break;
+      assert.ok(ms.length < 10000, "the steps end");
+    }
+    assert.equal(dumpOk("SAME(LAST.value)"), true, "stepped parse = the file");
+    assert.equal(dumpOk("WHOLE()"), true, "parseSave = the file");
+    const slowest = Math.max(...ms);
+    const total = ms.reduce((a, b) => a + b, 0);
+    assert.ok(ms.length >= 20, `${ms.length} steps`);
+    assert.ok(slowest < 150, `slowest parse step ${slowest} ms`);
+    log(`qjs parseSaveSteps on the two-year save (${(twoYearText.length / 1024).toFixed(0)} KiB): ${ms.length} steps, ` +
+      `slowest ${f1(slowest)} ms, total ${f1(total)} ms`);
+  } finally {
+    vm.dispose();
+    rt.dispose(); // every handle was released: the runtime frees cleanly
+  }
 });

@@ -186,8 +186,17 @@ test("envelopes of helpers compacted into the Album are cashed in; none piles up
   assert.ok(Math.abs(v.created - (v.opened + v.converted + waitingUnits(s))) < 1e-9);
   assert.ok(v.converted > 0, "timed envelopes of compacted helpers converted to folds");
   assert.ok((s.stats.bySource.overflow || 0) > 0);
-  const note = s.notices.find((n) => n.kind === "settled");
+  // the cash-in is said (review round 2: a "settled" kind had no view and never expired): an
+  // overflow footer note, the same conversion, which the view shows and which expires
+  const note = s.notices.find((n) => n.kind === "overflow" && n.data.settled === true);
   assert.ok(note && note.data.amount > 0 && note.data.count >= 1, JSON.stringify(s.notices));
+  assert.ok(!s.notices.some((n) => n.kind === "settled"));
+  const shown = engine.view(s, t, { writer: "wA" }).notices.filter((n) => n.at === note.at && n.kind === "overflow");
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].place, "footer");
+  assert.match(shown[0].text, /^\+\S+ from a full envelope \((\d+ helpers long gone|[A-Z][a-z]+( \d+)?, long gone)\)$/);
+  engine.advance(s, t + K.noteLifeMs + 1000);
+  assert.ok(!s.notices.includes(note), "it expires like any footer note");
   // every compact record still packs, and the save round-trips
   const doc = JSON.parse(engine.serialize(s));
   for (const h of compact) assert.ok(Array.isArray(doc.state.helpers[h.id]), h.id);
@@ -213,10 +222,17 @@ test("an envelope or check-in on a compact record (an older save) never keeps it
   s.stats.units.created += 4;
   me.act({ t: (t += 1000), type: "open", helperId: a.id });
   me.act({ t: (t += 1000), type: "checkin", helperId: c.id });
+  // a notice of the build before this one, a kind the view never showed and nothing expired
+  s.notices.push({ kind: "settled", at: t, data: { amount: 12, count: 1, name: "Pib" } });
   const bank = s.bank;
   me.act(observeAction((t += 1000), []));
   assert.deepEqual(Object.keys(s.envelopes), []);
   assert.ok(s.bank > bank, "the waiting ones were paid");
+  assert.ok(!s.notices.some((n) => n.kind === "settled"), JSON.stringify(s.notices));
+  const old = s.notices.find((n) => n.data && n.data.amount === 12);
+  assert.deepEqual({ kind: old.kind, name: old.data.name, settled: old.data.settled }, { kind: "overflow", name: "Pib, long gone", settled: true });
+  const now = s.notices.find((n) => n.data && n.data.settled && n.data.count === 2);
+  assert.equal(now.data.name, "2 helpers long gone");
   for (const h of [a, b, c]) {
     assert.equal(h.compact, true);
     assert.equal(h.stats.envelopes, 0);

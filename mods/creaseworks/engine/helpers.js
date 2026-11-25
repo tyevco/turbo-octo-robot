@@ -53,20 +53,25 @@ export function groupFor(h, writerId) {
   return GROUP_OF[h.status] || "resting";
 }
 
-// The present-helper index is cached on the state under a symbol key (never
-// serialised, dropped by cloneState) and rebuilt after any roster change.
-const INDEX = Symbol("creaseworks/helper-index");
+// The present-helper index is cached on the state (never serialised, dropped by
+// cloneState) and rebuilt after any roster change. Its key is a registry
+// symbol, the same in every code generation, so the state a hot reload hands
+// over keeps one index, not one per generation (glue/live.js: the slot holds
+// plain data only; the index is a plain object of arrays). `shape` tells
+// generations whose index differs apart: another shape is rebuilt, never read.
+const INDEX = Symbol.for("creaseworks/helper-index");
+const INDEX_SHAPE = 1;
 
 /** Forget the cached index (call after adding, removing or moving a helper to or from the Album). */
 export function rosterChanged(state) {
-  state[INDEX] = null;
+  if (Object.hasOwn(state, INDEX)) state[INDEX] = null;
 }
 
 /** Present helpers (not in the Album), split into all and pane helpers. */
 export function indexHelpers(state) {
   const hs = state.helpers;
-  const cached = state[INDEX];
-  if (cached && cached.map === hs) return cached;
+  const cached = Object.hasOwn(state, INDEX) ? state[INDEX] : null;
+  if (cached && cached.map === hs && cached.shape === INDEX_SHAPE) return cached;
   const present = [];
   const panes = [];
   const ids = Object.keys(hs);
@@ -76,8 +81,20 @@ export function indexHelpers(state) {
     present.push(h);
     if (h.kind === "pane") panes.push(h);
   }
-  const idx = { map: hs, present, panes };
-  state[INDEX] = idx;
+  const idx = Object.create(null);
+  idx.shape = INDEX_SHAPE;
+  idx.map = hs;
+  idx.present = present;
+  idx.panes = panes;
+  if (Object.hasOwn(state, INDEX)) state[INDEX] = idx;
+  else if (Object.isExtensible(state)) {
+    // A build before this one kept its index under a symbol of its own code
+    // generation: handed over by a hot reload, it is dropped here, once.
+    for (const k of Object.getOwnPropertySymbols(state)) {
+      if (k.description === INDEX.description && Object.getOwnPropertyDescriptor(state, k).configurable) delete state[k];
+    }
+    Object.defineProperty(state, INDEX, { value: idx, writable: true, configurable: true, enumerable: false });
+  }
   return idx;
 }
 
@@ -678,6 +695,7 @@ export function prune(state, t, ctx, ev) {
     if (excess !== n0) rosterChanged(state);
   }
   if (ctx && ev) settleOld(state, ctx, t, ev);
+  settledNotices(state);
   for (const w in state.writersSeen) {
     if (t - state.writersSeen[w] > K.writerPruneMs) {
       delete state.writersSeen[w];
@@ -689,7 +707,10 @@ export function prune(state, t, ctx, ev) {
 /**
  * Cash in every envelope whose helper's record is compact or gone from the
  * save (§6.1, R13): at most one footer notice per call. The record stays
- * compact (settleEnvelope adds only to its folds).
+ * compact (settleEnvelope adds only to its folds). The notice is an
+ * "overflow" note (the same conversion, so the view shows it and it expires
+ * after K.noteLifeMs like one; `settled` marks it): "+3.2K from a full
+ * envelope (Pib, long gone)", or "(4 helpers long gone)" for several.
  */
 function settleOld(state, ctx, t, ev) {
   const hs = state.helpers;
@@ -703,7 +724,24 @@ function settleOld(state, ctx, t, ev) {
   let amount = 0;
   for (const id of ids) amount += settleEnvelope(state, ctx, id, t, ev);
   const h = ids.length === 1 ? hs[ids[0]] : undefined;
-  pushNotice(state, { kind: "settled", at: t, data: { amount, count: ids.length, name: h ? h.name : null } });
+  pushNotice(state, { kind: "overflow", at: t, data: { amount, count: ids.length, settled: true, name: settledWho(h, ids.length) } });
+}
+
+/** The name part of a settled-envelope notice. */
+function settledWho(h, count) {
+  if (count > 1) return `${count} helpers long gone`;
+  return h ? `${h.name}, long gone` : "a helper long gone";
+}
+
+/** A "settled" notice of the build before this one (never shown, never expiring) becomes the overflow note it stands for. */
+function settledNotices(state) {
+  for (const n of state.notices) {
+    if (n.kind !== "settled") continue;
+    const d = n.data && typeof n.data === "object" ? n.data : {};
+    const count = typeof d.count === "number" ? d.count : 1;
+    n.kind = "overflow";
+    n.data = { amount: typeof d.amount === "number" ? d.amount : 0, count, settled: true, name: count > 1 ? settledWho(null, count) : d.name ? `${d.name}, long gone` : settledWho(null, 1) };
+  }
 }
 
 /** Credit per-helper production shares (for the Flock card and the garland). */

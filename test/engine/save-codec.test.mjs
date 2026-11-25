@@ -465,3 +465,125 @@ test("chunked check: integer-like, zero and prototype-named helper ids round-tri
   assert.equal(engine.serialize(engine.cloneState(back.state)), text);
   assert.equal(back.state.helpers.__proto__.id, "__proto__");
 });
+
+// Review r2-01 (memory across hot reload): the digest cache rides on the live
+// state, which the slot hands to the next code generation. It is plain data
+// under a registry symbol, so a reload's first save replaces it instead of
+// leaving the old generation's cache (≈ the save's size) behind for good.
+test("the digest cache is one plain-data, non-enumerable entry across code generations; an older build's orphan is dropped (r2-01)", async () => {
+  const gen2 = await import("../../mods/creaseworks/engine/save-codec.js?generation-2");
+  assert.notEqual(gen2.serialize, engine.serialize, "a second module instance");
+  const s = seeded(61);
+  const me = writer(s, "w-0a1b2c3d4e");
+  churn(s, me, 3, 10, 1);
+  // a build before this one cached under a symbol of its own generation
+  const ORPHAN = Symbol("creaseworks/save-digests");
+  s[ORPHAN] = new Map([["x", "00000000"]]);
+  s[Symbol("creaseworks/helper-index")] = { map: null, present: [], panes: [] };
+  delete s[Symbol.for("creaseworks/helper-index")];
+  const a = engine.serialize(s);
+  const b = gen2.serialize(s);
+  assert.equal(b, a);
+  me.act(observeAction(s.clock + 1000, [agent(4242)]));
+  const c = gen2.serialize(s);
+  assert.equal(engine.serialize(s), c);
+  assert.equal(c, engine.serialize(engine.cloneState(s)));
+  // the engine's caches on the state: one each, under registry symbols (the helper index too, helpers.js)
+  const all = Object.getOwnPropertySymbols(s);
+  assert.deepEqual(all.map((k) => Symbol.keyFor(k)).sort(), ["creaseworks/helper-index", "creaseworks/save-digests"], "one of each, the orphans gone");
+  for (const k of all) assert.equal(Object.getOwnPropertyDescriptor(s, k).enumerable, false);
+  const { indexHelpers } = await import("../../mods/creaseworks/engine/helpers.js");
+  const idx = indexHelpers(s);
+  assert.equal(s[Symbol.for("creaseworks/helper-index")], idx);
+  assert.equal(Object.getPrototypeOf(idx), null);
+  assert.ok(Array.isArray(idx.present) && Array.isArray(idx.panes));
+  const syms = [Symbol.for("creaseworks/save-digests")];
+  const d = Object.getOwnPropertyDescriptor(s, syms[0]);
+  assert.equal(d.enumerable, false);
+  const cache = d.value;
+  // plain data only (glue/live.js slot contract): no Map, no class instance
+  assert.equal(Object.getPrototypeOf(cache), null);
+  assert.deepEqual(Object.keys(cache).sort(), ["digests", "rule", "texts"]);
+  assert.equal(cache.rule, SAVE_VERSION);
+  assert.ok(Array.isArray(cache.texts) && cache.texts.every((x) => typeof x === "string"));
+  assert.ok(cache.digests.every((x) => /^[0-9a-f]{8}$/.test(x)));
+  assert.equal(cache.texts.length, cache.digests.length);
+  assert.equal(JSON.parse(JSON.stringify(cache)).texts.length, cache.texts.length, "survives a JSON round trip");
+  // a cache of another rule is ignored (never trusted), then replaced
+  cache.rule = SAVE_VERSION + 1;
+  cache.digests = cache.digests.map(() => "deadbeef");
+  assert.equal(engine.serialize(s), c);
+  assert.equal(s[syms[0]].rule, SAVE_VERSION);
+});
+
+// Review r2-01 (residual budget): a load or a CAS merge parses and verifies the
+// whole save; parseSaveSteps splits that work so the glue can yield between
+// task steps (the QuickJS timing is in test/qjs/creaseworks.test.mjs).
+test("parseSaveSteps gives parseSave's result for every kind of input, in steps of at most STEP_HELPERS helpers (r2-01)", async () => {
+  const { parseSaveSteps, STEP_HELPERS } = await import("../../mods/creaseworks/engine/save-codec.js");
+  const run = (text) => {
+    const it = parseSaveSteps(text);
+    let n = 0;
+    let r = it.next();
+    while (!r.done) {
+      n++;
+      r = it.next();
+    }
+    return { r: r.value, n };
+  };
+  const s = seeded(71);
+  const me = writer(s, "w-5e6f7a8b9c");
+  churn(s, me, 40, 100, 1);
+  const n = Object.keys(s.helpers).length;
+  assert.ok(n > 2 * STEP_HELPERS, `${n} helpers`);
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  const newerDoc = { ...doc, version: SAVE_VERSION + 1 };
+  const flip = text.replace(/"folds":(\d)/, (m, d) => `"folds":${(Number(d) + 1) % 10}`);
+  const cases = {
+    ok: text,
+    old1: oldFormat(text, 1),
+    old2: oldFormat(text, 2),
+    newer: JSON.stringify(newerDoc),
+    newerUnverified: JSON.stringify({ ...newerDoc, check: "00000000" }),
+    newerState: (() => {
+      const st = { ...doc.state, version: engine.VERSION + 1 };
+      return `{"format":"creaseworks-save","version":${SAVE_VERSION},"check":"${saveCheck(st)}","state":${JSON.stringify(st)}}`;
+    })(),
+    check: flip,
+    parse: text.slice(0, -10),
+    format: '{"format":"other","version":3,"check":"x","state":{}}',
+    shape: (() => {
+      const st = { ...doc.state, bank: -1 };
+      return `{"format":"creaseworks-save","version":${SAVE_VERSION},"check":"${saveCheck(st)}","state":${JSON.stringify(st)}}`;
+    })(),
+    badPacked: (() => {
+      const st = JSON.parse(JSON.stringify(doc.state));
+      const id = Object.keys(st.helpers).find((k) => Array.isArray(st.helpers[k]));
+      st.helpers[id] = [0, 1];
+      return `{"format":"creaseworks-save","version":${SAVE_VERSION},"check":"${saveCheck(st)}","state":${JSON.stringify(st)}}`;
+    })(),
+    notText: 42,
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    const whole = engine.parseSave(input);
+    const { r, n: steps } = run(input);
+    assert.equal(r.ok, whole.ok, name);
+    assert.equal(r.reason, whole.reason, name);
+    assert.equal(Boolean(r.state), Boolean(whole.state), name);
+    if (r.state) assert.equal(engine.canonicalState(r.state), engine.canonicalState(whole.state), name);
+    if (name === "ok") {
+      assert.equal(engine.serialize(r.state), text);
+      // the check, the unpacking and the validation each yield every STEP_HELPERS helpers
+      assert.ok(steps >= 3 * Math.floor(n / STEP_HELPERS), `${steps} steps for ${n} helpers`);
+    }
+  }
+  assert.equal(engine.parseSave(cases.newer).reason, "newer");
+  assert.ok(engine.parseSave(cases.newer).state, "a verified newer file is shown read-only");
+  assert.equal(engine.parseSave(cases.newerUnverified).reason, "newer", "an unverifiable newer file is never 'damaged'");
+  assert.equal(engine.parseSave(cases.newerState).reason, "newer");
+  assert.equal(engine.parseSave(cases.check).reason, "check");
+  assert.equal(engine.parseSave(cases.shape).reason, "shape");
+  assert.equal(engine.parseSave(cases.badPacked).reason, "shape");
+  assert.equal(engine.parseSave(cases.old1).ok, true);
+});

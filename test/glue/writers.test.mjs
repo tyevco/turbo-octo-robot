@@ -432,11 +432,13 @@ test("r2-03: a CAS merge takes in, parses, replays and serialises in separate ta
   click(A, t + 10);
   otherWriterSaves(w.ctl, t + 5);
   const seq = [];
+  const claims = [];
   const calls = () => w.ctl.calls.filter((c) => c.fn === "readTextFile" || c.fn === "writeTextFile").length;
   const sliced = {
     now: () => Date.now(),
     sleep: () => {
       seq.push(`sleep@${calls()}`);
+      claims.push(A.save.writing);
       return Promise.resolve();
     },
   };
@@ -448,6 +450,36 @@ test("r2-03: a CAS merge takes in, parses, replays and serialises in separate ta
   // Yields: before the first serialisation; after the read settles (before the parse);
   // after the parse (before replay and advance); before the merged serialisation.
   assert.deepEqual(seq, ["sleep@0", "sleep@2", "sleep@2", "sleep@2"]);
+  assert.equal(claims[0], null, "the first yield comes before the claim (r2-03 review)");
   assert.equal(parsed(w.ctl).state.applied.wB, 1);
   assert.equal(parsed(w.ctl).state.applied.wA, A.seq);
+});
+
+test("r2-03 review: no claim is held across the yield before the first write, so a close in that gap still writes", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 5, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  A.bakText = A.baseText;
+  A.bakAt = t;
+  click(A, t + 10);
+  let wake = null;
+  const gate = { now: () => Date.now(), sleep: () => new Promise((r) => (wake = r)) };
+  w.ctl.setNow(t + 1000);
+  let first;
+  await w.ctl.dispatch("task", null, () => {
+    first = store.cycle(A, gate);
+  });
+  assert.equal(typeof wake, "function", "the cycle is yielding");
+  assert.equal(A.save.writing, null, "no claim held while it yields (session.close skips its final write only while one is)");
+  // session.close's final write, made in that gap, goes ahead.
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
+  assert.equal(parsed(w.ctl).state.applied.wA, A.seq);
+  const before = w.ctl.readFile(SAVE);
+  await w.ctl.dispatch("task", null, () => wake());
+  await w.ctl.flush();
+  assert.equal(await first, true, "the yielded cycle then saves as usual, onto the text just written");
+  assert.equal(w.ctl.readFile(SAVE), before, "the same game, nothing doubled");
+  assert.equal(A.notice, null);
+  assert.equal(A.save.writing, null);
 });

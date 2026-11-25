@@ -18,7 +18,46 @@ import { button, guarded, hoverOn, text, toggle } from "./widgets.js";
 import { isFolded } from "./flock.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const SHOP_CLIP = Object.freeze({ name: 22, owned: 6, effect: 44, cost: 10, eta: 16, tooltip: 80, segment: 8, more: 28 });
+export const SHOP_CLIP = Object.freeze({ name: 32, owned: 6, effect: 64, cost: 10, eta: 16, tooltip: 80, segment: 8, more: 28 });
+
+/**
+ * A row's text column (r2-24): ≈ px a grapheme for the name (13/600, 12/600
+ * on a tier sub-row) and the effect (11/400), its 14 px lines, and how many
+ * lines the effect may wrap to (2 in a 52 px row, 1 in a 36 px sub-row).
+ */
+export const ROW_TEXT = Object.freeze({ namePx: 7.2, subNamePx: 6.6, effectPx: 6.2, line: 14, lines: 2, subLines: 1 });
+
+/**
+ * The px a shop row leaves its name and effect at panel width `width`: 8 px
+ * tab padding each side, the row's left pad, icon, two 8 px gaps, 4 px right
+ * pad and the 72 px buy button (with the best-buy diamond, 12 more).
+ */
+export function rowTextWidth(width, sub = false, best = false) {
+  const row = Math.max(160, num(width, 320)) - 16;
+  return Math.max(40, row - (sub ? 32 : 10) - (sub ? 20 : 28) - 16 - 4 - 72 - (best ? 12 : 0));
+}
+
+/**
+ * What a row draws for `name` / `effect` in `px` (r2-24): the name cut to one
+ * line and the effect to its lines, by estimate, so gpui never has to cut
+ * either (it cuts inside emoji, §13.4); `tip` is the whole of both, for the
+ * row's tooltip, whenever anything was shortened or wrapped.
+ */
+export function rowText(name, effect, px, sub = false, extra = 0) {
+  const n = str(name);
+  const e = str(effect);
+  const nameMax = Math.max(4, Math.floor((px - extra) / (sub ? ROW_TEXT.subNamePx : ROW_TEXT.namePx)));
+  const perLine = Math.max(4, Math.floor(px / ROW_TEXT.effectPx));
+  const lines = sub ? ROW_TEXT.subLines : ROW_TEXT.lines;
+  // Word wrap leaves up to a word's worth of each line but the last unused.
+  const effectMax = lines === 1 ? perLine : lines * perLine - (lines - 1) * Math.ceil(perLine / 3);
+  const shownName = clip(n, Math.min(SHOP_CLIP.name, nameMax));
+  const shownEffect = e ? clip(e, Math.min(SHOP_CLIP.effect, effectMax)) : "";
+  const cut = shownName !== n || shownEffect !== e;
+  const wraps = Array.from(shownEffect).length > perLine;
+  const tip = cut || wraps ? clip(e ? `${n}: ${e}` : n, SHOP_CLIP.tooltip) : null;
+  return { name: shownName, effect: shownEffect, lines, tip };
+}
 
 /** Segment keys, labels and icons (DESIGN §3.4). */
 export const SEGMENTS = Object.freeze([
@@ -166,15 +205,28 @@ function itemRow(row, seg, count, ctx, sub = false) {
   if (affordable) el.child(div().absolute().left(sub ? 24 : 0).top(sub ? 6 : 8).w(3).h(h - (sub ? 12 : 16)).rounded(2).bg(T.accent));
   el.child(sprite(rowIconPath(row.icon), sub ? 20 : 28, affordable ? T.foreground : T.muted));
 
+  // Name on one line, the effect wrapped to its lines (r2-24: "…at 4× its
+  // cost" used to fall off a one-line truncate); both cut by estimate here,
+  // and the whole of both in the column's tooltip when anything was.
+  const ownedLabel = seg === "works" && !sub && owned > 0 ? clip(`×${owned}`, SHOP_CLIP.owned) : "";
+  const fit = rowText(row.name, row.effect, rowTextWidth(ctx.width, sub, row.best === true), sub, ownedLabel ? 6 + 7 * Array.from(ownedLabel).length : 0);
   const name = h_flex()
     .gap(6)
     .min_w(0)
-    .child(text(clip(str(row.name), SHOP_CLIP.name), { size: sub ? 12 : 13, weight: 600, color: T.foreground, truncate: true }, T));
-  if (seg === "works" && !sub && owned > 0) {
-    name.child(text(clip(`×${owned}`, SHOP_CLIP.owned), { size: 11, weight: 600, color: T.muted }, T));
+    .child(text(fit.name, { size: sub ? 12 : 13, weight: 600, color: T.foreground, truncate: true }, T));
+  if (ownedLabel) name.child(text(ownedLabel, { size: 11, weight: 600, color: T.muted }, T).flex_none());
+  const left = v_flex().id(`cw-shop-text-${id}`).flex_1().min_w(0).gap(1).child(name);
+  if (fit.tip) left.tooltip(fit.tip);
+  if (fit.effect) {
+    left.child(
+      text(fit.effect, { size: 11, color: T.muted }, T)
+        .min_w(0)
+        .whitespace_normal()
+        .line_height("127%")
+        .max_h(fit.lines * ROW_TEXT.line)
+        .overflow_hidden(),
+    );
   }
-  const left = v_flex().flex_1().min_w(0).gap(1).child(name);
-  if (row.effect) left.child(text(clip(str(row.effect), SHOP_CLIP.effect), { size: 11, color: T.muted, truncate: true }, T));
   el.child(left);
 
   // Auto: an owned automation shows its switch instead of a buy button.

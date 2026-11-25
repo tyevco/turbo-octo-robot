@@ -14,7 +14,7 @@
 // a definite height (§5.5 item 8).
 
 import { div, svg } from "gpui-kit";
-import { h_flex, v_flex, v_virtual_list } from "gpui-base";
+import { h_flex, v_flex, v_virtual_list, ScrollHandle } from "gpui-base";
 import { clip, clipCells, crowd } from "../engine/index.js";
 import { statusColor, contrast, hex6, isHex } from "./color.js";
 import { ASSETS, FACETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
@@ -666,6 +666,19 @@ export function flockKeys(vm, ui) {
   if (elsewhere.length) out.push("group:elsewhere");
   if (album) out.push("album");
   return out;
+}
+
+/**
+ * The Flock's ScrollHandle (the panel's `#cw-content` tracks it as ctx.scroll):
+ * main.js creates it in init and hands it to the Session with `sectionIndex`.
+ * Null where the host has none.
+ */
+export function newFlockScroll() {
+  try {
+    return ScrollHandle.new();
+  } catch {
+    return null;
+  }
 }
 
 /** The scroll-area index of a group's section ("needs", …, "elsewhere", "album"), or -1. */

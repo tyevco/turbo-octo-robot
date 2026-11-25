@@ -418,3 +418,71 @@ test("render() must return a live element, an Entity or a string", async (t) => 
   throwsVm(() => kept.render(), TypeError,
     "this element belongs to a previous render pass; elements are single-use values and must be rebuilt each time render runs");
 });
+
+// Review r2-25: an interrupt unwinds the script stack without running its
+// finally blocks, so the mock's item-renderer guard stayed raised and every
+// later render refused its own handlers as if they came from a list row.
+test("a layout interrupted inside a virtual list's row renderer leaves the VM usable", async (t) => {
+  const host = await createHost({
+    modRoot: tempMod({
+      "main.js": `import { View, div } from "gpui-kit";
+import { v_virtual_list } from "gpui-base";
+const S = (globalThis.__r225 ??= { spin: true });
+export default class M extends View {
+  render() {
+    return div().id("root").on_size_change(() => {}).child(
+      v_virtual_list("rows", 1000, 20, (i) => "k" + i, (range) => {
+        if (S.spin) for (;;) {}
+        const out = [];
+        for (let i = range.start; i < range.end; i++) out.push(div().child("row " + i));
+        return out;
+      }).h(200),
+    );
+  }
+}
+`,
+    }),
+  });
+  t.after(() => host.dispose());
+  await host.load();
+  assert.throws(() => host.render(), (e) => e instanceof BudgetError && e.phase === "layout" && e.interrupted);
+  host.evalInVm("globalThis.__r225.spin = false");
+  const { tree, ms, layoutMs } = host.render();
+  assert.ok(ms < BUDGETS.render && layoutMs < BUDGETS.layout);
+  assert.deepEqual(Object.keys(tree.handlers), ["on_size_change"]);
+  host.fire("root", "on_size_change", { width: 320, height: 784 });
+  assert.deepEqual(host.errors, []);
+});
+
+// Review r2-25: layout used to render up to 500 rows of every lazy list, so
+// its time said nothing about the shell's, which asks only for the rows in view.
+test("layout renders only a virtual list's visible rows (base visible_range at offset 0)", async (t) => {
+  const host = await createHost({
+    modRoot: tempMod({
+      "main.js": `import { View, div } from "gpui-kit";
+import { v_virtual_list } from "gpui-base";
+const list = (id, n, h) => v_virtual_list(id, n, 28, (i) => id + i, (range) => {
+  (globalThis.__ranges ??= []).push([id, range.start, range.end]);
+  const out = [];
+  for (let i = range.start; i < range.end; i++) out.push(div().child(String(i)));
+  return out;
+});
+export default class M extends View {
+  render() {
+    return div().id("root").child(list("a", 7300).h(280)).child(list("b", 5).h(280)).child(list("c", 7300));
+  }
+}
+`,
+    }),
+  });
+  t.after(() => host.dispose());
+  await host.load();
+  const { tree } = host.render();
+  // ten 28 px rows fill 280 px; base draws the one crossing the edge and one of overdraw
+  assert.deepEqual(JSON.parse(host.evalInVm("JSON.stringify(globalThis.__ranges)")), [["a", 0, 12], ["b", 0, 5], ["c", 0, 34]]);
+  assert.equal(tree.children[0].children.length, 12);
+  assert.deepEqual(tree.children[0].keys, Array.from({ length: 12 }, (_, i) => `a${i}`));
+  assert.equal(tree.children[1].children.length, 5);
+  // no extent of its own: the window's 900 px (32 rows end inside, + 2)
+  assert.equal(tree.children[2].children.length, 34);
+});

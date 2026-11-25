@@ -121,7 +121,7 @@ export function newSlot(home, paths) {
     loading: 0, // load generation in progress (0: none)
     readOnly: false,
     save: {
-      status: "ok", baseOk: false, gen: 0, writing: null, writingBy: null, writingGen: null, writingAt: null, orphanAt: null, savedAt: null, dirtyAt: null, urgentAt: null,
+      status: "ok", baseOk: false, gen: 0, writing: null, writingBy: null, writingFor: null, writingGen: null, writingAt: null, orphanAt: null, savedAt: null, dirtyAt: null, urgentAt: null,
       writtenRev: -1, confirmed: 0, errors: 0, retryAt: 0, damaged: [], problemSince: null,
       // backup rotation: its own retry time and last error (the main save goes on)
       bakRetryAt: 0, bakError: null, bakErrors: 0,

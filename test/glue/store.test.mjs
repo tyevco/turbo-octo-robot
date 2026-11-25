@@ -542,6 +542,93 @@ test("r2-07: a missing shared save beside no local save starts fresh, never sile
   assert.equal(w.ctl.readFile(shared), null);
 });
 
+test("r2-07 review: a missing shared save beside a damaged save and backup says both, within the banner clip", async () => {
+  const shared = "/mnt/usb/a-rather-long-folder-name-for-the-shared-game/creaseworks/save.json";
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: shared }), [SAVE]: "{ not json", [BAK]: "also not json" } });
+  const v = await w.copy("panel");
+  await w.flush();
+  const n = w.slot.notice;
+  assert.equal(n && n.kind, "fresh");
+  assert.ok([...engine.graphemes(n.text)].length <= store.NOTICE_MAX, `${n.text.length}: ${n.text}`);
+  assert.match(n.text, /^Shared save not found; using this window's own\. Save and backup were damaged\. Started fresh; both files kept\.$/);
+  // The banner shows it whole: the fresh start is not cut off.
+  const banner = v.session.vm().notices.find((x) => x.save);
+  assert.ok(banner, "a save banner");
+  assert.match(banner.text, /Started fresh; both files kept\.$/);
+  assert.equal(w.ctl.readFile(shared), null);
+});
+
+test("r2-07 review: every load notice joined to a missing shared save fits the banner", () => {
+  assert.equal(store.NOTICE_MAX, 140);
+  const texts = [];
+  for (const hadMain of [true, false]) for (const hadBak of [true, false]) {
+    if (!hadMain && !hadBak) continue;
+    for (const kept of [null, "save.damaged-5.json"]) for (const keptBak of [null, "save.damaged-5.json"]) texts.push(store.freshText(hadMain, kept, hadBak, keptBak));
+  }
+  const when = "Wednesday 30 September, 12:59 PM";
+  for (const lead of ["Save was missing.", "Save was damaged."]) for (const tail of ["", " Damaged copy kept.", " The damaged copy could not be kept."]) texts.push(`${lead} Loaded the backup from ${when}.${tail}`);
+  texts.push("The shared-save pointer (location.json) was damaged. Using this window's own save.");
+  for (const t of texts) {
+    const j = store.goneJoined(t);
+    assert.ok(j.startsWith("Shared save not found"), j);
+    assert.ok(j.endsWith(t), "the other problem is said whole");
+    assert.ok([...engine.graphemes(j)].length <= store.NOTICE_MAX, `${j.length}: ${j}`);
+  }
+});
+
+test("r2-06 review: releaseAbandoned frees an orphaned claim (quietly for a plain save, said for a Settings tool)", async () => {
+  w = win();
+  await w.copy("panel");
+  await w.advance(3000);
+  const S = w.slot.save;
+  const t = Date.now();
+  for (const [what, said] of [["cycle", false], ["resolve", false], ["reset", true], ["restore", true], ["share", true], ["check", true]]) {
+    w.slot.notices.load = null;
+    store.refreshNotice(w.slot);
+    Object.assign(S, { writing: 77, writingBy: "a-closed-copy", writingFor: what, writingGen: S.writingGen, writingAt: t, orphanAt: null, status: "saving" });
+    assert.equal(store.releaseAbandoned(w.slot, t), false, `${what}: the copy has only just gone`);
+    assert.equal(store.releaseAbandoned(w.slot, t + store.ORPHAN_MS), true, `${what}: released`);
+    assert.equal(S.writing, null);
+    assert.equal(S.writingFor, null);
+    assert.equal(!!(w.slot.notice && /cut off when a Creaseworks view closed/.test(w.slot.notice.text)), said, what);
+  }
+});
+
+test("r2-08 review: a claim lost while settleShare reads the backup switches nothing, and the next save settles it", async () => {
+  const shared = "/other/home/data/creaseworks/save.json";
+  const s = freshState(7);
+  s.bank = 999;
+  w = win({ files: { [shared]: saveText(s) } });
+  const v = await w.copy("panel");
+  await w.advance(5000);
+  await w.hits(v, 2);
+  await w.advance(20000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 2, "saved locally first");
+  // A share cut off after its pointer write landed (as a hot reload leaves it).
+  w.ctl.externalWrite(`${DIR}/location.json`, JSON.stringify({ path: shared }));
+  w.slot.save.sharing = { to: shared };
+  w.ctl.latency.read = 300;
+  await w.hits(v, 1);
+  for (let i = 0; i < 3000 && w.slot.save.writing === null; i++) await w.advance(10);
+  assert.notEqual(w.slot.save.writing, null, "the cycle that settles the share has started");
+  await w.advance(450); // location.json read (300 ms) settled; the backup read is under way
+  const reads = w.ctl.log.filter((e) => e.type === "read").map((e) => e.path);
+  assert.equal(reads[reads.length - 1], `${DIR}/location.json`);
+  await w.reload(); // the claim is released (an older code generation's)
+  assert.equal(w.slot.paths.save, SAVE, "nothing switched while the claim was lost");
+  assert.ok(w.slot.save.sharing, "still to be settled");
+  w.ctl.latency.read = 0;
+  await w.advance(3000);
+  assert.equal(w.slot.paths.save, shared, "settled by the next save");
+  assert.equal(w.slot.save.sharing, null);
+  await w.hits(w.copies[0], 2);
+  await w.advance(20000);
+  const p = parsed(w.ctl, shared).state;
+  assert.ok(p.bank >= 999 || p.lifetime >= 999, "joined onto that game");
+  assert.equal(p.applied[w.slot.writerId], w.slot.seq, "this window's actions reached the shared file");
+  assert.equal(w.slot.notice, null, "no false 'another window replaced the save'");
+});
+
 test("r2-08: a hot reload during Share a save: the next save follows the pointer that landed", async () => {
   const shared = "/other/home/data/creaseworks/save.json";
   const s = freshState(7);

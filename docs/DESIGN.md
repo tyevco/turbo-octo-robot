@@ -813,10 +813,13 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 * **Look from the hash h**: species `SPECIES[h % 12]`; hue `(h >>> 4) % 8`; name
   `NAMES[((h >>> 8) % 16) · 12 + (h >>> 12) % 12]`, the pairs `A + B` with
   A = `Mi Ko Pi Ta Su No Ri Ha Yu Fe Lo Bi Ka Mo Ze Wu`, B = `na to b ki ri mo sa ku ro n li po`
-  in row-major order (short **ASCII** names: Mina, Koto, Pib, Taki, Yuro, Fen, Lopo…). A pair that
-  spells a slur, a sexualised slang word or a well-known character's name is never given
-  (`NAME_SKIP`: Haku, Loki, Loli, Miku, Mona, Nob, Pipo, Riku, Rito, Tali, Yuna, Yuri, Zero; review
-  r2-28): it takes the next pair in that order that is not skipped, so 179 distinct names remain.
+  in row-major order (short **ASCII** names: Mina, Koto, Pib, Tari, Yuro, Fen, Lopo…). A pair that
+  spells a slur, a sexualised or vulgar slang word, a deity's or a well-known character's name is
+  never given (`NAME_SKIP`, review r2-28, two rounds: Feto, Haku, Han, Haro, Kaki, Kali, Kapo, Kato,
+  Kon, Koro, Loki, Loli, Misa, Miku, Mob, Momo, Mona, Moro, Nob, Pipo, Pito, Riku, Rin, Rito, Sub,
+  Suki, Taki, Tali, Yuna, Yuri, Zemo, Zero): it takes the next pair in that order that is not
+  skipped, so a remap can never land on a skipped pair (the first round remapped Haku to Haro), and
+  160 distinct names remain, none on more than 4 of the 192 slots.
   `content.js` holds `NAMES` written out and a test rebuilds it from A, B and the skip list. A
   helper or Album record named before the skip list (an older save) is renamed to its look name
   the next time it is observed or its Album record is pruned or loaded. On a clash among present
@@ -988,8 +991,9 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
   out: a Bundle pays what opening it would (`45 · Rp · u · envMult · crowd(N)`, no Tailwind), a
   timed boost converts like units above the cap (`45 · Rp · crowd(N) · u`). It counts as opened
   (Bundle) or converted (timed), so units created = opened + converted + waiting still holds, the
-  folds go to that helper's Album total, and one notice per observation records the total
-  (`{kind: "settled", data: {amount, count, name}}`, a footer note like the overflow one). So
+  folds go to that helper's Album total, and one footer note per observation says it: an
+  overflow note (the same conversion; `data.settled` marks it), "+3.2K from a full envelope (Pib,
+  long gone)" or "(4 helpers long gone)", shown and expiring like any overflow note. So
   the tray holds at most one envelope per present helper plus the 200 newest Album helpers, and
   Mail Sorter users who never open timed boosts no longer grow the save without bound.
 
@@ -1315,18 +1319,34 @@ reload the mod, life §1). Save text < 256 KiB at 64 helpers plus 500 Album help
 thanks to Album compaction and old mail being cashed in (R13, §6.1; tests). The envelope
 `version` is the file format (2: Album entries may be packed arrays; 3: the chunked check below);
 the state keeps its own `version`. A file with a higher format or state version than the build
-knows loads read-only and is never written (§12.2, `newer`), also when this build cannot verify
-its check. Formats 1 and 2 still load.
-**Check (format 3, review r2-01).** The helpers map is cut into chunks after each id whose last
-two hex digits are a multiple of 64 (≈ 64 helpers a chunk, chosen by id, so a helper joining,
-leaving or changing touches only its own chunk); `check` is FNV-1a 32 of the state JSON with
-`"helpers"` replaced by a marker, a newline, and the FNV-1a 32 digests of each chunk's JSON text
-`{"id":entry,…}` in order. The file text itself is unchanged (the state, helpers in their own
-order). A writer keeps each chunk's digest (keyed by its text, never saved), so a save cycle
-hashes only the rest of the state and the chunks that changed instead of the whole Album; loading
-hashes every chunk once and hands its digests to the first save. A format-2 build cannot verify a
-format-3 check and treats the file as damaged (kept aside, never lost); builds are not expected to
-go back past format 3.
+knows loads read-only and is never written (§12.2, `newer`); from format 3 on a build tests the
+format before the check, so a file whose check it cannot verify (a later rule) is still `newer`,
+never damaged. Formats 1 and 2 still load.
+**Check (format 3, review r2-01).** The helpers map, in its own key order, is cut into chunks
+after each id whose last two hex digits are a multiple of 64 (≈ 64 helpers a chunk); `check` is
+FNV-1a 32 of the state JSON with `"helpers"` replaced by a marker, a newline, and the FNV-1a 32
+digests of each chunk's JSON text `{"id":entry,…}` in order. The file text itself is unchanged
+(the state, helpers in their own order). A writer keeps each chunk's digest (keyed by its text,
+never saved), so a save cycle hashes only the rest of the state and the chunks whose text changed.
+Old Album chunks keep their text; a new helper is appended, so it changes the last chunk (or
+starts one), and a present helper changes the chunk it sits in, which for a helper that rejoined
+from the Album is an older chunk (it keeps its place), so a cycle with live helpers spread over
+the Album re-hashes one chunk per such helper. Loading hashes every chunk once and hands its
+digests to the first save. The cache lives on the state as plain data under a registry symbol
+(`Symbol.for("creaseworks/save-digests")`, not enumerable), so a hot reload's first save replaces
+it rather than adding one per code generation.
+**Parsing in steps.** `parseSaveSteps(text)` is `parseSave` as a generator that yields after the
+JSON parse and after every `STEP_HELPERS` (1,500) helpers it checks, unpacks or validates; the
+glue drives it with a task yield between steps for a load and for a CAS merge (§12.2), so no step
+grows with the save (two years, 585 KiB: 31 steps, the slowest ≈ 60 ms in the wasm harness, against
+≈ 390 ms for the whole parse in one step).
+**Builds before format 3** (development builds only; none was released) verify the whole-text check
+before testing the format, so they read a format-3 file as **damaged**, not newer: they keep it
+aside (`save.damaged-<n>.json`) and load their backup, and in a shared save a window still on such
+a build overwrites the newer window's progress at its next merge (the progress is kept in the
+damaged copy, not lost, but it leaves the game until restored). So every window sharing a save
+must run a format-3 build; a format change after this one does not have this window (the
+`newer` test comes first).
 Cadence: 2 s after a purchase, wish, setting change or envelope open; every 15 s while anything
 changed; on `close(cx)` one final write at once.
 
@@ -1680,7 +1700,7 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 3 (packed entries since 2; the chunked check of §12.1 since 3, review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving); a build from before compaction reads it as newer (read-only). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). Loading still verifies every chunk in one step (≈ 0.6 ms per KiB with parsing and unpacking), so in the wasm harness the load step reaches 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit; herdr's native quickjs-jit is expected to be faster, and the glue can split the load across task steps if it is not. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
+| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 3 (packed entries since 2; the chunked check of §12.1 since 3, review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 31 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load and merge must drive it with a task yield between steps (`glue/store.js`), after which no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
 | R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
 | R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |
