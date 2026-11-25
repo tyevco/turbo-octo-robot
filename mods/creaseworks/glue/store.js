@@ -852,14 +852,8 @@ async function enterUnreadable(slot, env, stale, error) {
   const P = slot.paths;
   const rec = await readOrError(recoveryPath(P));
   if (stale()) return false;
-  if (rec.text !== null) {
-    const parsed = await parseIn(slot, rec.text, env, stale);
-    if (parsed === null || stale()) return false;
-    if (!parsed.ok) {
-      await keepAsideListed(slot, P, rec.text);
-      if (stale()) return false;
-    }
-  }
+  // Another window may be there first (both found save.json unreadable): merged, not written over.
+  if (rec.text !== null && (await mergeRecovery(slot, env, stale, rec.text)) === null) return false;
   S.unreadable = error;
   S.recoveryText = rec.error === null ? rec.text : null;
   if (!(S.errors >= 1)) S.errors = 1;
@@ -1057,6 +1051,71 @@ async function overwriteBase(slot, env, stale) {
  * written again (the caller goes on with the normal write), or the cycle's
  * result (true / false) when the recovery write settled it, or null if stale.
  */
+/**
+ * save.recovery.json holds a game this window has not taken in: written by
+ * another window that also found save.json unreadable (the usual two-window
+ * case, r4-03), or left from an earlier episode. When another writer added
+ * progress this window lacks and the file holds everything this window has
+ * written, its game is taken in and this window's unsaved actions replayed
+ * onto it, as a save.json conflict merges (mergeFromDisk), so neither
+ * window's progress is written over. When each holds progress the other
+ * lacks, the file is kept aside and listed, with a notice. A damaged file is
+ * kept aside and listed; one from a newer Creaseworks makes this window
+ * read-only. Returns true when merged, false when this window's game is to be
+ * written over the file, null when superseded (or read-only).
+ */
+async function mergeRecovery(slot, env, stale, text) {
+  const S = slot.save;
+  const P = slot.paths;
+  await pause(env); // a large recovery file's read already used much of the step
+  if (stale()) return null;
+  const parsed = await parseIn(slot, text, env, stale);
+  if (parsed === null || stale()) return null;
+  if (!parsed.ok) {
+    if (parsed.reason === "newer") {
+      slot.readOnly = true;
+      S.status = "readonly";
+      setNotice(slot, "load", { kind: "newer", at: env.now() });
+      return null;
+    }
+    await keepAsideListed(slot, P, text);
+    return stale() ? null : false;
+  }
+  const live = parsed.state;
+  const own = Array.isArray(slot.ownWriters) ? slot.ownWriters : [];
+  let foreign = false;
+  for (const k of Object.keys(live.applied)) {
+    if (k === slot.writerId || own.indexOf(k) >= 0) continue;
+    if (live.applied[k] > (Object.hasOwn(slot.state.applied, k) ? slot.state.applied[k] : 0)) foreign = true;
+  }
+  // Nothing another window added (this window's own file, or an earlier episode's it took in): written over.
+  if (!foreign) return false;
+  const rec = baseName(recoveryPath(P));
+  if (ownApplied(live, slot.writerId) < Math.max(S.ownApplied || 0, S.recOwn || 0)) {
+    // Each holds progress the other lacks: theirs is kept, and said.
+    const kept = await keepAsideListed(slot, P, text, `another window's ${rec}`);
+    if (stale()) return null;
+    setNotice(slot, "load", {
+      kind: "recovered",
+      text: kept
+        ? `Another window also saved to ${rec}, and the two could not be merged. Its progress is kept in ${kept}.`
+        : `Another window also saved to ${rec}, and the two could not be merged. Its progress could not be kept aside.`,
+      at: env.now(),
+    });
+    return false;
+  }
+  await pause(env);
+  if (stale()) return null;
+  progress(slot, env);
+  const ev = await replayPending(live, slot, env, stale);
+  if (ev === null) return null;
+  if (ev === "lost") return false; // the log was given up: this window's game is written over it
+  advance(live, env.now(), slot.writerId);
+  slot.state = live;
+  touch(slot);
+  return true;
+}
+
 async function recoveryWrite(slot, env, stale) {
   const S = slot.save;
   const P = slot.paths;
@@ -1081,6 +1140,7 @@ async function recoveryWrite(slot, env, stale) {
     const rev = slot.state.rev;
     const upto = slot.seq;
     const epoch = slot.logEpoch || 0;
+    const own = ownApplied(slot.state, slot.writerId);
     const text = serialize(slot.state);
     try {
       await writeTextFile(rec, text, S.recoveryText);
@@ -1089,6 +1149,7 @@ async function recoveryWrite(slot, env, stale) {
       if (isCas(e)) {
         const again = await readOrError(rec);
         if (stale()) return null;
+        if (again.error === null && again.text !== null && (await mergeRecovery(slot, env, stale, again.text)) === null) return null;
         S.recoveryText = again.error === null ? again.text : S.recoveryText;
         continue;
       }
@@ -1098,6 +1159,7 @@ async function recoveryWrite(slot, env, stale) {
     if (stale()) return null;
     const done = env.now();
     S.recoveryText = text;
+    S.recOwn = own; // applied[writerId] in the text just written (mergeRecovery)
     S.confirmed = upto;
     confirmLog(slot, upto);
     // A log given up while this write was out holds actions the text lacks: kept lost (r4-09).

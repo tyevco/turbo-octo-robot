@@ -1103,6 +1103,13 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   Watch out and README's Keys say so (`test/layout` checks both). A notification toast clicked
   after switching to another layout is the same case: its `creaseworks.show` action (r3-06)
   reaches no copy and herdr toasts "creaseworks.show failed"; nothing else happens.
+* **A herdr read that throws (r4-01).** herdr's host bridge throws when a result holds a key named
+  like an `Object.prototype` member (a terminal label `constructor`, say). The ticker guards
+  `layout()`, `agents()`, `terminals()` and `buildObservation` separately: a throw keeps the last
+  good observation or layout, and advancing, notifications and save writes run as usual. The first
+  throw of a spell flashes `READ_FAIL_TEXT` (glue/session.js: "Agent list unreadable: …" or
+  "Layout unreadable: …", the words before the colon fit a narrow rail) for 12 s; later throws only
+  count (`slot.readFail`), and a good read ends the spell, so the next failure says so again.
 * **Narrow windows and zoom.** Superseded by B15 (the panel used to be `{px: 320}` and was
   pushed off-screen at 1100 px with Files open and at zoom 1.5).
 

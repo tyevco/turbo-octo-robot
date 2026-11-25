@@ -7,6 +7,8 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { win, SAVE, BAK, DIR, HOME, DEFAULT_NOW, damaged, saveText, freshState, parsed, engine } from "./_util.mjs";
 import * as store from "../../mods/creaseworks/glue/store.js";
+import { newSlot, dispatch } from "../../mods/creaseworks/glue/live.js";
+import { localDay } from "../../mods/creaseworks/glue/clock.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -953,6 +955,67 @@ test("r4-03: Check save now on an unreadable save.json keeps a damaged recovery 
   assert.equal(w.ctl.readFile(damaged(1)), badRec);
   await w.advance(3000);
   assert.ok(parsed(w.ctl, RECOVERY).ok, "the game written to the recovery file");
+});
+
+/** Two windows' slots on one save (the store driven directly), both in step with save.json. */
+function twoWriters(seed) {
+  const base = engine.newGame({ seed, now: DEFAULT_NOW, day: localDay(DEFAULT_NOW) });
+  w.ctl.externalWrite(SAVE, engine.serialize(base));
+  const mk = (id) => {
+    const slot = newSlot(HOME, store.slotPaths(HOME));
+    slot.writerId = id;
+    const text = w.ctl.readFile(SAVE);
+    slot.state = engine.parseSave(text).state;
+    slot.baseText = text;
+    slot.save.baseOk = true;
+    return slot;
+  };
+  return [mk("wA"), mk("wB")];
+}
+const clickN = (slot, n, t) => {
+  for (let i = 0; i < n; i++) dispatch(slot, { type: "click", target: "sheet" }, t + i * 400);
+};
+const cycle = (slot) => hostWork(() => store.cycle(slot, { now: () => w.ctl.now() }));
+
+test("r4-03: two windows that both find save.json unreadable merge in save.recovery.json, neither writes over the other", async () => {
+  w = win();
+  const [A, B] = twoWriters(9);
+  w.ctl.externalWrite(SAVE, HUGE);
+  const t = w.ctl.now();
+  clickN(A, 4, t);
+  clickN(B, 7, t);
+  assert.equal(await cycle(A), true);
+  assert.equal(await cycle(B), true);
+  assert.deepEqual({ ...parsed(w.ctl, RECOVERY).state.applied }, { wA: 4, wB: 7 }, "B took in A's game before writing");
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  const rec = parsed(w.ctl, RECOVERY).state;
+  assert.deepEqual({ ...rec.applied }, { wA: 5, wB: 7 }, "A's next write (a conflict) merged B's game");
+  assert.equal(A.state.applied.wB, 7);
+  assert.equal(B.save.damaged.length + A.save.damaged.length, 0, "nothing kept aside: nothing could not be merged");
+  assert.equal(w.ctl.readFile(SAVE), HUGE, "save.json is never touched");
+});
+
+test("r4-03: two windows' recovery games that cannot be merged: the other is kept aside and said, never written over unseen", async () => {
+  w = win();
+  const [A] = twoWriters(10);
+  w.ctl.externalWrite(SAVE, HUGE);
+  const t = w.ctl.now();
+  clickN(A, 3, t);
+  assert.equal(await cycle(A), true);
+  // B writes over A's file while it can't see it (a reload in between, say),
+  // then A, with new actions, finds a game holding B's progress but not its own.
+  const other = parsed(w.ctl, RECOVERY).state;
+  delete other.applied.wA;
+  other.applied.wB = 9;
+  const theirs = engine.serialize(other);
+  w.ctl.externalWrite(RECOVERY, theirs);
+  clickN(A, 2, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  assert.equal(w.ctl.readFile(damaged(1)), theirs, "the other window's game is kept");
+  assert.ok(A.save.damaged.some((d) => d.startsWith("save.damaged-1.json (another window's save.recovery.json")), "and listed in Details");
+  assert.match(A.notices.load.text, /^Another window also saved to save\.recovery\.json, and the two could not be merged\. Its progress is kept in save\.damaged-1\.json\./);
+  assert.equal(parsed(w.ctl, RECOVERY).state.applied.wA, 5, "this window's game is in the recovery file");
 });
 
 test("r4-04: a shared save gone with its backup during play: this window's own save, said, nothing created at the shared path", async () => {

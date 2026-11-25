@@ -827,6 +827,22 @@ test("r4-10: an agent that leaves and comes back in the same terminal keeps its 
   assert.equal("kidUnitAt" in back, false);
 });
 
+test("r4-10: back waiting long after it left waiting is a new wait, timed from its return", () => {
+  const s = seeded(43);
+  const me = writer(s);
+  const id = engine.helperId("t9", 1009);
+  const K = engine.CONTENT.K;
+  me.act(observeAction(T0, [agent(9, "working", 0)]));
+  me.act(observeAction(T0 + 1000, [agent(9, "blocked", 0)]));
+  me.act(observeAction(T0 + 2000, []));
+  const back = T0 + 2000 + K.thanksWindowMs + 3 * 86400000;
+  me.act(observeAction(back, [agent(9, "blocked", 0)]));
+  assert.equal(s.helpers[id].gone, false);
+  assert.equal(s.helpers[id].blockedAt, back, "not the wait from days ago");
+  me.act(observeAction(back + 30000, [agent(9, "working", 0)]));
+  assert.ok(s.helpers[id].thanksUntil > back + 30000, "the new wait earns its thanks");
+});
+
 test("r4-10: only compaction forgets a gone helper's budget; a compact record rejoins with a fresh one", () => {
   const s = seeded(43);
   const me = writer(s);

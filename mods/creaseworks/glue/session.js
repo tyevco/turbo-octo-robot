@@ -48,8 +48,9 @@ export const LOAD_RETRY_TEXT = "Opening the save stopped partway; trying againâ€
  */
 export const READ_FAIL_MS = 12000;
 export const READ_FAIL_TEXT = Object.freeze({
-  agents: "herdr's agent list could not be read: helpers keep their last known state.",
-  layout: "herdr's layout could not be read: the panel keeps its last known place.",
+  // The words before the colon are what a narrow rail shows (ui/rail.js railFlash, 32 graphemes).
+  agents: "Agent list unreadable: herdr's list failed, so helpers keep their last state.",
+  layout: "Layout unreadable: herdr's layout failed, so the panel keeps its last place.",
 });
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
 const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };

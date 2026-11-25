@@ -484,7 +484,13 @@ changes. **Workspace order**: one list in `agents()` order (space → tab → pa
 sidebar), grouped headers hidden, statuses on badges only.
 
 **Groups fold** (`ui.folded` in localStorage of the panel copy); a folded group is one 24 px row
-"● Working 9". Resting folds automatically above 12 members until the player unfolds it.
+"● Working 9". Resting folds automatically above 12 members until the player unfolds it, except
+while one of its parents has a fledgling waiting for input (review r4-12): the cue is never hidden
+in a group the game folded. A group the player folded keeps a needs-you flag and count on its
+header row ("2 fledglings in here need you"), which opens the first of them. A parent tile whose
+fledgling waits carries a flag at its top left (level with the status badge); its figure, name
+and pips step down below the flag so nothing overlaps the sprite (review r4-14). A faded tile
+(Elsewhere, 50 %) never fades its name below 4.5:1 on the tile or its hover fill (review r4-15).
 
 **Album.** Helpers whose agent has gone: 28 px rows (glyph 16, name, "left 3 d ago", lifetime
 folds). They never produce. A returning agent with the same `(address, created_ms)` rejoins with
@@ -695,7 +701,7 @@ x:0  8           126                                            W−108        W
 |---|---|---|---|
 | A chips | `n × 22 ≤ w` | 20×20 chip `rounded(5)` `T.raised`, status glyph 12 guarded colour, 2 px bottom bar in `Hue[hue]`, needs-you chips 1 px dashed border | `floor(w/22)` |
 | B pips | otherwise, `n ≤ 2·floor(w/14)` | 12 px status glyph, 14 px pitch, **two rows** (y 2 and 16) | `2·floor(w/14)` |
-| C tallies | only beyond B | needs-you and finished stay individual pips; the rest become tally chips `● 37` `◗ 21` (glyph + count 11/600) | unlimited |
+| C tallies | only beyond B | the tally chips `● 37` `◗ 21` (glyph + count 11/600) are reserved first; needs-you, then finished, stay individual pips while two rows hold them; past that finished fold into a `✓ +N` tally, then needs-you into a dashed `▲ +N` tally that opens the Needs you group (review r4-07): every helper is a pip or counted | unlimited |
 
   At 1440 wide (sidebar 268) `w = 922`: level A up to 41 helpers, level B up to **130**. At 1100
   wide `w = 582`: level A up to 26, level B up to **82**. So **64 agents keep an individual
@@ -1134,7 +1140,7 @@ old mail cashed in.
 * **Boost bar** (26 px under the mat): one chip per running boost (seal glyph 12 + "Rush ×3"
   11/600 + a countdown bar 48×3). The bar's width targets 0 with one native
   `.transition("width", {duration: remainingMs, easing: "linear"})` (fallback in §17: width set on
-  each data tick). With no boost: "Open envelopes when you're ready" 11 `T.muted`.
+  each data tick). In calm mode the bar snaps to its width on each data tick instead (review r4-13). With no boost: "Open envelopes when you're ready" 11 `T.muted`.
 * Boost timers are frozen while away (§10).
 * With 30+ agents the per-helper stacking keeps the tray to one envelope per helper; the tray
   draws 6 and `+n`, the Flock tiles carry markers, and nothing auto-opens unless the player bought
@@ -1423,7 +1429,10 @@ The mechanism is ARCHITECTURE A4–A6 exactly; this section is the player-facing
   read limit, a folder, a broken link), progress goes to `save.recovery.json` and the footer says
   so; once `save.json` can be written again the game goes back to it. On load, the newer (by state
   clock) of the recovery file and the backup is used, so a stale recovery file never rolls back a
-  newer, normally rotated backup.
+  newer, normally rotated backup. Two windows sharing the save both go there (review r4-03): a recovery file
+  holding another window's progress is merged like a `save.json` conflict (its game taken in, this
+  window's unsaved actions replayed onto it), never written over; when each holds progress the
+  other lacks, the other is kept aside, listed in Details and said in a notice.
 * **Reset and Restore** keep the current save aside (reason `reset` / `restore`) and the next
   write **replaces** the file rather than merging into it, so another window's save cannot undo
   them. That other window then finds fewer of its own actions in the file than it last wrote,
@@ -1678,7 +1687,7 @@ bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
 | Sheet fold | frame swap on each click (data) + `.active(s => s.opacity(0.88))` | — | same |
 | Floating "+N" | click handler records `{id, x, y}`; the element renders at `top y`, `opacity 1` with `.transition("top", 700)` and `.transition("opacity", 700)`; **one `cx.timer.after(16)` per burst** flips all new pops to `top y − 28`, `opacity 0`; **one `after(≤ 800)`, due when the oldest pop finishes,** removes the risen ones (a pop still rising is never cut; while 5 are alive a click's amount is carried into the next pop that fits). ≤ 5 alive | — | off |
 | Streak meter, rest bars, string fill, switch knob, crease fade, node expiry | `.transition(width/height/left/opacity, 150/600/600/120/600/2000)` on absolute px | — | ≤ 150 ms or snap |
-| Boost countdown | one `.transition("width", {duration: remainingMs, easing: "linear"})` per boost | — | same (a bar, not motion) |
+| Boost countdown | one `.transition("width", {duration: remainingMs, easing: "linear"})` per boost | — | snap (width set each data tick, r4-13) |
 
 All loop px are multiplied by `settings().zoom` by us (gpui §9).
 

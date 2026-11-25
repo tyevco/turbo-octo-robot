@@ -422,6 +422,7 @@ function freeName(slots, base) {
 /** A returning agent (same address and created_ms) rejoins with its history. */
 function rejoin(h, o, slots, t) {
   const wasCompact = h.compact === true;
+  const leftAt = h.missingSince;
   h.gone = false;
   h.missingSince = null;
   delete h.compact;
@@ -436,6 +437,9 @@ function rejoin(h, o, slots, t) {
     h.lastTurn = Number(o.turn) || 0;
     h.joined = t;
   }
+  // Left while waiting and back waiting after more than the thanks window: a
+  // new wait, timed (and pulsed) from now, not from before it left.
+  if (h.status === "blocked" && cleanStatus(o.status) === "blocked" && isFiniteNum(leftAt) && t - leftAt > K.thanksWindowMs) h.blockedAt = t;
   // Its old name may have been given to a present namesake meanwhile (or be
   // one the game no longer gives, from an older save).
   if (nameTaken(slots, h.name) || skippedName(h.name)) h.name = freeName(slots, lookOf(h.id).name);

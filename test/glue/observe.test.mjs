@@ -9,6 +9,7 @@ import { buildObservation, signature, kidStatus, paneStatus } from "../../mods/c
 import { normalizeAgent, normalizeTerminal, bridgeOut } from "../../tools/mock/controller.js";
 import { win, agent, term, flockScenario, engine, SAVE } from "./_util.mjs";
 import { READ_FAIL_TEXT, READ_FAIL_MS } from "../../mods/creaseworks/glue/session.js";
+import { railFlash } from "../../mods/creaseworks/ui/rail.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -197,7 +198,7 @@ for (const key of ["constructor", "toString", "valueOf"]) {
     await w.advance(5000);
     assert.equal(w.slot.flash.until, until, "not flashed again each tick");
     const tree = JSON.stringify(w.render(v2).tree);
-    assert.ok(tree.includes("could not be read"), "the panel shows it");
+    assert.ok(tree.includes("Agent list unreadable"), "the panel shows it");
     // The label goes: observing resumes, the spell ends.
     w.ctl.setTerminals([term(1, "working", { labels: { where: "main / 1" } })]);
     await w.advance(2000);
@@ -266,4 +267,10 @@ test("r4-01: a layout() that throws keeps the last good layout; the tick and key
   w.ctl.layoutValue = LAYOUT(false);
   await w.advance(1000);
   assert.equal(w.slot.readFail.layout, undefined, "reads again: the spell is over");
+});
+
+test("r4-01: the read-failure notices keep their key words on a narrow rail", () => {
+  assert.equal(railFlash(READ_FAIL_TEXT.agents, 64), "Agent list unreadable");
+  assert.equal(railFlash(READ_FAIL_TEXT.layout, 64), "Layout unreadable");
+  for (const t of Object.values(READ_FAIL_TEXT)) assert.equal(railFlash(t, 200), t, "whole on a wide rail");
 });
