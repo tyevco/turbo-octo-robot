@@ -32,6 +32,15 @@ const URGENT = { buy: 1, wish: 1, setting: 1, switch: 1, open: 1, collect: 1, no
  */
 export const COALESCE_AT = 512;
 export const PENDING_MAX = 20000;
+/**
+ * The log is bounded by size too (review r2-04): every roster observation
+ * carries the whole helper list (12 fields and fresh strings per helper, a
+ * few hundred bytes each in QuickJS), so 20,000 of them at 64-130 helpers
+ * would pass herdr's 256 MiB VM memory limit, which every mod in the window
+ * shares. Past this many logged helper entries (about 30 MiB at the worst
+ * measured cost) the log is given up like PENDING_MAX.
+ */
+export const LOG_HELPERS_MAX = 64000;
 
 const map = () => Object.create(null);
 
@@ -93,6 +102,7 @@ export function newSlot(home, paths) {
     v: SLOT_VERSION,
     home,
     writerId: randomId(),
+    ownWriters: [], // this window's earlier writer ids (an earlier VM's late write is not another window's; store.js)
     seq: 0,
     baseText: null, // the exact text expected on disk (CAS)
     bakText: null,
@@ -100,6 +110,7 @@ export function newSlot(home, paths) {
     pending: [],
     logObs: null, // { s, key, same } the latest roster observation recorded (record)
     logEpoch: 0, // how many times the log was given up (record)
+    logHelpers: 0, // helper entries held by the roster observations in `pending` (record, LOG_HELPERS_MAX)
     state: null,
     notice: null, // the save notice on show: { kind, text?, message?, retryMs?, at }
     inflight: null, // { text, upto } while a save write is under way
@@ -110,7 +121,7 @@ export function newSlot(home, paths) {
     loading: 0, // load generation in progress (0: none)
     readOnly: false,
     save: {
-      status: "ok", baseOk: false, gen: 0, writing: null, writingBy: null, writingGen: null, writingAt: null, savedAt: null, dirtyAt: null, urgentAt: null,
+      status: "ok", baseOk: false, gen: 0, writing: null, writingBy: null, writingGen: null, writingAt: null, orphanAt: null, savedAt: null, dirtyAt: null, urgentAt: null,
       writtenRev: -1, confirmed: 0, errors: 0, retryAt: 0, damaged: [], problemSince: null,
       // backup rotation: its own retry time and last error (the main save goes on)
       bakRetryAt: 0, bakError: null, bakErrors: 0,
@@ -118,6 +129,8 @@ export function newSlot(home, paths) {
       unreadable: null, recoveryText: null,
       // the next write replaces the file instead of merging (reset / restore, or a lost log)
       overwrite: null, logLost: false,
+      // a "Share a save" pointer write under way, or cut off ({ to }): the next cycle follows location.json (store.js settleShare)
+      sharing: null,
       // applied[writerId] in the text this window last wrote (store.js: a drop means another window replaced the file)
       ownApplied: 0,
     },
@@ -213,6 +226,8 @@ export function rosterKey(action) {
  */
 export function record(slot, action) {
   const P = slot.pending;
+  // (a slot handed over by an older build has no count yet)
+  if (typeof slot.logHelpers !== "number") slot.logHelpers = logHelpersOf(P);
   if (action.type === "observe" && Array.isArray(action.helpers)) {
     const key = rosterKey(action);
     const last = slot.logObs || null;
@@ -220,6 +235,7 @@ export function record(slot, action) {
     if (same && last.same && P.length >= COALESCE_AT) {
       for (let i = P.length - 1; i >= 0 && P[i].s >= last.s; i--) {
         if (P[i].s === last.s && P[i].type === "observe" && Array.isArray(P[i].helpers)) {
+          slot.logHelpers -= P[i].helpers.length;
           P.splice(i, 1);
           break;
         }
@@ -228,13 +244,40 @@ export function record(slot, action) {
     slot.logObs = { s: action.s, key, same };
   }
   P.push(action);
-  if (P.length > PENDING_MAX) {
-    // Too long to replay onto another writer's file: the next save writes this game whole.
+  slot.logHelpers += helperEntries(action);
+  if (P.length > PENDING_MAX || slot.logHelpers > LOG_HELPERS_MAX) {
+    // Too long to replay onto another writer's file (or to keep in memory):
+    // the next save writes this game whole.
     slot.pending = [];
     slot.logObs = null;
+    slot.logHelpers = 0;
     slot.logEpoch = (slot.logEpoch || 0) + 1; // a replay under way finishes the old array (store.js)
     slot.save.logLost = true;
   }
+}
+
+/** Helper entries an action holds in the log (a roster observation's list). */
+function helperEntries(a) {
+  return a && a.type === "observe" && Array.isArray(a.helpers) ? a.helpers.length : 0;
+}
+
+function logHelpersOf(log) {
+  let n = 0;
+  for (const a of log) n += helperEntries(a);
+  return n;
+}
+
+/** Drops the actions a save confirmed (s ≤ `upto`) from the log, keeping its size count right. */
+export function confirmLog(slot, upto) {
+  slot.pending = slot.pending.filter((a) => a.s > upto);
+  slot.logHelpers = logHelpersOf(slot.pending);
+}
+
+/** Empties the log (a load, Reset or Restore: nothing left to replay). */
+export function clearLog(slot) {
+  slot.pending = [];
+  slot.logObs = null;
+  slot.logHelpers = 0;
 }
 
 /** The role part of a copy id ("panel:k3…" → "panel"). */

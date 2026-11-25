@@ -82,6 +82,38 @@ test("a kept fledgling (pane in agents()) is a kid of its parent and keeps its p
   assert.equal(m.get("t2").pane, "p2");
 });
 
+// Review r2-18: when the parent's pane closes, the kept fledgling is reported
+// as a pane helper (its chain no longer reaches an observed agent), and the
+// engine must follow: it gathers, and its finished task fills its own envelope.
+test("a kept fledgling whose parent's pane closes is observed as a pane helper, and the engine counts it (§5.2, r2-18)", () => {
+  const T = Date.UTC(2026, 10, 25, 9);
+  const s = engine.newGame({ seed: 18, now: T, day: "2026-11-25" });
+  let seq = 0;
+  const observe = (t, agents, terms) => {
+    const [a, tt] = host(agents, terms);
+    engine.apply(s, { w: "wA", s: ++seq, t, type: "observe", helpers: buildObservation(a, tt).list, visible: true, active: true, matShown: true, day: "2026-11-25" });
+  };
+  const id1 = engine.helperId("t1", 1001);
+  const id2 = engine.helperId("t2", 1002);
+  observe(T + 1000, [agent(1), agent(2)], [term(1), term(2, "working", { parent: "t1" })]);
+  assert.equal(s.helpers[id2].kind, "kid");
+  assert.equal(s.helpers[id2].parent, id1);
+  // t1's pane closes; its terminal record stays (the sub-agent still names it as parent)
+  const [a, t] = host([agent(2)], [term(1, "idle"), term(2, "working", { parent: "t1" })]);
+  const o = by(buildObservation(a, t).list).get("t2");
+  assert.equal(o.kind, "pane");
+  assert.equal(o.parent, null);
+  observe(T + 2000, [agent(2)], [term(1, "idle"), term(2, "working", { parent: "t1" })]);
+  assert.equal(s.helpers[id1].gone, true);
+  assert.equal(s.helpers[id2].kind, "pane");
+  const r = engine.rates(s, "wA");
+  assert.equal(r.nWorking, 1);
+  assert.ok(r.Hs0 > 0);
+  observe(T + 70000, [agent(2, "idle")], [term(1, "idle"), term(2, "idle", { parent: "t1", turn: 1 })]);
+  assert.equal(s.envelopes[id1], undefined);
+  assert.ok(s.envelopes[id2].units > 0);
+});
+
 test("hostile addresses: __proto__, constructor, toString, t1/../x, peer/t7", () => {
   const names = ["__proto__", "constructor", "toString", "t1/../x", "peer/t7", "hasOwnProperty"];
   const agents = names.map((n, i) => ({ address: n, pane: `p${i}`, status: i % 2 ? "blocked" : "working", title: "🧑🏽‍💻 x" }));

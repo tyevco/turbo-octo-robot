@@ -150,3 +150,81 @@ test("checkin counts a visit; dismiss removes notices; unknown actions are ignor
   assert.equal(engine.apply(s, null)[0].reason, "shape");
   assert.equal(engine.apply(s, { w: 3, s: 1, type: "click" })[0].reason, "shape");
 });
+
+// Review r2-02: Mail Sorter and the wish open only Bundles, so Rush, Storm and
+// Chorus envelopes of helpers long gone piled up for ever (≈ 88 B each), and
+// opening one un-compacted its Album record for good. Now an envelope whose
+// helper's record is compact (or no longer in the save) is cashed in, and a
+// compact record changed after compaction is compacted again (§6.1, R13).
+const waitingUnits = (s) => Object.values(s.envelopes).reduce((a, e) => a + e.units, 0);
+
+test("envelopes of helpers compacted into the Album are cashed in; none piles up; no unit is lost (§6.1, R13, r2-02)", () => {
+  const s = seeded(202);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  s.bought["mail-sorter"] = true;
+  s.owned["paper-stack"] = 20;
+  let t = T0;
+  const total = K.albumKeep + 60;
+  for (let k = 0; k < total; k++) {
+    const a = agent(100 + k, "working", 0);
+    me.act(observeAction((t += 1000), [a]));
+    me.act(observeAction((t += 61000), [{ ...a, status: "idle", turn: 1 }])); // one task, one envelope
+    me.act(observeAction((t += 1000), []));
+    t += K.mailSorterMs;
+    engine.advance(s, t); // Mail Sorter opens the Bundles; timed boosts wait for the player
+  }
+  const hs = Object.values(s.helpers);
+  const compact = hs.filter((h) => h.compact);
+  assert.equal(compact.length, total - K.albumKeep);
+  // no envelope is left under a compact record, so the waiting ones are bounded by the full Album
+  for (const id of Object.keys(s.envelopes)) assert.notEqual(s.helpers[id].compact, true, id);
+  assert.ok(Object.keys(s.envelopes).length <= K.albumKeep);
+  assert.ok(Object.keys(s.envelopes).length > 0, "the newest timed envelopes still wait for the player");
+  // conservation (BALANCE inv. 9): created = opened + converted + waiting
+  const v = s.stats.units;
+  assert.ok(Math.abs(v.created - (v.opened + v.converted + waitingUnits(s))) < 1e-9);
+  assert.ok(v.converted > 0, "timed envelopes of compacted helpers converted to folds");
+  assert.ok((s.stats.bySource.overflow || 0) > 0);
+  const note = s.notices.find((n) => n.kind === "settled");
+  assert.ok(note && note.data.amount > 0 && note.data.count >= 1, JSON.stringify(s.notices));
+  // every compact record still packs, and the save round-trips
+  const doc = JSON.parse(engine.serialize(s));
+  for (const h of compact) assert.ok(Array.isArray(doc.state.helpers[h.id]), h.id);
+  const back = engine.parseSave(engine.serialize(s));
+  assert.equal(back.ok, true);
+});
+
+test("an envelope or check-in on a compact record (an older save) never keeps it whole: the next observation settles and re-compacts it (R13, r2-02)", () => {
+  const s = seeded(203);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  s.owned["paper-stack"] = 20; // Rp > 0, so a settled envelope pays
+  let t = T0;
+  for (let k = 0; k < K.albumKeep + 3; k++) {
+    me.act(observeAction((t += 1000), [agent(100 + k)]));
+    me.act(observeAction((t += 1000), []));
+  }
+  const [a, b, c] = Object.values(s.helpers).filter((h) => h.compact);
+  // an older save: envelopes filed under compact records (one gets opened by hand first)
+  s.envelopes[a.id] = { type: "rush", units: 2, landedAt: t, lastAt: t };
+  s.envelopes[b.id] = { type: "bundle", units: 1, landedAt: t, lastAt: t };
+  s.envelopes.deadbeef = { type: "chorus", units: 1, landedAt: t, lastAt: t }; // no record at all
+  s.stats.units.created += 4;
+  me.act({ t: (t += 1000), type: "open", helperId: a.id });
+  me.act({ t: (t += 1000), type: "checkin", helperId: c.id });
+  const bank = s.bank;
+  me.act(observeAction((t += 1000), []));
+  assert.deepEqual(Object.keys(s.envelopes), []);
+  assert.ok(s.bank > bank, "the waiting ones were paid");
+  for (const h of [a, b, c]) {
+    assert.equal(h.compact, true);
+    assert.equal(h.stats.envelopes, 0);
+    assert.equal(h.stats.checkIns, 0);
+    assert.equal(h.stats.run, 0);
+  }
+  const doc = JSON.parse(engine.serialize(s));
+  for (const h of [a, b, c]) assert.ok(Array.isArray(doc.state.helpers[h.id]), h.id);
+  const v = s.stats.units;
+  assert.ok(Math.abs(v.created - (v.opened + v.converted + waitingUnits(s))) < 1e-9);
+});

@@ -101,6 +101,31 @@ export const SPECIES = f(["crane", "frog", "fox", "koi", "rabbit", "turtle", "bu
 export const HUES = f(["vermilion", "saffron", "leaf", "teal", "sky", "violet", "plum", "slate"]);
 export const NAME_A = f(["Mi", "Ko", "Pi", "Ta", "Su", "No", "Ri", "Ha", "Yu", "Fe", "Lo", "Bi", "Ka", "Mo", "Ze", "Wu"]);
 export const NAME_B = f(["na", "to", "b", "ki", "ri", "mo", "sa", "ku", "ro", "n", "li", "po"]);
+// §5.1: syllable pairs that make a slur, a sexualised slang word or a
+// well-known character's name are never given. Each takes the next pair in
+// table order (row-major, wrapping) that is not on this list.
+export const NAME_SKIP = f(["Haku", "Loki", "Loli", "Miku", "Mona", "Nob", "Pipo", "Riku", "Rito", "Tali", "Yuna", "Yuri", "Zero"]);
+// The 192 helper names, index (h >>> 8) % 16 · 12 + (h >>> 12) % 12: NAME_A × NAME_B
+// with NAME_SKIP remapped (a literal, so module scope holds data only; a test
+// rebuilds it from the three tables above).
+export const NAMES = f([
+  "Mina", "Mito", "Mib", "Miki", "Miri", "Mimo", "Misa", "Miro", "Miro", "Min", "Mili", "Mipo",
+  "Kona", "Koto", "Kob", "Koki", "Kori", "Komo", "Kosa", "Koku", "Koro", "Kon", "Koli", "Kopo",
+  "Pina", "Pito", "Pib", "Piki", "Piri", "Pimo", "Pisa", "Piku", "Piro", "Pin", "Pili", "Tana",
+  "Tana", "Tato", "Tab", "Taki", "Tari", "Tamo", "Tasa", "Taku", "Taro", "Tan", "Tapo", "Tapo",
+  "Suna", "Suto", "Sub", "Suki", "Suri", "Sumo", "Susa", "Suku", "Suro", "Sun", "Suli", "Supo",
+  "Nona", "Noto", "Noki", "Noki", "Nori", "Nomo", "Nosa", "Noku", "Noro", "Non", "Noli", "Nopo",
+  "Rina", "Rib", "Rib", "Riki", "Riri", "Rimo", "Risa", "Riro", "Riro", "Rin", "Rili", "Ripo",
+  "Hana", "Hato", "Hab", "Haki", "Hari", "Hamo", "Hasa", "Haro", "Haro", "Han", "Hali", "Hapo",
+  "Yuto", "Yuto", "Yub", "Yuki", "Yumo", "Yumo", "Yusa", "Yuku", "Yuro", "Yun", "Yuli", "Yupo",
+  "Fena", "Feto", "Feb", "Feki", "Feri", "Femo", "Fesa", "Feku", "Fero", "Fen", "Feli", "Fepo",
+  "Lona", "Loto", "Lob", "Lori", "Lori", "Lomo", "Losa", "Loku", "Loro", "Lon", "Lopo", "Lopo",
+  "Bina", "Bito", "Bib", "Biki", "Biri", "Bimo", "Bisa", "Biku", "Biro", "Bin", "Bili", "Bipo",
+  "Kana", "Kato", "Kab", "Kaki", "Kari", "Kamo", "Kasa", "Kaku", "Karo", "Kan", "Kali", "Kapo",
+  "Moto", "Moto", "Mob", "Moki", "Mori", "Momo", "Mosa", "Moku", "Moro", "Mon", "Moli", "Mopo",
+  "Zena", "Zeto", "Zeb", "Zeki", "Zeri", "Zemo", "Zesa", "Zeku", "Zen", "Zen", "Zeli", "Zepo",
+  "Wuna", "Wuto", "Wub", "Wuki", "Wuri", "Wumo", "Wusa", "Wuku", "Wuro", "Wun", "Wuli", "Wupo",
+]);
 
 // §6.1 envelope types, rolled in this order against one PRNG draw.
 export const ENVELOPES = f([

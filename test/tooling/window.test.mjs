@@ -163,7 +163,12 @@ test("layoutBoxes: herdr's geometry with separators, padding, borders, zoom and 
   filesOpen.children[1].children[1].children.find((n) => n.id === "panel").hidden = false;
   const zf = layoutBoxes(filesOpen, { width: 1000, height: 700, zoom: 1.5 });
   assert.equal(zf.main.width, 80 * 1.5, "main at its min x 1.5");
-  assert.ok(zf["cw-panel"].visible.width < zf["cw-panel"].width, "Files 420 + main 120 + rail 96 do not fit 1000 px at zoom 1.5: the panel is clipped");
+  // Files 420 + main 120 + rail 96 do not fit 1000 px at zoom 1.5: the row is clipped at its
+  // end, which is the Files column (r2-15: the game sits before it), never the game.
+  assert.ok(zf.panel.visible.width < zf.panel.width, "Files is clipped");
+  assert.ok(zf.panel.x > zf["cw-panel"].x, "Files ends the row");
+  assert.equal(zf["cw-panel"].visible.width, zf["cw-panel"].width, "the rail stays on screen");
+  assert.equal(zf["cw-panel"].width, 64 * 1.5);
   // What the game's copies measure: content boxes, in zoomed px. Worked by hand
   // from herdr's rules (not from layoutBoxes) for 1100 x 700 at zoom 1.5:
   //   sidebar 268 x 1.5 = 402, root divider 1.5 -> work 696.5 wide;

@@ -630,6 +630,84 @@ describe("clock, timers and cx", () => {
     assert.deepEqual(ctl.pendingTasks(), []);
   });
 
+  test("closeOwner: every task made in the closed copy stops, owner: null ones too (application generation)", async () => {
+    make({ now: 0, files: { "/home/p/a": "A" } });
+    const A = { name: "copy A" };
+    const B = { name: "copy B" };
+    const ran = [];
+    let keptCx;
+    await ctl.dispatch("event", A, (cx) => {
+      cx.spawn(async (tcx) => { keptCx = tcx; await tcx.sleep(100); ran.push("A sleep"); await herdr.readTextFile("/home/p/a"); ran.push("A read"); }, { owner: null });
+      cx.timer.after(800, () => ran.push("A timer"), { owner: null });
+    });
+    await ctl.dispatch("event", B, (cx) => {
+      cx.spawn(async (tcx) => { await tcx.sleep(100); ran.push("B sleep"); }, { owner: null });
+    });
+    await ctl.dispatch("event", null, (cx) => {
+      cx.spawn(async (tcx) => { await tcx.sleep(100); ran.push("outside sleep"); });
+    });
+    await ctl.advance(150);
+    assert.deepEqual(ran.sort(), ["A read", "A sleep", "B sleep", "outside sleep"]);
+    ran.length = 0;
+    // A task continued from A's spawn records A's generation too.
+    await ctl.dispatch("event", A, (cx) => {
+      cx.spawn(async (tcx) => { await tcx.sleep(50); ran.push("A again"); await tcx.sleep(500); ran.push("A late"); }, { owner: null });
+    });
+    await ctl.advance(60);
+    assert.deepEqual(ran, ["A again"]);
+    ctl.closeOwner(A);
+    await ctl.advance(1000);
+    assert.deepEqual(ran, ["A again"], "A's owner: null timer and its continued task never run");
+    assert.equal(ctl.pendingTasks().filter((t) => t.app === ctl.appOf(A, false)).length, 0);
+    await ctl.dispatch("event", B, () => {
+      assert.throws(() => keptCx.notify(), { message: MESSAGES.ended });
+    });
+    // B is untouched.
+    await ctl.dispatch("event", B, (cx) => cx.spawn(async (tcx) => { await tcx.sleep(10); ran.push("B again"); }, { owner: null }));
+    await ctl.advance(20);
+    assert.deepEqual(ran, ["A again", "B again"]);
+  });
+
+  test("closeOwner: a write already started still lands, unanswered", async () => {
+    make({ now: 0, latency: { write: 100 } });
+    const A = { name: "copy A" };
+    let answered = false;
+    await ctl.dispatch("event", A, (cx) => {
+      cx.spawn(async () => { await herdr.writeTextFile("/home/p/x.json", "{}", null); answered = true; }, { owner: null });
+    });
+    ctl.closeOwner(A);
+    await ctl.advance(500);
+    assert.equal(ctl.readFile("/home/p/x.json"), "{}");
+    assert.equal(answered, false);
+  });
+
+  test("closeView: close(cx) gets a task cx and its deadline, then the copy is released", async () => {
+    make({ now: 0, latency: { write: 10 } });
+    let done = false;
+    const view = {
+      close(cx) {
+        return (async () => {
+          await cx.sleep(0);
+          await herdr.writeTextFile("/home/p/final.json", "1", null);
+          done = true;
+        })();
+      },
+    };
+    assert.equal(await ctl.closeView(view), true);
+    assert.equal(done, true);
+    assert.equal(ctl.readFile("/home/p/final.json"), "1");
+    const slow = { close: (cx) => cx.sleep(1000) };
+    const t0 = ctl.t;
+    assert.equal(await ctl.closeView(slow, { deadlineMs: 250 }), false, "cut off at the deadline");
+    assert.ok(ctl.t - t0 >= 250 && ctl.t - t0 < 300);
+    assert.equal(ctl.pendingTasks().length, 0);
+  });
+
+  test("utf8Length counts like UTF-8 (lone surrogates as U+FFFD)", () => {
+    const cases = { "": 0, abc: 3, "é": 2, "·": 2, "€": 3, "😀": 4, "a😀b": 6, "\ud800": 3, "\udc00": 3, "\ud800x": 4, "x\udc00\ud800": 7, "日本語": 9 };
+    for (const [s, n] of Object.entries(cases)) assert.equal(utf8Length(s), n, JSON.stringify(s));
+  });
+
   test("an async cx used outside any host call refuses", async () => {
     make();
     let kept;

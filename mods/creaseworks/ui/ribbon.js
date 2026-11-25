@@ -146,14 +146,28 @@ function pipBlock(marks, T, h, id) {
 // Widths the middle area reserves. The lead chips (save chip, "Welcome back"
 // pill, narrow-window hint) share the middle row with the marks, so the
 // density level is chosen for the width they leave (DESIGN §3.10 "one mark
-// per helper, never capped"). Text widths are upper bounds (11 px text is
-// about 5.4 px a cell; 6 / 6.4 leave room for other fonts), and every lead
+// per helper, never capped"). Text widths are upper bounds: 11 px lower-case
+// text is about 5.4 px a cell (6 / 6.4 leave room for other fonts), but
+// digits and capitals are about 0.6 em (Geist, herdr's default UI font: "64"
+// is 13.3 px at 11/400), so they count `WIDE_CELL` px each. Every lead
 // element is bounded to its reserved width (max_w + truncate, or a fixed
-// button width), so the marks are never pushed past the overflow edge.
+// button width), so the marks are never pushed past the overflow edge. The
+// level-C tallies are not bounded: a count is never cut (it is the only
+// at-a-glance number for the helpers it folds), and `needOf` reserves it.
+
+/** Px a digit or capital takes at 11 px, either weight (tabular digits are about 0.62 em). */
+export const WIDE_CELL = 7.2;
 
 /** Upper bound, in px, of an 11 px text run (`weight` 400 or 600). */
 export function textBound(str, weight = 400) {
-  return Math.ceil(cellWidth(String(str ?? "")) * (weight >= 600 ? 6.4 : 6));
+  const s = String(str ?? "");
+  let wide = 0;
+  for (let k = 0; k < s.length; k++) {
+    const c = s.charCodeAt(k);
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90)) wide++;
+  }
+  const narrow = Math.max(0, cellWidth(s) - wide);
+  return Math.ceil(narrow * (weight >= 600 ? 6.4 : 6) + wide * WIDE_CELL);
 }
 
 /** Width of a `widgets.chip` pill with a 12 px glyph and an 11/600 label (border 2 + px 16 + glyph 12 + gap 4). */
@@ -170,14 +184,25 @@ const MIDDLE_GAP = 4;
 const HINT_TEXT = "Narrow window: fold Creaseworks to a rail?";
 const DENSE = Object.freeze({ A: 0, B: 1, C: 2 });
 
+/** A tally's label: the count, clipped to `RIBBON_CLIP.n` graphemes (never px-truncated). */
+function tallyLabel(t) {
+  return clip(String(t.label ?? t.count ?? 0), RIBBON_CLIP.n);
+}
+
+/** Width `needOf` reserves for a tally chip (its whole label: tallies never truncate). */
+export function tallyBound(t) {
+  return chipBound(tallyLabel(t));
+}
+
 function tally(t, T, h) {
   const status = statusOf(t.status);
   const group = GROUP_OF[status];
-  const label = clip(String(t.label ?? t.count ?? 0), RIBBON_CLIP.n);
+  const label = tallyLabel(t);
+  // No maxW: a bounded pill truncated "64" to "6…" (the bound was a guess at
+  // the font); the count sizes its own pill and needOf reserves its width.
   return chip(`cw-rib-tally-${status}`, label, {
     status,
     border: T.border,
-    maxW: chipBound(label),
     tooltip: clip(String(t.tooltip ?? `${label} ${group}`), RIBBON_CLIP.tooltip),
     onClick: (e, cx) => h.showGroup(group, cx),
   }, T);
@@ -256,7 +281,7 @@ function needOf(level, marks, tallies) {
   const pips = Math.ceil(marks.length / 2) * PIP_PITCH;
   if (level === "B") return pips;
   let w = pips;
-  for (const t of tallies) w += MIDDLE_GAP + chipBound(clip(String(t.label ?? t.count ?? 0), RIBBON_CLIP.n));
+  for (const t of tallies) w += MIDDLE_GAP + tallyBound(t);
   return w;
 }
 

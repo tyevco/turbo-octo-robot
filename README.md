@@ -26,7 +26,7 @@ These keys work only while the Creaseworks layout is shown (`layout:Creaseworks`
 | `ctrl-shift-y` | `creaseworks.answer` | Open the helper that has waited longest for you |
 | `ctrl-shift-j` | `creaseworks.envelope` | Open the oldest envelope |
 
-The command palette also has "Creaseworks: hide or show the panel". Folding the paper has no key: you fold it with the mouse.
+The command palette also has "Creaseworks: hide or show the panel" and entries for the three keys. herdr lists a mod's palette entries in every layout, but these work only while the Creaseworks layout is shown; anywhere else they show a "failed" toast and do nothing. Folding the paper has no key: you fold it with the mouse.
 
 ## Settings
 

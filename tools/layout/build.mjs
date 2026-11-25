@@ -10,7 +10,8 @@
 //   root      "preview": mods/<mod>/art/layout-preview.png (travels with the mod folder)
 //   main      "min": 80 (MAIN_MIN: a drag never squeezes the terminals below 80 px)
 //   panel     (herdr's Files/Changes column) "size": {"weight": 0.66} instead of {"px": 368}
-//   work-body last child "cw-panel": the game, {"weight": 0.39}, min 64 (folds to a 64 px rail)
+//   work-body "cw-panel": the game, {"weight": 0.39}, min 64 (folds to a 64 px rail),
+//             right after main and BEFORE the Files column (main | cw-panel | panel)
 //   work      "cw-ribbon" (30 px) between work-body and status
 // Why weights (ARCHITECTURE B15): herdr makes a {px} node flex_none, and min/max
 // only add min_w/max_w (src/window.rs sized()), so a {px} node never gives way
@@ -21,11 +22,21 @@
 // gives the game 322 px and Files 367 px at 1440 x 900, close to the shipped
 // 368 and the designed 320; at 1100 x 700 the game is 226 px (DESIGN §2.4
 // Narrow) and on big windows it keeps growing (1920: 456, 2560: 636).
+// Why cw-panel sits before Files (r2-15): herdr renders every container
+// overflow_hidden and never wraps a row, so a row whose mins do not fit is
+// clipped at its END. With Files open the mins are (80 + 64 + 280) x zoom, which
+// a window narrower than about 724 x zoom px cannot hold (1100 px from zoom 1.6,
+// 1440 px from zoom 2.0; herdr's zoom goes to 3.0). Ending the row with the
+// optional Files column makes herdr clip Files first: main and the game (at
+// least the 64 px rail) stay whole while work-body's content box holds
+// (80 + 64 + one 8 px gap) x zoom (test/layout "past zoom 1.5").
 // Why main's min is 80, not 360: herdr's main has no min; ours only stops a drag.
 // The smallest window we support, 1100 x 700 at zoom 1.5 with Files open, has
 // 649 px for main + Files (280 x 1.5) + the rail (64 x 1.5): main gets 133 px
-// (88 design px). Any min above 88 makes main hold its min there and push the
-// game off-screen (r1-32); 80 keeps everything on screen with a little slack.
+// (88 design px). Any min above 88 makes main hold its min there and cut the
+// Files column (before r2-15: the game, r1-32); 80 keeps everything on screen
+// with a little slack. Raising it would not widen the terminals in any window
+// where everything fits; past that it only trades Files width for main width.
 // At zoom 1 the terminals never come near it (1100 x 700 with Files: 373 px).
 // Field names are src/layout.rs's; tools/layout/schema.mjs checks the result.
 // <mod> and <Name> come from tools/game.json.
@@ -125,8 +136,10 @@ export function buildLayout(main, { mod }) {
   if (!files.size || typeof files.size.px !== "number") throw new Error("main.json changed shape: panel is no longer {px}-sized");
   files.size = { weight: FILES_WEIGHT };
 
+  // The game goes right after main, before Files: a too-tight row is clipped at
+  // its end, so the optional Files column is what herdr cuts first (r2-15).
   const { panel, ribbon } = gameNodes(mod);
-  workBody.children.push(panel);
+  workBody.children.splice(workBody.children.indexOf(files), 0, panel);
   work.children.splice(work.children.indexOf(status), 0, ribbon);
   return root;
 }

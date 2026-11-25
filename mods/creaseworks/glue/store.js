@@ -15,10 +15,10 @@
 // cancels a reloaded generation's tasks without settling them, so the new
 // generation's init releases such a claim (adopt) instead of waiting forever.
 
-import { readTextFile, writeTextFile } from "herdr";
-import { serialize, parseSave, newGame, apply, advance, migrate, clip, CONTENT } from "../engine/index.js";
+import { readTextFile, writeTextFile, shared, setShared } from "herdr";
+import { serialize, parseSave, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
 import { localDay, localTime } from "./clock.js";
-import { touch, markDirty, dueAt, codeGeneration, DEBOUNCE_MS } from "./live.js";
+import { touch, markDirty, dueAt, codeGeneration, confirmLog, clearLog, flash, DEBOUNCE_MS } from "./live.js";
 
 export const MOD = "creaseworks";
 export const BACKUP_EVERY_MS = 5 * 60000;
@@ -27,6 +27,15 @@ export const MERGE_RETRIES = 3;
 /** Error back-off: 10 s, 30 s, 60 s, then every 5 min (A4 step 6). */
 export const BACKOFF_MS = Object.freeze([10000, 30000, 60000, 300000]);
 export const MERGED_MS = 6000;
+/**
+ * herdr's shared map (per process, kept in the app home's shared.json) under
+ * this key lists the writer ids this window's VMs used: a VM restart
+ * (restart_mods) loads the new VM while the old one's close() write is still
+ * landing, and that write is this window's own progress, not "another
+ * window's" (r2-09). The last few are kept.
+ */
+export const WRITERS_KEY = "creaseworks.writers";
+const WRITERS_KEPT = 8;
 /**
  * Replay work per task slice (an action costs 1, an observation 1 more per 8
  * helpers): about 80 ms of QuickJS at the worst measured cost, so a long
@@ -40,12 +49,24 @@ export const REPLAY_SLICE = 400;
  * live claimant harmless.
  */
 export const WRITE_STALL_MS = 60000;
+/**
+ * A save claim whose copy has gone (closed: herdr cancels every task of that
+ * copy's application generation, owner: null ones too) is released once the
+ * copy has been missing from `slot.copies` this long. A copy that is still
+ * open beats at least every 5 s (hidden), so one only taken over by a newly
+ * opened copy (live.js takeOver) is back well within it.
+ */
+export const ORPHAN_MS = 15000;
+
+/** The notices of a released claim (the save it held is made again at once). */
+const STALLED = "A save step stopped before finishing; saving again. A Settings save tool used just then may not have taken effect.";
+const ORPHANED = "A save step was cut off when a Creaseworks view closed; saving again. A Settings save tool used just then may not have taken effect.";
 
 const CAS_TEXTS = ["The file changed outside Herdr", "The file changed while saving", "File exists", "os error 17"];
 
 /** The paths for app home `home`, or for a shared save file `shared` (backups live next to it). */
 export function pathsFor(home, shared = null) {
-  const h = String(home).replace(/\/+$/, "");
+  const h = String(home).replace(/[\\/]+$/, "");
   const dir = `${h}/data/${MOD}`;
   const save = typeof shared === "string" && shared ? shared : `${dir}/save.json`;
   const stem = save.replace(/\.json$/, "");
@@ -67,7 +88,22 @@ export function slotPaths(home, shared = null) {
 }
 
 const damagedPath = (paths, n) => `${paths.save.replace(/\.json$/, "")}.damaged-${n}.json`;
-const baseName = (p) => String(p).slice(String(p).lastIndexOf("/") + 1);
+/** The last path component, after "/" or "\\" (herdr builds for Windows too). */
+const baseName = (p) => String(p).slice(Math.max(String(p).lastIndexOf("/"), String(p).lastIndexOf("\\")) + 1);
+
+/**
+ * An absolute path on any platform herdr builds for: "/…" (Unix, and "//server/…"),
+ * a drive letter "C:\\…" or "C:/…", or a UNC path "\\\\server\\share\\…"
+ * (pickFiles returns native paths: src/mods.rs picked_files).
+ */
+export function isAbsolutePath(p) {
+  return typeof p === "string" && (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) || /^\\\\[^\\]/.test(p));
+}
+/** The end of `str` within `max` graphemes ("…/usb/creaseworks/save.json"), never cut inside one. */
+function tailClip(str, max) {
+  const g = graphemes(String(str));
+  return g.length <= max ? g.join("") : `…${g.slice(g.length - (max - 1)).join("")}`;
+}
 const recoveryPath = (paths) => paths.recovery || `${paths.save.replace(/\.json$/, "")}.recovery.json`;
 const backoff = (errors) => BACKOFF_MS[Math.min(Math.max(1, errors), BACKOFF_MS.length) - 1];
 const spoken = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60000)} min`);
@@ -83,6 +119,7 @@ function claim(S, env) {
   S.writingBy = env && typeof env.owner === "string" ? env.owner : null;
   S.writingGen = codeGeneration();
   S.writingAt = env && typeof env.now === "function" ? env.now() : null;
+  S.orphanAt = null;
   return gen;
 }
 
@@ -98,6 +135,7 @@ function abandonClaim(S) {
   S.writingBy = null;
   S.writingGen = null;
   S.writingAt = null;
+  S.orphanAt = null;
 }
 
 /** Lets the player know a Settings save tool waits for the write under way. */
@@ -108,6 +146,11 @@ function busy(slot, env) {
 
 /** Yields the task (a fresh 500 ms budget) when the caller gave a sleep, else a microtask. */
 const pause = (env) => (env && typeof env.sleep === "function" ? env.sleep(0) : Promise.resolve());
+
+/** Records progress on the save claim (WRITE_STALL_MS counts from the last one). */
+function progress(slot, env) {
+  if (slot.save.writing !== null && env && typeof env.now === "function") slot.save.writingAt = env.now();
+}
 
 /**
  * replay(live, slot.pending) in slices (REPLAY_SLICE) with a task yield
@@ -144,7 +187,7 @@ async function replayPending(live, slot, env, stale) {
       cost = 0;
       await pause(env);
       if (stale()) return null;
-      if (env && typeof env.now === "function") slot.save.writingAt = env.now(); // progress
+      progress(slot, env);
       // A coalesced observation may have left the array: resume after the last one replayed.
       i = 0;
       while (i < log.length && log[i].s <= lastS) i++;
@@ -153,13 +196,37 @@ async function replayPending(live, slot, env, stale) {
   return ev;
 }
 
+/**
+ * This window's earlier writer ids (WRITERS_KEY), with `id` recorded as the
+ * newest. Best effort: without the shared map nothing is remembered.
+ */
+function rememberWriter(id) {
+  let prev = [];
+  try {
+    const v = shared(WRITERS_KEY);
+    if (Array.isArray(v)) prev = v.filter((x) => typeof x === "string" && x !== id);
+  } catch {
+    // no shared map here: every earlier writer counts as another window
+  }
+  try {
+    setShared(WRITERS_KEY, [...prev, id].slice(-WRITERS_KEPT));
+  } catch {
+    // not recorded: a later VM restart may say "merged" once
+  }
+  return prev.slice(-(WRITERS_KEPT - 1));
+}
+
 /** applied[writer] of `state` (0 when it holds none of that writer's actions). */
 function ownApplied(state, writer) {
   return state && state.applied && Object.hasOwn(state.applied, writer) ? state.applied[writer] : 0;
 }
 
-/** Releases an abandoned save claim: status put right, a save made due at once. */
-function dropClaim(slot, t, inflightToo = false) {
+/**
+ * Releases an abandoned save claim: status put right, a save made due at once.
+ * `why` (a stalled or orphaned claim) is said in a notice that stays until
+ * dismissed: whatever the claim was doing (a merge, a Reset) did not finish.
+ */
+function dropClaim(slot, t, inflightToo = false, why = null) {
   const S = slot.save;
   abandonClaim(S);
   // A main write that never settled may have landed: the next write's CAS
@@ -169,8 +236,31 @@ function dropClaim(slot, t, inflightToo = false) {
   if (slot.state && !slot.readOnly) {
     markDirty(slot, t, true);
     S.urgentAt = t;
+    if (why) {
+      S.retryAt = 0;
+      setNotice(slot, "load", { kind: "recovered", text: why, at: t });
+    }
   }
   touch(slot);
+}
+
+/**
+ * A claim whose copy closed: its tasks were cancelled with the copy's
+ * application generation, so it never settles (r2-06). Released once the
+ * copy has been gone ORPHAN_MS (a copy only taken over beats again sooner).
+ */
+function orphaned(slot, t) {
+  const S = slot.save;
+  const by = S.writingBy;
+  if (S.writing === null || typeof by !== "string" || !slot.copies || by in slot.copies) {
+    S.orphanAt = null;
+    return false;
+  }
+  if (typeof S.orphanAt !== "number" || S.orphanAt > t) {
+    S.orphanAt = t;
+    return false;
+  }
+  return t - S.orphanAt >= ORPHAN_MS;
 }
 
 /**
@@ -179,15 +269,18 @@ function dropClaim(slot, t, inflightToo = false) {
  * code generation (live.js codeGeneration: herdr evaluates the mod's modules
  * again on every reload) is released, wherever that task stopped: the main
  * write, the backup rotation, a merge read, a Settings tool. A claim made in
- * this generation is kept even when its copy was taken over (a second panel
- * opened, a panel closed and reopened): its task (owner: null) is still
- * running and settles the claim itself; WRITE_STALL_MS covers the rest. True
+ * this generation is kept when its copy was only taken over (a second panel
+ * opened): that copy is still open and its task (owner: null) settles the
+ * claim itself. A claim whose copy closed is not: herdr cancels every task of
+ * the closed copy's application generation, owner: null ones too, so due()
+ * releases it once the copy has stayed gone ORPHAN_MS (WRITE_STALL_MS covers
+ * anything else). True
  * when an older main write may have landed (`inflight`): the caller then runs
  * resolveInflight.
  */
 export function adopt(slot, t) {
   const S = slot.save;
-  if (S.writing !== null && S.writingGen !== codeGeneration()) dropClaim(slot, t);
+  if (S.writing !== null && S.writingGen !== codeGeneration()) dropClaim(slot, t); // (a cut-off share: the save made due settles it)
   return !!slot.inflight && S.writing === null;
 }
 
@@ -244,6 +337,11 @@ async function findKept(paths, text) {
  * when it could not be written.
  */
 export async function keepAside(paths, text) {
+  return (await keepAsideShifting(paths, text)).name;
+}
+
+/** keepAside, also saying whether the kept files moved down one (`shifted`; then 1 was replaced). */
+async function keepAsideShifting(paths, text) {
   const have = [];
   for (let n = 1; n <= DAMAGED_MAX; n++) {
     const r = await readOrError(damagedPath(paths, n));
@@ -251,19 +349,59 @@ export async function keepAside(paths, text) {
     if (r.text === null && r.error === null) {
       try {
         await writeTextFile(damagedPath(paths, n), text, null);
-        return baseName(damagedPath(paths, n));
+        return { name: baseName(damagedPath(paths, n)), shifted: false };
       } catch {
-        return null;
+        return { name: null, shifted: false };
       }
     }
   }
+  let moved = 0;
   try {
-    for (let n = 1; n < DAMAGED_MAX; n++) await writeTextFile(damagedPath(paths, n), have[n], have[n - 1]);
+    for (let n = 1; n < DAMAGED_MAX; n++) {
+      await writeTextFile(damagedPath(paths, n), have[n], have[n - 1]);
+      moved = n;
+    }
     await writeTextFile(damagedPath(paths, DAMAGED_MAX), text, have[DAMAGED_MAX - 1]);
-    return baseName(damagedPath(paths, DAMAGED_MAX));
+    return { name: baseName(damagedPath(paths, DAMAGED_MAX)), shifted: true };
   } catch {
-    return null;
+    return { name: null, shifted: moved > 0, moved };
   }
+}
+
+/**
+ * Keeps `text` aside (keepAside) and lists it in Details (`save.damaged`,
+ * with `reason` when given). When the five kept files moved down one, the
+ * names already listed move with them (the oldest, replaced, leaves the list),
+ * so every name listed is the file that holds what it was listed for.
+ * Returns the kept file's name, or null.
+ */
+async function keepAsideListed(slot, paths, text, reason = null) {
+  const r = await keepAsideShifting(paths, text);
+  const S = slot.save;
+  if (r.shifted) {
+    const upto = typeof r.moved === "number" ? r.moved : DAMAGED_MAX - 1; // files 2..upto+1 moved to 1..upto
+    const stem = baseName(paths.save).replace(/\.json$/, "");
+    const next = [];
+    for (const d of S.damaged) {
+      const m = String(d).match(/^(.*)\.damaged-(\d+)\.json(.*)$/);
+      if (!m || m[1] !== stem) {
+        next.push(d);
+        continue;
+      }
+      const n = Number(m[2]);
+      if (n === 1) continue; // replaced
+      const moved = n <= upto + 1 ? `${stem}.damaged-${n - 1}.json${m[3]}` : d; // (a move cut short leaves the rest)
+      if (next.indexOf(moved) < 0) next.push(moved);
+    }
+    S.damaged = next;
+  }
+  if (r.name) {
+    const entry = reason ? `${r.name} (${reason})` : r.name;
+    // (a name listed before for a file that has gone since is not that file any more)
+    S.damaged = S.damaged.filter((d) => d !== r.name && !String(d).startsWith(`${r.name} (`));
+    S.damaged.push(entry);
+  }
+  return r.name;
 }
 
 function setNotice(slot, which, notice) {
@@ -314,7 +452,7 @@ export async function load(slot, opts) {
   if (loc.text !== null) {
     try {
       const doc = JSON.parse(loc.text);
-      if (doc && typeof doc.path === "string" && doc.path.startsWith("/") && doc.path.endsWith(".json")) shared = doc.path;
+      if (doc && typeof doc.path === "string" && isAbsolutePath(doc.path) && doc.path.endsWith(".json")) shared = doc.path;
       // {"path": null} is what "stop sharing" writes: this window's own save, nothing damaged
       else if (!(doc && typeof doc === "object" && doc.path === null)) locBad = true;
     } catch {
@@ -322,13 +460,25 @@ export async function load(slot, opts) {
     }
   }
   slot.paths = slotPaths(home, shared);
-  const P = slot.paths;
   const fresh = () => newGame({ seed: opts.seed, now: t0, day: localDay(t0) });
   const S = slot.save;
-  const main = await readOrError(P.save);
+  let main = await readOrError(slot.paths.save);
   if (stale()) return false;
-  const bak = await readOrError(P.bak);
+  let bak = await readOrError(slot.paths.bak);
   if (stale()) return false;
+  // The shared save is not there (deleted, moved, a drive not mounted): this
+  // window's own save loads, with a notice, and nothing is created at the
+  // shared path (sharing it again in Settings rejoins). Never a silent fresh start.
+  let missingShared = null;
+  if (shared && main.error === null && bak.error === null && main.text === null && bak.text === null) {
+    missingShared = shared;
+    slot.paths = slotPaths(home, null);
+    main = await readOrError(slot.paths.save);
+    if (stale()) return false;
+    bak = await readOrError(slot.paths.bak);
+    if (stale()) return false;
+  }
+  const P = slot.paths;
   slot.bakText = bak.text;
   slot.bakAt = null;
   slot.bakState = null;
@@ -379,9 +529,8 @@ export async function load(slot, opts) {
       // save.json damaged (or missing beside a backup)
       let kept = null;
       if (main.text !== null) {
-        kept = await keepAside(P, main.text);
+        kept = await keepAsideListed(slot, P, main.text);
         if (stale()) return false;
-        if (kept) S.damaged.push(kept);
       }
       slot.baseText = main.text;
       S.baseOk = false;
@@ -396,9 +545,8 @@ export async function load(slot, opts) {
       } else {
         let keptBak = null;
         if (bak.text !== null) {
-          keptBak = await keepAside(P, bak.text);
+          keptBak = await keepAsideListed(slot, P, bak.text);
           if (stale()) return false;
-          if (keptBak) S.damaged.push(keptBak);
         }
         state = fresh();
         notice = { kind: "fresh", text: freshText(main.text !== null, kept, bak.text !== null, keptBak), at: t0 };
@@ -408,9 +556,16 @@ export async function load(slot, opts) {
   if (locBad && !notice) {
     notice = { kind: "recovered", text: "The shared-save pointer (location.json) was damaged. Using this window's own save.", at: t0 };
   }
+  let goneNotice = null;
+  if (missingShared) {
+    const gone = `Shared save not found: ${tailClip(missingShared, 40)}. Using this window's own; share again in Settings when it's back.`;
+    if (!notice) notice = { kind: "recovered", text: gone, at: t0 };
+    else if (typeof notice.text === "string" && notice.kind !== "error") notice = { ...notice, text: `${gone} ${notice.text}` };
+    else goneNotice = { kind: "recovered", text: gone, at: t0 }; // beside an unreadable local save (a newer one wins)
+  }
   slot.state = state;
-  slot.pending = [];
-  slot.logObs = null;
+  if (!Array.isArray(slot.ownWriters) || slot.ownWriters.length === 0) slot.ownWriters = rememberWriter(slot.writerId);
+  clearLog(slot);
   S.ownApplied = ownApplied(state, slot.writerId);
   slot.inflight = null;
   S.writing = null;
@@ -424,7 +579,7 @@ export async function load(slot, opts) {
   if (notice && notice.kind === "error") {
     // save.json unreadable: shown at once; the recovery file is written on the normal cadence
     slot.notices.write = notice;
-    slot.notices.load = null;
+    slot.notices.load = goneNotice;
     S.errors = 1;
     S.retryAt = 0;
     S.status = "error";
@@ -437,6 +592,11 @@ export async function load(slot, opts) {
   if (!S.baseOk && !slot.readOnly) {
     markDirty(slot, t0, true);
     S.urgentAt = t0;
+  } else if (!slot.readOnly) {
+    // Otherwise saved within the 2 s debounce, not the 15 s cadence: on a VM
+    // restart the old VM's final write may land just after this read, and the
+    // compare-and-swap of this first save merges it back in at once (r2-09).
+    markDirty(slot, t0, true);
   }
   touch(slot);
   return true;
@@ -469,8 +629,9 @@ export function due(slot, t) {
   const S = slot.save;
   if (S.writing !== null && typeof S.writingAt === "number") {
     if (S.writingAt > t) S.writingAt = t; // the clock moved back
-    else if (t - S.writingAt > WRITE_STALL_MS) dropClaim(slot, t, true); // never settled: released
+    else if (t - S.writingAt > WRITE_STALL_MS) dropClaim(slot, t, true, STALLED); // never settled: released, and said
   }
+  if (orphaned(slot, t)) dropClaim(slot, t, true, ORPHANED);
   if (!slot.state || slot.readOnly || slot.loading || S.writing !== null || slot.inflight) return false;
   rebaseClock(slot, t);
   if (t < S.retryAt) return false;
@@ -506,13 +667,24 @@ async function mergeFromDisk(slot, env, stale) {
     slot.save.baseOk = false;
     return { ok: true, refunds: [] };
   }
+  // A year-old save takes a large share of the 500 ms task budget to take in
+  // (the read), to parse, and as much again to serialise: each in a task step
+  // of its own.
+  await pause(env);
+  if (stale()) return { stop: true };
   const parsed = parseSave(r.text);
   if (parsed.ok) {
+    await pause(env);
+    if (stale()) return { stop: true };
+    progress(slot, env);
     const live = parsed.state;
-    // Did another writer add anything? (A reload's own late write is not "another window".)
+    // Did another writer add anything? (A reload's own late write is not "another
+    // window", nor is the final write of this window's previous VM: ownWriters.)
     let foreign = false;
+    const own = Array.isArray(slot.ownWriters) ? slot.ownWriters : [];
     for (const k of Object.keys(live.applied)) {
-      if (k !== slot.writerId && live.applied[k] > (Object.hasOwn(slot.state.applied, k) ? slot.state.applied[k] : 0)) foreign = true;
+      if (k === slot.writerId || own.indexOf(k) >= 0) continue;
+      if (live.applied[k] > (Object.hasOwn(slot.state.applied, k) ? slot.state.applied[k] : 0)) foreign = true;
     }
     // Actions this window already saved are missing: another window replaced
     // the file (Reset, Restore, or a save it could not merge, which keeps the
@@ -521,7 +693,7 @@ async function mergeFromDisk(slot, env, stale) {
     if (had < (slot.save.ownApplied || 0)) {
       const kept = await findKept(P, slot.baseText);
       if (stale()) return { stop: true };
-      if (kept && slot.save.damaged.indexOf(kept) < 0) slot.save.damaged.push(kept);
+      if (kept && !slot.save.damaged.some((d) => d === kept || String(d).startsWith(`${kept} (`))) slot.save.damaged.push(kept);
       slot.save.ownApplied = had;
       setNotice(slot, "load", {
         kind: "recovered",
@@ -550,9 +722,8 @@ async function mergeFromDisk(slot, env, stale) {
     setNotice(slot, "load", { kind: "newer", at: t });
     return { stop: true };
   }
-  const kept = await keepAside(P, r.text);
+  const kept = await keepAsideListed(slot, P, r.text);
   if (stale()) return { stop: true };
-  if (kept) slot.save.damaged.push(kept);
   slot.baseText = r.text;
   slot.save.baseOk = false;
   setNotice(slot, "load", {
@@ -585,9 +756,8 @@ async function overwriteBase(slot, env, stale) {
       return { stop: true };
     }
     if (!S.overwrite) {
-      const kept = await keepAside(P, r.text);
+      const kept = await keepAsideListed(slot, P, r.text);
       if (stale()) return { stop: true };
-      if (kept) S.damaged.push(kept);
       setNotice(slot, "load", {
         kind: "recovered",
         text: kept
@@ -648,7 +818,7 @@ async function recoveryWrite(slot, env, stale) {
     const done = env.now();
     S.recoveryText = text;
     S.confirmed = upto;
-    slot.pending = slot.pending.filter((a) => a.s > upto);
+    confirmLog(slot, upto);
     S.logLost = false;
     S.writtenRev = rev;
     S.status = "error"; // save.json itself is still not written
@@ -732,11 +902,25 @@ export async function cycle(slot, env) {
   let merged = false;
   const refunds = [];
   try {
+    if (S.sharing) {
+      // A "Share a save" cut off after its pointer write (r2-08): follow the pointer first.
+      if (!(await settleShare(slot, env, stale))) return false;
+    }
     if (S.unreadable) {
       const r = await recoveryWrite(slot, env, stale);
       if (r !== "main") return r === true;
     }
     for (let attempt = 0; attempt <= MERGE_RETRIES; attempt++) {
+      if (attempt > 0 || typeof (env && env.sleep) === "function") {
+        // The serialisation runs in a task step of its own, never after a
+        // merge (parse, replay, advance), an overwrite read or the tick that
+        // started the save: on a save a year old each of those is a large
+        // share of herdr's 500 ms budget per step, and its interrupt cannot be
+        // caught (the claim would stall for WRITE_STALL_MS).
+        await pause(env);
+        if (stale()) return false;
+        progress(slot, env);
+      }
       const t = env.now();
       // 2. rotate the backup so it trails the main save
       if (S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
@@ -788,7 +972,7 @@ export async function cycle(slot, env) {
       S.baseOk = true;
       S.confirmed = upto;
       S.ownApplied = own;
-      slot.pending = slot.pending.filter((a) => a.s > upto);
+      confirmLog(slot, upto);
       S.status = "ok";
       S.savedAt = done;
       S.errors = 0;
@@ -823,6 +1007,51 @@ export async function cycle(slot, env) {
   }
 }
 
+/**
+ * Finishes a "Share a save" whose task was cut off after it started writing
+ * location.json (a hot reload, a stalled claim): the pointer on disk is read
+ * again and this window saves to the file it names from now on. Its
+ * unconfirmed actions are merged onto that file by the next write (expecting
+ * "absent" makes a file there a CAS conflict), or the file is created. Said
+ * with the flash the share would have shown. False when superseded.
+ */
+async function settleShare(slot, env, stale) {
+  const S = slot.save;
+  const loc = await readOrError(pathsFor(slot.home).location);
+  if (stale()) return false;
+  let want;
+  if (loc.error !== null) want = undefined;
+  else if (loc.text === null) want = null;
+  else {
+    try {
+      const doc = JSON.parse(loc.text);
+      want = doc && typeof doc.path === "string" && isAbsolutePath(doc.path) && doc.path.endsWith(".json") ? doc.path : doc && doc.path === null ? null : undefined;
+    } catch {
+      want = undefined;
+    }
+  }
+  S.sharing = null;
+  if (want === undefined) return true; // can't tell: the file in use stays (the next load says what it finds)
+  const was = slot.paths.shared || null;
+  slot.paths = slotPaths(slot.home, want);
+  const bak = await readOrError(slot.paths.bak);
+  if (stale()) return false;
+  slot.bakText = bak.error === null ? bak.text : null;
+  slot.bakAt = null;
+  slot.bakState = null;
+  S.unreadable = null;
+  S.recoveryText = null;
+  S.ownApplied = 0; // none of this window's saves may be in that file yet
+  slot.baseText = null;
+  S.baseOk = false;
+  const t = env.now();
+  markDirty(slot, t, true);
+  S.urgentAt = t;
+  if (want !== was) flash(slot, want ? `Now sharing ${baseName(want)} with another herdr home.` : "Back to this window's own save.", t);
+  touch(slot);
+  return true;
+}
+
 /** Expires the `merged` notice (6 s). */
 export function expireNotices(slot, t) {
   const w = slot.notices.write;
@@ -850,7 +1079,7 @@ export async function resolveInflight(slot, env = null) {
       S.baseOk = true;
       S.confirmed = inf.upto;
       if (typeof inf.own === "number") S.ownApplied = inf.own;
-      slot.pending = slot.pending.filter((a) => a.s > inf.upto);
+      confirmLog(slot, inf.upto);
     }
     slot.inflight = null;
   } finally {
@@ -909,9 +1138,8 @@ export async function checkSave(slot, env) {
       if (r.text !== slot.baseText) retryNow(slot, t); // another writer's change: merge it now
       return parsed.ok ? "ok" : "newer";
     }
-    const kept = await keepAside(slot.paths, r.text);
+    const kept = await keepAsideListed(slot, slot.paths, r.text);
     if (stale()) return "stale";
-    if (kept) S.damaged.push(kept);
     slot.baseText = r.text;
     S.baseOk = false;
     setNotice(slot, "load", { kind: "recovered", text: `The save file was damaged. ${kept ? "Kept it aside; s" : "S"}aving your progress again.`, at: t });
@@ -941,15 +1169,13 @@ async function replaceGame(slot, env, make, reason) {
     if (stale()) return "stale";
     let kept = null;
     if (r.text !== null) {
-      kept = await keepAside(slot.paths, r.text);
+      kept = await keepAsideListed(slot, slot.paths, r.text, reason);
       if (stale()) return "stale";
-      if (kept) S.damaged.push(`${kept} (${reason})`);
     }
     slot.baseText = r.error === null ? r.text : slot.baseText;
     S.baseOk = false;
     slot.state = next;
-    slot.pending = [];
-    slot.logObs = null;
+    clearLog(slot);
     S.ownApplied = 0;
     slot.inflight = null;
     slot.readOnly = false;
@@ -1008,7 +1234,7 @@ export async function sharePath(slot, env, path) {
     env.flash(`This window already saves to ${baseName(target)}.`);
     return "same";
   }
-  if (target !== "" && target !== local && !(target.startsWith("/") && target.endsWith(".json"))) {
+  if (target !== "" && target !== local && !(isAbsolutePath(target) && target.endsWith(".json"))) {
     env.flash("A shared save path must be absolute and end in .json.");
     return "invalid";
   }
@@ -1031,10 +1257,16 @@ export async function sharePath(slot, env, path) {
     const locPath = pathsFor(slot.home).location;
     const cur = await readOrError(locPath);
     if (stale()) return "stale";
+    // From here the pointer may change while this task is cut off (a hot
+    // reload cancels it, the write lands anyway): the next save cycle then
+    // re-reads location.json and follows it (settleShare), so the window
+    // never keeps saving to a file the pointer no longer names.
+    S.sharing = { to: joining ? dest : null };
     try {
       await writeTextFile(locPath, JSON.stringify({ path: joining ? dest : null }), cur.text);
     } catch (e) {
       if (stale()) return "stale";
+      S.sharing = null; // nothing changed
       env.flash(`Can't write location.json: ${hostMessage(e)}`);
       return "error";
     }
@@ -1070,6 +1302,7 @@ export async function sharePath(slot, env, path) {
       slot.baseText = null; // absent: this window's game creates it
       S.baseOk = false;
     }
+    S.sharing = null;
     retryNow(slot, env.now());
     env.flash(joining ? `Now sharing ${baseName(dest)} with another herdr home.` : "Back to this window's own save.");
     return "ok";

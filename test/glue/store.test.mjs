@@ -511,3 +511,150 @@ test("r1-13: a damaged backup is reported as damaged, not 'present'", async () =
   assert.equal(info.backup, "damaged");
   assert.deepEqual(info.damaged, ["save.damaged-1.json", "save.damaged-2.json"]);
 });
+
+test("r2-07: a shared-save pointer to a missing file loads this window's own save, says so, and creates nothing there", async () => {
+  const shared = "/other/home/data/creaseworks/save.json";
+  const local = freshState(6);
+  local.bank = 777777;
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: shared }), [SAVE]: saveText(local) } });
+  const v = await w.copy("panel");
+  await w.flush();
+  await w.advance(5000);
+  assert.equal(w.slot.paths.save, SAVE, "this window's own save");
+  assert.ok(w.slot.state.bank >= 777777, "its progress loaded, not a fresh game");
+  assert.equal(w.slot.notice && w.slot.notice.kind, "recovered");
+  assert.match(w.slot.notice.text, /^Shared save not found: \/other\/home\/data\/creaseworks\/save\.json\. Using this window's own; share again in Settings/);
+  assert.ok([...w.slot.notice.text].length <= 140, "fits the banner");
+  assert.equal(w.ctl.readFile(shared), null, "nothing created at the shared path");
+  assert.equal(v.session.ctx().save.shared, false);
+  assert.deepEqual(JSON.parse(w.ctl.readFile(`${DIR}/location.json`)), { path: shared }, "the pointer stays (the drive may come back)");
+});
+
+test("r2-07: a missing shared save beside no local save starts fresh, never silently", async () => {
+  const shared = "/mnt/usb/a-rather-long-folder-name-for-the-shared-game/creaseworks/save.json";
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: shared }) } });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.notice && w.slot.notice.kind, "recovered");
+  assert.match(w.slot.notice.text, /^Shared save not found: …[^…]*\/creaseworks\/save\.json\./, "the end of the path, clipped at the front");
+  await w.advance(3000);
+  assert.ok(parsed(w.ctl).ok, "the local save is created");
+  assert.equal(w.ctl.readFile(shared), null);
+});
+
+test("r2-08: a hot reload during Share a save: the next save follows the pointer that landed", async () => {
+  const shared = "/other/home/data/creaseworks/save.json";
+  const s = freshState(7);
+  s.bank = 999;
+  w = win({ files: { [shared]: saveText(s) }, latency: { write: 300, read: 0 } });
+  const v = await w.copy("panel");
+  await w.advance(5000);
+  await w.handler(v, "sharePath", shared);
+  for (let i = 0; i < 3; i++) await w.advance(50);
+  assert.notEqual(w.slot.save.writing, null, "the pointer write is under way");
+  assert.ok(w.slot.save.sharing, "its intent is recorded first");
+  await w.reload();
+  await w.advance(1000);
+  assert.deepEqual(JSON.parse(w.ctl.readFile(`${DIR}/location.json`)), { path: shared }, "the cut-off write landed");
+  assert.equal(w.slot.paths.save, shared, "and this window saves where it points");
+  assert.equal(w.slot.save.sharing, null);
+  assert.match(w.slot.flash.text, /Now sharing save\.json/);
+  await w.hits(w.copies[0], 3);
+  await w.advance(20000);
+  const p = parsed(w.ctl, shared).state;
+  assert.equal(p.stats.hits, 3, "play after the reload reaches the shared file");
+  assert.ok(p.bank >= 999 || p.lifetime >= 999, "joined onto that game");
+  assert.equal(w.slot.notice, null, "no false 'another window replaced the save'");
+});
+
+test("r2-08: a share whose pointer write failed keeps the file in use", async () => {
+  const shared = "/other/home/data/creaseworks/save.json";
+  w = win({ files: { [shared]: saveText(freshState(7)) } });
+  const v = await w.copy("panel");
+  await w.advance(5000);
+  w.ctl.failNextWrite("Permission denied (os error 13)", `${DIR}/location.json`);
+  await w.handler(v, "sharePath", shared);
+  await w.advance(100);
+  assert.match(w.slot.flash.text, /Can't write location\.json/);
+  assert.equal(w.slot.save.sharing, null);
+  assert.equal(w.slot.paths.save, SAVE);
+});
+
+test("r2-10: Windows paths (drive letter, UNC) are absolute for Share a save and the pointer", async () => {
+  for (const p of ["C:\\Users\\me\\herdr\\data\\creaseworks\\save.json", "d:/games/save.json", "\\\\server\\share\\save.json", "/home/me/save.json"]) {
+    assert.equal(store.isAbsolutePath(p), true, p);
+  }
+  for (const p of ["save.json", "C:save.json", "\\save.json", "./save.json", ""]) assert.equal(store.isAbsolutePath(p), false, p);
+  const win32 = "C:\\Users\\me\\other\\save.json";
+  const P = store.pathsFor("C:\\Users\\me\\herdr-app\\", win32);
+  assert.equal(P.bak, "C:\\Users\\me\\other\\save.bak.json");
+  assert.equal(P.damaged(2), "C:\\Users\\me\\other\\save.damaged-2.json");
+  // A picked Windows path is accepted and the pointer to it is followed on the next load.
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: win32 }), [win32]: saveText(freshState(8)) } });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.paths.save, win32, "a drive-letter pointer is not 'damaged'");
+  assert.equal(w.slot.notice, null);
+  const v = w.copies[0];
+  await w.handler(v, "sharePath", "");
+  await w.advance(100);
+  assert.match(w.slot.flash.text, /Back to this window's own save/);
+  await w.handler(v, "sharePath", win32);
+  await w.advance(100);
+  assert.match(w.slot.flash.text, /^Now sharing save\.json/, "the file name after the last backslash");
+  assert.equal(w.slot.paths.save, win32);
+});
+
+test("r2-11: Details lists each kept damaged copy once, under the name that holds it now", async () => {
+  w = win();
+  await w.copy("panel");
+  await w.advance(3000);
+  for (let i = 0; i < 7; i++) {
+    w.ctl.externalWrite(SAVE, `garbage ${i}`);
+    let p;
+    await w.ctl.dispatch("task", null, () => {
+      p = store.checkSave(w.slot, { now: () => Date.now() });
+    });
+    await w.ctl.flush();
+    assert.equal(await p, "damaged");
+    await w.advance(3000);
+  }
+  const list = w.slot.save.damaged;
+  assert.deepEqual(list, ["save.damaged-1.json", "save.damaged-2.json", "save.damaged-3.json", "save.damaged-4.json", "save.damaged-5.json"]);
+  for (let n = 1; n <= 5; n++) assert.equal(w.ctl.readFile(damaged(n)), `garbage ${n + 1}`, `damaged-${n} holds the ${n + 2}th damaged file`);
+  // With reasons: a reset kept when all five are full shifts the others too.
+  await w.handler(w.copies[0], "resetGame");
+  await w.advance(3000);
+  assert.deepEqual(w.slot.save.damaged.slice(-2), ["save.damaged-4.json", "save.damaged-5.json (reset)"]);
+  assert.equal(new Set(w.slot.save.damaged).size, w.slot.save.damaged.length, "no name twice");
+  assert.deepEqual(w.copies[0].session.ctx().save.damaged, w.slot.save.damaged.slice(-5));
+});
+
+test("r2-09: a VM restart's late final write is this window's own: merged back at once, no 'another window' banner", async () => {
+  const { dropSlot } = await import("./_util.mjs");
+  const { newCodeGeneration } = await import("../../mods/creaseworks/glue/live.js");
+  w = win({ latency: { write: 60, read: 0 } });
+  const v = await w.copy("panel");
+  await w.advance(5000);
+  await w.hits(v, 2);
+  await w.advance(20000);
+  await w.hits(v, 4); // not saved yet
+  const p = w.ctl.within("event", v, (cx) => v.session.close(cx));
+  assert.notEqual(p, null, "the closing ticker writes");
+  // restart_mods: the old VM closes detached and the new one loads at once (same process: same shared map).
+  w.ctl.newGeneration();
+  newCodeGeneration();
+  dropSlot();
+  w.copies.length = 0;
+  await w.copy("panel");
+  await w.advance(10);
+  assert.equal(w.slot.state.stats.hits, 2, "the new VM read the file before the old VM's write landed");
+  let merged = false;
+  for (let i = 0; i < 40; i++) {
+    await w.advance(100);
+    if (w.slot.notice && w.slot.notice.kind === "merged") merged = true;
+  }
+  assert.equal(parsed(w.ctl).state.stats.hits, 6);
+  assert.equal(w.slot.state.stats.hits, 6, "back within the 2 s debounce, not the 15 s cadence");
+  assert.equal(merged, false, "the previous VM is not 'another window'");
+});

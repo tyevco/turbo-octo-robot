@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "./_util.mjs";
-import { SAVE_VERSION } from "../../mods/creaseworks/engine/save-codec.js";
+import { SAVE_VERSION, saveCheck } from "../../mods/creaseworks/engine/save-codec.js";
 
 function played() {
   const s = seeded(21);
@@ -15,14 +15,42 @@ function played() {
   return s;
 }
 
-test("serialize: format, version, FNV-1a check over the canonical state; round trip is exact", () => {
+/** The format 3 check, written out from its definition (DESIGN R13): rest + "\n" + chunk digests. */
+function checkByHand(state) {
+  const ids = Object.keys(state.helpers);
+  let digests = "";
+  let cur = {};
+  let n = 0;
+  for (const id of ids) {
+    cur[id] = state.helpers[id];
+    n++;
+    if ((parseInt(id.slice(-2), 16) & 63) === 0) {
+      digests += engine.fnv1a32(JSON.stringify(cur));
+      cur = {};
+      n = 0;
+    }
+  }
+  if (n) digests += engine.fnv1a32(JSON.stringify(cur));
+  const rest = JSON.stringify({ ...state, helpers: "\u0001helpers" });
+  return engine.fnv1a32(`${rest}\n${digests}`);
+}
+
+/** A file of format 1 or 2 (check = FNV-1a 32 of the whole state text) for the same state. */
+function oldFormat(text, version) {
+  const doc = JSON.parse(text);
+  const body = JSON.stringify(doc.state);
+  return `{"format":"creaseworks-save","version":${version},"check":"${engine.fnv1a32(body)}","state":${body}}`;
+}
+
+test("serialize: format, version, chunked FNV-1a check over the canonical state; round trip is exact", () => {
   const s = played();
   const text = engine.serialize(s);
   const doc = JSON.parse(text);
   assert.equal(doc.format, "creaseworks-save");
   assert.equal(doc.version, SAVE_VERSION);
   assert.equal(doc.state.version, engine.VERSION);
-  assert.equal(doc.check, engine.fnv1a32(JSON.stringify(doc.state)));
+  assert.equal(doc.check, checkByHand(doc.state));
+  assert.equal(doc.check, saveCheck(doc.state));
   assert.match(doc.check, /^[0-9a-f]{8}$/);
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
@@ -67,24 +95,33 @@ test("damaged inputs are reported, never thrown (A4, A12)", () => {
   assert.equal(engine.parseSave(JSON.stringify(doc2)).reason, "check");
 });
 
-test("the file format is 2 (packed Album entries): a format-1 build reads it as newer, never as damaged (R13)", () => {
+test("the file format is 3 (chunked check); formats 1 and 2 still load; a newer one is read-only, never damaged (R13)", () => {
   // Builds before Album compaction compare the envelope version with their own
   // VERSION (1): "newer" means read-only and never written, where "shape" would
   // restore the backup and write it over this save (a rollback).
-  assert.equal(SAVE_VERSION, 2);
+  assert.equal(SAVE_VERSION, 3);
   assert.ok(SAVE_VERSION > engine.VERSION);
-  const doc = JSON.parse(engine.serialize(played()));
-  assert.ok(doc.version > 1);
-  // a format-1 file (no packed entries, or one written while the format was still 1) still loads
   const s = played();
-  const v1 = engine.serialize(s).replace(`"version":${SAVE_VERSION},`, '"version":1,');
-  const back = engine.parseSave(v1);
-  assert.equal(back.ok, true);
-  assert.equal(back.state.bank, s.bank);
-  // a format newer than this build's is read-only
-  const v3 = engine.serialize(s).replace(`"version":${SAVE_VERSION},`, `"version":${SAVE_VERSION + 1},`);
-  assert.equal(engine.parseSave(v3).reason, "newer");
-  assert.equal(engine.parseSave(v3).state.bank, s.bank);
+  const text = engine.serialize(s);
+  assert.equal(JSON.parse(text).version, 3);
+  // format-1 and format-2 files (whole-text check) still load, to the same game
+  for (const v of [1, 2]) {
+    const back = engine.parseSave(oldFormat(text, v));
+    assert.equal(back.ok, true, `format ${v}`);
+    assert.equal(engine.serialize(back.state), text, `format ${v}`);
+    // a damaged one is still caught
+    assert.equal(engine.parseSave(oldFormat(text, v).replace(`"bank":${s.bank}`, `"bank":${s.bank + 1}`)).reason, "check");
+  }
+  // a format-3 file with the old whole-text check is damaged, not trusted
+  assert.equal(engine.parseSave(oldFormat(text, 3)).reason, "check");
+  // a format newer than this build's is read-only: with the same check rule its state shows,
+  // with a check this build cannot verify it is still "newer" (never restored over)
+  const v4 = text.replace(`"version":${SAVE_VERSION},`, `"version":${SAVE_VERSION + 1},`);
+  assert.equal(engine.parseSave(v4).reason, "newer");
+  assert.equal(engine.parseSave(v4).state.bank, s.bank);
+  const v4other = oldFormat(text, SAVE_VERSION + 1);
+  assert.equal(engine.parseSave(v4other).reason, "newer");
+  assert.equal(engine.parseSave(v4other).state, undefined);
 });
 
 test("a newer version is detected (state kept for read-only display); migrate() refuses it", () => {
@@ -92,7 +129,7 @@ test("a newer version is detected (state kept for read-only display); migrate() 
   const newer = { ...JSON.parse(engine.serialize(s)) };
   newer.version = SAVE_VERSION + 1;
   newer.state.version = engine.VERSION + 1;
-  newer.check = engine.fnv1a32(JSON.stringify(newer.state));
+  newer.check = saveCheck(newer.state);
   const r = engine.parseSave(JSON.stringify(newer));
   assert.equal(r.ok, false);
   assert.equal(r.reason, "newer");
@@ -227,7 +264,7 @@ test("Album compaction: old gone helpers are packed, never dropped, and a round 
   const packed = Object.values(doc.state.helpers).filter(Array.isArray);
   assert.equal(packed.length, compact.length);
   assert.ok(packed.every((a) => a.length === 4 || a.length === 6));
-  assert.equal(doc.check, engine.fnv1a32(JSON.stringify(doc.state)));
+  assert.equal(doc.check, checkByHand(doc.state));
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
   assert.equal(engine.serialize(back.state), text);
@@ -287,7 +324,7 @@ test("a compacted helper whose agent returns rejoins with its name and stats; it
   assert.equal(h.stats.tasks, 2);
 });
 
-test("a compact record changed after compaction is saved whole; a malformed packed entry is 'shape' (R13)", () => {
+test("a compact record changed after compaction is saved whole until the next observation compacts it again; a malformed packed entry is 'shape' (R13)", () => {
   const s = seeded(43);
   const me = writer(s);
   const K = engine.CONTENT.K;
@@ -307,6 +344,10 @@ test("a compact record changed after compaction is saved whole; a malformed pack
   assert.equal(back.ok, true);
   assert.equal(back.state.helpers[c[0].id].stats.checkIns, 1);
   assert.equal(engine.serialize(back.state), text);
+  // review r2-02: it does not stay whole for good, the next observation compacts it again
+  me.act(observeAction((t += 1000), []));
+  assert.equal(Array.isArray(JSON.parse(engine.serialize(s)).state.helpers[c[0].id]), true);
+  assert.equal(c[0].stats.checkIns, 0);
   // a damaged packed entry with a matching check is a shape error, never a throw
   for (const bad of [[], ["x"], [0, "1", 1, 1], [0, 1, 1, 1, 0, 0], ["", 1, 1, 1]]) {
     const st = JSON.parse(JSON.stringify(doc.state));
@@ -358,4 +399,69 @@ test("compaction skips a gone record whose id is not an engine id (legacy or han
   assert.equal(back.ok, true);
   assert.equal(engine.serialize(back.state), text);
   assert.equal(engine.view(st, st.clock, { writer: "wB" }).helpers.albumCount, K.albumKeep + 3);
+});
+
+// --- Save cost (review r2-01): the chunked check and its digest cache --------
+
+test("FNV-1a 32 matches a TextEncoder reference over ASCII, multi-byte, emoji and lone surrogates", () => {
+  const ref = (s) => {
+    let h = 0x811c9dc5;
+    for (const b of new TextEncoder().encode(s)) h = Math.imul(h ^ b, 0x01000193);
+    return h >>> 0;
+  };
+  const parts = ["", "a", "Z~", "\u0000", "é", "€", "߿", "ࠀ", "￿", "😀", "👩🏽‍💻", "\ud800", "\udc00", "\udbff", "x\ud83dy", "\ud83d"];
+  for (const a of parts) for (const b of parts) for (const c of ["", "q", "\ud83d"]) {
+    const s = a + b + c;
+    assert.equal(engine.fnv1a32n(s), ref(s), JSON.stringify(s));
+  }
+  assert.equal(engine.fnv1a32n("x".repeat(100000)), ref("x".repeat(100000)));
+});
+
+test("the digest cache never changes a save: after any change the text equals a fresh serialisation's (r2-01)", () => {
+  const s = seeded(51);
+  const me = writer(s, "w-7f3a9c2e41");
+  const K = engine.CONTENT.K;
+  churn(s, me, 15, 20, 1);
+  const a = engine.serialize(s);
+  assert.equal(engine.serialize(s), a, "unchanged state, same text");
+  assert.equal(engine.serialize(engine.cloneState(s)), a, "cloneState drops the cache, same text");
+  // change an old compact record (deep in the Album), a whole Album record and a present one
+  const hs = Object.values(s.helpers);
+  const compact = hs.find((h) => h.compact);
+  const full = hs.find((h) => h.gone && !h.compact && h.kind === "pane");
+  compact.stats.folds += 1;
+  full.stats.tasks += 1;
+  me.act(observeAction(s.clock + 1000, [agent(9001)]));
+  const b = engine.serialize(s);
+  assert.notEqual(b, a);
+  assert.equal(b, engine.serialize(engine.cloneState(s)));
+  const back = engine.parseSave(b);
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[compact.id].stats.folds, compact.stats.folds);
+  // the parsed state carries the digests it verified: its next save is the same text
+  assert.equal(engine.serialize(back.state), b);
+  // a damaged digit inside one Album chunk is still caught
+  const i = b.indexOf(`"${compact.id}":[`);
+  const j = b.indexOf("]", i);
+  const entry = b.slice(i, j + 1);
+  const bad = b.replace(entry, entry.replace(/,(\d)/, (m, d) => `,${(Number(d) + 1) % 10}`));
+  assert.notEqual(bad, b);
+  assert.equal(engine.parseSave(bad).reason, "check");
+  assert.ok(hs.length > 2 * K.albumKeep);
+});
+
+test("chunked check: integer-like, zero and prototype-named helper ids round-trip exactly (r2-01)", () => {
+  const s = played();
+  const one = Object.values(s.helpers)[0];
+  for (const id of ["12345678", "00000000", "00000040", "__proto__", "constructor", "ffffff00"]) {
+    s.helpers[id] = { ...JSON.parse(JSON.stringify(one)), id, gone: true, missingSince: s.clock };
+  }
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  assert.equal(doc.check, saveCheck(doc.state));
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
+  assert.equal(engine.serialize(engine.cloneState(back.state)), text);
+  assert.equal(back.state.helpers.__proto__.id, "__proto__");
 });

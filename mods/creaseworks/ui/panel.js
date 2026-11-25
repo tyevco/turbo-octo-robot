@@ -2,8 +2,8 @@
 // (ARCHITECTURE B11). Standard 320 × H: header 44, save banner (§3.8, only
 // with a notice), the mat (§3.2), boost bar 26, tabs 32, the active tab's
 // content (flex_1, min_h 0, overflow_y_scrollbar) and footer 22, on T.chrome
-// with 1 px T.border dividers. Below 140 px wide the panel is the rail
-// (§3.9). The away card (§3.7) is the last child, an absolute overlay over the
+// with 1 px T.border dividers. Below 200 px wide (folded, or unfolded in a
+// window that leaves it too little room) the panel is the rail (§3.9, §2.4). The away card (§3.7) is the last child, an absolute overlay over the
 // mat, so it paints above everything else; it never blocks the tabs.
 
 import { div } from "gpui-kit";
@@ -16,7 +16,7 @@ import { renderMat, matGeometry, isCalm } from "./mat.js";
 import { renderBanner, bannerLayout, saveProblem } from "./banner.js";
 import { renderAway } from "./away.js";
 import { renderRail } from "./rail.js";
-import { renderFlock } from "./flock.js";
+import { flockParts } from "./flock.js";
 import { renderShop } from "./shop.js";
 import { renderString } from "./string.js";
 import { renderSettings } from "./settings.js";
@@ -42,7 +42,7 @@ const TABS = Object.freeze([
   { key: "string", label: "String" },
 ]);
 
-const RENDER = Object.freeze({ flock: renderFlock, shop: renderShop, string: renderString, settings: renderSettings });
+const RENDER = Object.freeze({ shop: renderShop, string: renderString, settings: renderSettings });
 
 const COUNT_SEGMENTS = Object.freeze([
   { group: "needs", status: "blocked", word: "need you", open: true },
@@ -202,7 +202,8 @@ function tabsRow(vm, ui, ctx) {
     return row;
   }
   const counts = (vm.header && vm.header.counts) || {};
-  const total = ["needs", "finished", "working", "resting"].reduce((a, k) => a + Math.max(0, num(counts[k], 0)), 0);
+  // Tiles only: waiting fledglings count in needs (r2-17) but are pips on their parent's tile.
+  const total = Math.max(0, ["needs", "finished", "working", "resting"].reduce((a, k) => a + Math.max(0, num(counts[k], 0)), 0) - Math.max(0, num(vm.header && vm.header.kidsWaiting, 0)));
   for (const t of TABS) {
     const label = t.key === "flock" && total > 0 ? `${t.label} ${total}` : t.label;
     row.child(tabEl(t.key, label, current === t.key, t.key));
@@ -255,8 +256,17 @@ export function renderPanel(vm, ui, ctx) {
   root.child(h_flex().id("cw-mat-slot").w_full().flex_none().px(8).pt(FRAME.matTop).justify_center().child(renderMat(vm, ui, ctx)));
   root.child(boostBar(vm, ctx));
   root.child(tabsRow(vm, ui, ctx));
-  const content = RENDER[tab](vm, ui, ctx);
-  root.child(div().id("cw-content").flex_1().min_h(0).w_full().overflow_y_scrollbar().child(content));
+  if (tab === "flock") {
+    // The Flock's parts are the scroll area's direct children (the #cw-flock
+    // padding and gap), so ctx.scroll (the session's ScrollHandle) can reveal
+    // a group by its index (flock.js sectionIndex; DESIGN §3.1, r2-19).
+    const area = v_flex().id("cw-content").flex_1().min_h(0).w_full().px(8).pt(6).pb(10).gap(4).overflow_y_scrollbar();
+    if (ctx.scroll) area.track_scroll(ctx.scroll);
+    root.child(area.children(flockParts(vm, ui, ctx)));
+  } else {
+    const content = RENDER[tab](vm, ui, ctx);
+    root.child(div().id("cw-content").flex_1().min_h(0).w_full().overflow_y_scrollbar().child(content));
+  }
   root.child(footer(vm, ctx));
   const away = renderAway(vm, ui, ctx);
   if (away) {

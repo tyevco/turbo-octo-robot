@@ -74,7 +74,9 @@ function statusOf(s) {
 }
 
 /**
- * Whether a Flock section is folded: `ui.scrollTo` unfolds its group, then
+ * Whether a Flock section is folded: a pending `ui.scrollTo` unfolds its
+ * group (the glue also stores `folded[key] = false` and clears `scrollTo`
+ * once it has scrolled, so it never pins the group open: r2-19), then
  * `ui.folded[key]` decides when set, else the default (the vm's `folded` for
  * status groups; Elsewhere, Album and the legend start folded; `owned:<seg>`
  * Shop folds too). The glue's `toggleGroup(key)` should store
@@ -639,8 +641,44 @@ function albumSection(vm, ui, ctx) {
   return box;
 }
 
-/** The Flock tab content. Pure (B11). */
-export function renderFlock(vm, ui, ctx) {
+/**
+ * The Flock's parts top to bottom, as keys: "detail" (the selected tile's
+ * card), "empty", "head", "legend", one "group:<key>" per status group (and
+ * "group:all" in workspace order), "group:elsewhere", "album". `flockParts`
+ * builds exactly these, in this order, as the scroll area's direct children,
+ * so `sectionIndex` is the index a ScrollHandle's scroll_to_item takes.
+ */
+export function flockKeys(vm, ui) {
+  const h = (vm && vm.helpers) || {};
+  const groups = Array.isArray(h.groups) ? h.groups : [];
+  const elsewhere = Array.isArray(h.elsewhere) ? h.elsewhere : [];
+  const out = [];
+  if (selectedTile(vm, ui)) out.push("detail");
+  const album = Math.max(Array.isArray(h.album) ? h.album.length : 0, Math.round(num(h.albumCount))) > 0;
+  if (h.empty === true || (groups.length === 0 && elsewhere.length === 0)) {
+    out.push("empty");
+    if (album) out.push("album");
+    return out;
+  }
+  out.push("head");
+  if (!isFolded(vm, ui, "legend")) out.push("legend");
+  for (const g of groups) out.push(`group:${str(g.key)}`);
+  if (elsewhere.length) out.push("group:elsewhere");
+  if (album) out.push("album");
+  return out;
+}
+
+/** The scroll-area index of a group's section ("needs", …, "elsewhere", "album"), or -1. */
+export function sectionIndex(vm, ui, key) {
+  const k = str(key);
+  return flockKeys(vm, ui).indexOf(k === "album" ? "album" : `group:${k}`);
+}
+
+/**
+ * The Flock tab's parts as elements (`flockKeys` order), each `flex_none` so
+ * the panel can lay them out directly in its scrolling `#cw-content`. Pure (B11).
+ */
+export function flockParts(vm, ui, ctx) {
   const T = ctx.T;
   const h = (vm && vm.helpers) || {};
   const groups = Array.isArray(h.groups) ? h.groups : [];
@@ -652,73 +690,65 @@ export function renderFlock(vm, ui, ctx) {
   const sel = selectedTile(vm, ui);
   const selectedId = sel ? sel.helperId : null;
   const tileOpts = { dense, calm, inStep, selectedId, look: tileLook(ctx) };
-
-  const root = v_flex().id("cw-flock").w_full().px(8).pt(6).pb(10).gap(4);
-  if (sel) root.child(detailCard(sel, vm, ctx));
-
-  const empty = h.empty === true || (groups.length === 0 && elsewhere.length === 0);
-  if (empty) {
-    root.child(emptyState(ctx));
-    const album = albumSection(vm, ui, ctx);
-    if (album) root.child(album);
-    return root;
-  }
-
-  const legendOpen = !isFolded(vm, ui, "legend");
-  root.child(
-    h_flex()
-      .id("cw-flock-head")
-      .w_full()
-      .h(28)
-      .gap(6)
-      .child(text(clip(flockHeadline(vm), FLOCK_CLIP.head), { size: 11, color: T.muted, truncate: true }, T).flex_1())
-      .child(iconButton("cw-flock-legend-btn", "info", legendOpen ? "Hide the status legend" : "Status legend", {
-        size: 14,
-        color: legendOpen ? T.foreground : T.muted,
-        onClick: (e, cx) => toggleGroup("legend", cx),
-      }, T)),
-  );
-  if (legendOpen) root.child(legendRows(T, ctx.S));
-
-  for (const g of groups) {
-    const key = str(g.key);
-    const tiles = Array.isArray(g.tiles) ? g.tiles : [];
-    const section = v_flex().id(`cw-flock-sec-${key}`).w_full();
-    const folded = key !== "all" && isFolded(vm, ui, key);
-    if (key !== "all") {
-      section.child(
-        sectionHeader(`cw-flock-grp-${key}`, key, clip(str(g.title) || key, FLOCK_CLIP.group), clip(String(num(g.count, tiles.length)), FLOCK_CLIP.count), {
+  const out = [];
+  for (const key of flockKeys(vm, ui)) {
+    let el = null;
+    if (key === "detail") el = detailCard(sel, vm, ctx);
+    else if (key === "empty") el = emptyState(ctx);
+    else if (key === "album") el = albumSection(vm, ui, ctx);
+    else if (key === "head") {
+      const legendOpen = !isFolded(vm, ui, "legend");
+      el = h_flex()
+        .id("cw-flock-head")
+        .w_full()
+        .h(28)
+        .gap(6)
+        .child(text(clip(flockHeadline(vm), FLOCK_CLIP.head), { size: 11, color: T.muted, truncate: true }, T).flex_1())
+        .child(iconButton("cw-flock-legend-btn", "info", legendOpen ? "Hide the status legend" : "Status legend", {
+          size: 14,
+          color: legendOpen ? T.foreground : T.muted,
+          onClick: (e, cx) => toggleGroup("legend", cx),
+        }, T));
+    } else if (key === "legend") el = legendRows(T, ctx.S);
+    else if (key === "group:elsewhere") {
+      const folded = isFolded(vm, ui, "elsewhere");
+      el = v_flex().id("cw-flock-sec-elsewhere").w_full();
+      el.child(
+        sectionHeader("cw-flock-grp-elsewhere", "elsewhere", "Elsewhere", clip(String(elsewhere.length), FLOCK_CLIP.count), {
           folded,
-          onToggle: (cx) => toggleGroup(key, cx),
-        }, T),
+          onToggle: (cx) => toggleGroup("elsewhere", cx),
+        }, T).tooltip("Helpers another window sees"),
       );
+      if (!folded) {
+        el.child(
+          elsewhere.length > VIRTUAL_ABOVE
+            ? virtualGroup("elsewhere", elsewhere, tileOpts.look, selectedId)
+            : tileGrid(elsewhere, { ...tileOpts, elsewhere: true }, ctx, "elsewhere"),
+        );
+      }
+    } else {
+      const gk = key.slice(6);
+      const g = groups.find((x) => str(x.key) === gk);
+      const tiles = g && Array.isArray(g.tiles) ? g.tiles : [];
+      const folded = gk !== "all" && isFolded(vm, ui, gk);
+      el = v_flex().id(`cw-flock-sec-${gk}`).w_full();
+      if (gk !== "all") {
+        el.child(
+          sectionHeader(`cw-flock-grp-${gk}`, gk, clip(str(g && g.title) || gk, FLOCK_CLIP.group), clip(String(num(g && g.count, tiles.length)), FLOCK_CLIP.count), {
+            folded,
+            onToggle: (cx) => toggleGroup(gk, cx),
+          }, T),
+        );
+      }
+      if (!folded) el.child(tiles.length > VIRTUAL_ABOVE ? virtualGroup(gk, tiles, tileOpts.look, selectedId) : tileGrid(tiles, tileOpts, ctx, gk));
     }
-    if (!folded) {
-      section.child(tiles.length > VIRTUAL_ABOVE ? virtualGroup(key, tiles, tileOpts.look, selectedId) : tileGrid(tiles, tileOpts, ctx, key));
-    }
-    root.child(section);
+    // (albumSection is null only when flockKeys left the Album out)
+    if (el) out.push(el.flex_none());
   }
+  return out;
+}
 
-  if (elsewhere.length) {
-    const folded = isFolded(vm, ui, "elsewhere");
-    const section = v_flex().id("cw-flock-sec-elsewhere").w_full();
-    section.child(
-      sectionHeader("cw-flock-grp-elsewhere", "elsewhere", "Elsewhere", clip(String(elsewhere.length), FLOCK_CLIP.count), {
-        folded,
-        onToggle: (cx) => toggleGroup("elsewhere", cx),
-      }, T).tooltip("Helpers another window sees"),
-    );
-    if (!folded) {
-      section.child(
-        elsewhere.length > VIRTUAL_ABOVE
-          ? virtualGroup("elsewhere", elsewhere, tileOpts.look, selectedId)
-          : tileGrid(elsewhere, { ...tileOpts, elsewhere: true }, ctx, "elsewhere"),
-      );
-    }
-    root.child(section);
-  }
-
-  const album = albumSection(vm, ui, ctx);
-  if (album) root.child(album);
-  return root;
+/** The Flock tab content as one element (`#cw-flock`, its parts as children). Pure (B11). */
+export function renderFlock(vm, ui, ctx) {
+  return v_flex().id("cw-flock").w_full().px(8).pt(6).pb(10).gap(4).children(flockParts(vm, ui, ctx));
 }

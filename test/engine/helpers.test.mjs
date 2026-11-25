@@ -12,8 +12,72 @@ test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
   const look = engine.lookOf(id);
   assert.equal(look.species, engine.CONTENT.SPECIES[h % 12]);
   assert.equal(look.hue, (h >>> 4) % 8);
-  assert.equal(look.name, engine.CONTENT.NAME_A[(h >>> 8) % 16] + engine.CONTENT.NAME_B[(h >>> 12) % 12]);
+  assert.equal(look.name, engine.CONTENT.NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)]);
   assert.match(look.name, /^[A-Za-z]+$/);
+});
+
+// Review r2-28: two syllables can spell a sexualised slang word or a
+// well-known character's name. Each such pair takes the next pair in table
+// order that is not skipped (§5.1); NAMES is that table, written out.
+const NEVER = ["Loli", "Nob", "Yuri", "Miku", "Riku", "Yuna", "Zero", "Mona", "Rito", "Pipo", "Loki", "Haku", "Tali"];
+
+test("helper names: none of the 192 is a skipped word or borrowed name; NAMES is NAME_A × NAME_B with skips remapped (§5.1, r2-28)", () => {
+  const { NAME_A, NAME_B, NAME_SKIP, NAMES } = engine.CONTENT;
+  assert.equal(NAMES.length, 192);
+  assert.ok(Object.isFrozen(NAMES) && Object.isFrozen(NAME_SKIP));
+  for (const w of NEVER) assert.ok(NAME_SKIP.includes(w), w);
+  const raw = [];
+  for (const a of NAME_A) for (const b of NAME_B) raw.push(a + b);
+  for (const w of NAME_SKIP) assert.ok(raw.includes(w), `${w} is a real pair (the list has no dead entries)`);
+  for (let i = 0; i < 192; i++) {
+    let j = i;
+    while (NAME_SKIP.includes(raw[j])) j = (j + 1) % 192;
+    assert.equal(NAMES[i], raw[j], `index ${i}`);
+    assert.ok(!NAME_SKIP.includes(NAMES[i]), NAMES[i]);
+    assert.match(NAMES[i], /^[A-Z][a-z]{1,3}$/);
+  }
+  // every hash index gives a name from the table: sweep the 16 × 12 name bits
+  const seen = new Set();
+  for (let a = 0; a < 16; a++) {
+    for (let b = 0; b < 12; b++) {
+      const id = ((a << 8) | (b << 12)).toString(16).padStart(8, "0");
+      const name = engine.lookOf(id).name;
+      assert.ok(!NEVER.includes(name), `${id} → ${name}`);
+      seen.add(name);
+    }
+  }
+  assert.equal(seen.size, 192 - NAME_SKIP.length);
+});
+
+test("a helper or Album record named before the skip list is renamed: present, whole and packed (§5.1, r2-28)", () => {
+  const s = seeded(9);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  let t = T0;
+  me.act(observeAction((t += 1000), [agent(1), agent(2)]));
+  const id1 = engine.helperId("t1", 1001);
+  const id2 = engine.helperId("t2", 1002);
+  // an older save: a present helper and a gone one carry names the game no longer gives
+  s.helpers[id1].name = "Loli";
+  me.act(observeAction((t += 1000), [agent(1)]));
+  s.helpers[id2].name = "Zero 2";
+  me.act(observeAction((t += 1000), [agent(1)]));
+  assert.equal(s.helpers[id1].name, engine.lookOf(id1).name);
+  assert.equal(s.helpers[id2].name, engine.lookOf(id2).name);
+  // a packed Album entry with an explicit skipped name loads under its look name
+  for (let k = 0; k < K.albumKeep + 1; k++) {
+    me.act(observeAction((t += 1000), [agent(1), agent(100 + k)]));
+    me.act(observeAction((t += 1000), [agent(1)]));
+  }
+  assert.equal(s.helpers[id2].compact, true);
+  const doc = JSON.parse(engine.serialize(s));
+  doc.state.helpers[id2] = [0, 1, 0, doc.state.helpers[id2][3]];
+  doc.state.helpers[id2][0] = "Miku";
+  const body = JSON.stringify(doc.state);
+  const back = engine.parseSave(`{"format":"creaseworks-save","version":2,"check":"${engine.fnv1a32(body)}","state":${body}}`);
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[id2].name, engine.lookOf(id2).name);
+  for (const h of Object.values(s.helpers)) assert.ok(!NEVER.includes(h.name.split(" ")[0]), h.name);
 });
 
 test("turn deltas: first sighting and turn < lastTurn rebaseline; d > 0 is one finish (§6.1, inv. 8)", () => {
@@ -453,4 +517,54 @@ test("observing new agents does not rescan the helper map per agent (r1-24: O(ne
   rosterChanged(s);
   assert.equal(Object.values(hs).filter((h) => !h.gone).length, 160);
   for (const k of kids) assert.equal(hs[engine.helperId(k.addr, k.created)].parent, engine.helperId(`t${k.parent.slice(1)}`, 1000 + Number(k.parent.slice(1))));
+});
+
+// Review r2-18: a sub-agent with its own pane is a fledgling only while its
+// parent chain reaches another helper (§5.2). When the parent leaves, the glue
+// reports it as a pane helper; the engine follows, so it gathers and its
+// rewards stay its own (never filed under the gone parent's Album record).
+test("a kept fledgling whose parent leaves becomes a pane helper: it gathers, and its envelope is its own (§5.2, r2-18)", () => {
+  const s = seeded(18);
+  const me = writer(s);
+  const id1 = engine.helperId("t1", 1001);
+  const id2 = engine.helperId("t2", 1002);
+  let t = T0;
+  const child = (turn, extra = {}) => agent(2, "working", turn, { kind: "kid", parent: "t1", ...extra });
+  me.act(observeAction((t += 1000), [agent(1), child(0)]));
+  assert.equal(s.helpers[id2].kind, "kid");
+  assert.equal(s.helpers[id2].parent, id1);
+  assert.equal(engine.rates(s, "wA").nWorking, 1, "the parent works, with its fledgling's bonus");
+  // the parent's pane closes: the glue re-reports the sub-agent as a pane helper
+  me.act(observeAction((t += 1000), [agent(2, "working", 0)]));
+  assert.equal(s.helpers[id1].gone, true);
+  assert.equal(s.helpers[id2].kind, "pane");
+  assert.equal(s.helpers[id2].parent, null);
+  const r = engine.rates(s, "wA");
+  assert.equal(r.nWorking, 1, "the orphan gathers");
+  assert.equal(r.nPresent, 1);
+  assert.ok(r.Hs0 > 0);
+  // its finish is a pane finish on its own envelope
+  me.act(observeAction((t += 61000), [agent(2, "idle", 1)]));
+  assert.equal(s.envelopes[id1], undefined, "nothing filed under the gone parent");
+  assert.equal(s.envelopes[id2].units, engine.CONTENT.K.unitPane);
+  // the parent returns and the chain reaches it again: a fledgling once more
+  me.act(observeAction((t += 1000), [agent(1), child(1, { status: "idle" })]));
+  assert.equal(s.helpers[id2].kind, "kid");
+  assert.equal(s.helpers[id2].parent, id1);
+  assert.equal(engine.rates(s, "wA").nPresent, 1);
+});
+
+test("a fledgling whose parent is gone keeps its own reward (never the parent's Album record) (r2-18)", () => {
+  const s = seeded(19);
+  const me = writer(s);
+  const id1 = engine.helperId("t1", 1001);
+  const id3 = engine.helperId("t3", 1003);
+  let t = T0;
+  me.act(observeAction((t += 1000), [agent(1), kid(3, 1, "working", 0)]));
+  // an observation that still names the gone parent (a host race): the engine does not credit it
+  me.act(observeAction((t += 1000), [kid(3, 1, "working", 0)]));
+  assert.equal(s.helpers[id1].gone, true);
+  me.act(observeAction((t += 61000), [kid(3, 1, "idle", 1)]));
+  assert.equal(s.envelopes[id1], undefined);
+  assert.equal(s.envelopes[id3].units, engine.CONTENT.K.unitKid);
 });

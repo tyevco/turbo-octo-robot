@@ -345,7 +345,8 @@ export function checkbox(id, checked, label, opts = {}, T, _S = undefined) {
  * T.popover) or ui glyph (`opts.icon`), label 11/600 T.foreground.
  * `opts`: `onClick` (then `id` is required), `stop`, `tooltip`, `dashed`,
  * `pulse` (needs-you loop, DESIGN §13.5), `bg`, `maxW` (px: the pill never
- * grows past it and its label truncates).
+ * grows past it and its label truncates). Without `maxW` the pill fits its
+ * label, which never shrinks or truncates (counts must read whole).
  */
 export function chip(id, label, opts = {}, T, S) {
   const clickable = Boolean(opts.onClick);
@@ -369,7 +370,8 @@ export function chip(id, label, opts = {}, T, S) {
   if (opts.status) el.child(sprite(statusGlyphPath(opts.status), 12, statusColor(T, opts.status, bg)));
   else if (opts.icon) el.child(icon(opts.icon, 12, opts.iconColor ?? T.muted));
   if (label !== null && label !== undefined && label !== "") {
-    el.child(text(label, { size: 11, weight: 600, color: opts.color ?? T.foreground, truncate: bounded }, T));
+    const t = text(label, { size: 11, weight: 600, color: opts.color ?? T.foreground, truncate: bounded }, T);
+    el.child(bounded ? t : t.flex_none().whitespace_nowrap());
   }
   if (opts.pulse) el.loop("opacity", { from: 0.55, to: 1, period: 1200 });
   if (!clickable) {

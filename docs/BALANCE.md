@@ -202,10 +202,14 @@ neither has a row.
 7. **Every agent is saved**: after the P7 run the save holds 64 pane helpers and all their
    fledglings; with 500 Album helpers added the save text is < 256 KiB. With Album compaction
    (DESIGN R13), after a year of 20 agents a day, each with 3 fledglings, coming and going, every
-   pane agent is still an Album helper and the save stays < 512 KiB.
+   pane agent is still an Album helper and the save stays < 512 KiB. Mail Sorter is on and every
+   timed boost waits until the year ends (old mail is cashed in as its helper is compacted,
+   DESIGN §6.1): no envelope waits under a compacted helper, and opening the rest leaves every
+   compacted helper packed.
 8. **Drops are idempotent**: replaying the same `observe` twice, or from two writers, creates each
    envelope unit once; `turn < lastTurn` and first sighting give no reward.
-9. **No envelope is lost**: units created = units opened + units converted + units waiting.
+9. **No envelope is lost**: units created = units opened + units converted + units waiting (old
+   mail cashed in counts as opened for a Bundle, converted for a timed boost).
 10. **Determinism**: two runs with the same seed and inputs give byte-identical `serialize()`.
 11. **Two windows**: two writers sharing one save, each observing 2 of P1's 4 agents and each
     doing half the sessions, merging on every 15 s save, end every day within **1 %** of one writer

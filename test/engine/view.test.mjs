@@ -109,9 +109,53 @@ test("fledglings are pips on their parent; a parentless fledgling gets its own t
   const parent = all.find((x) => x.helperId === id(1));
   assert.deepEqual(parent.pips, ["blocked", "working"], "waiting fledglings first (r1-14)");
   assert.equal(all.find((x) => x.helperId === id(4)).kind, "kid");
-  // Counts and marks are per tile: a blocked fledgling does not lift its parent (§5.2).
+  // A blocked fledgling does not lift its parent's tile (§5.2), but it needs
+  // you: it counts in Needs you and gets its own needs-you mark (r2-17).
+  assert.equal(parent.status, "working");
+  assert.equal(vm.header.counts.needs, 1);
+  assert.equal(vm.header.kidsWaiting, 1);
+  assert.deepEqual(vm.rail.pips.map((m) => [m.helperId, m.status]), [[id(3), "blocked"], [id(1), "working"], [id(4), "idle"]]);
+});
+
+test("r2-17: a waiting fledgling reaches every needs-you surface: counts, rail, mat chips, ribbon marks", () => {
+  const s = seeded(3);
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working"), agent(2, "blocked"), kid(3, 1, "working")]));
+  me.act(observeAction(T0 + 5000, [agent(1, "working"), agent(2, "blocked"), kid(3, 1, "blocked")]));
+  const k = id(3);
+  for (const o of [{ width: 400 }, { width: 50 }, { role: "ribbon", width: 1172 }]) {
+    const vm = engine.view(s, T0 + 6000, { role: "panel", writer: "wA", ...o });
+    const where = JSON.stringify(o);
+    assert.equal(vm.header.counts.needs, 2, `${where}: counts`);
+    assert.equal(vm.rail.needs, 2, `${where}: rail button`);
+    assert.deepEqual(vm.mat.chips.map((c) => c.helperId), [id(2), k], `${where}: mat chips, longest waiting first`);
+    const m = vm.ribbon.marks.find((x) => x.helperId === k);
+    assert.ok(m, `${where}: a ribbon mark`);
+    assert.equal(m.status, "blocked");
+    assert.match(m.tooltip, /fledgling of .* Needs you/);
+    assert.deepEqual(vm.rail.pips.filter((x) => x.status === "blocked").map((x) => x.helperId), [id(2), k], `${where}: rail pips`);
+  }
+  // The Flock tiles stay per tile: the parent is Working with a blocked pip; the tab total counts tiles.
+  const vm = engine.view(s, T0 + 6000, { role: "panel", width: 320, writer: "wA" });
+  assert.deepEqual(tiles(vm).map((x) => x.helperId).sort(), [id(1), id(2)].sort());
+  assert.deepEqual(vm.helpers.groups.find((g) => g.key === "needs").tiles.map((x) => x.helperId), [id(2)]);
+  assert.deepEqual(tiles(vm).find((x) => x.helperId === id(1)).pips, ["blocked"]);
+  // Workspace order: the fledgling's mark follows its parent.
+  s.settings.order = "workspace";
+  const ws = engine.view(s, T0 + 6000, { role: "ribbon", width: 1172, writer: "wA" });
+  const ids = ws.ribbon.marks.map((x) => x.helperId);
+  assert.equal(ids.indexOf(k), ids.indexOf(id(1)) + 1);
+  assert.equal(ids.length, 3);
+});
+
+test("r2-17: a waiting fledgling another window sees is not counted here", () => {
+  const s = seeded(3);
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working"), kid(3, 1, "blocked")]));
+  s.helpers[id(3)].seenBy = "wB";
+  const vm = engine.view(s, T0 + 1000, { role: "panel", width: 320, writer: "wA" });
   assert.equal(vm.header.counts.needs, 0);
-  assert.equal(vm.rail.pips.length, 2);
+  assert.equal(vm.header.kidsWaiting, 0);
 });
 
 test("Elsewhere: helpers another window last saw; 50 % marks, last in the ribbon (§12.5)", () => {

@@ -15,12 +15,16 @@ import { now as clockNow, localDay, bucket } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, signature } from "./observe.js";
-import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, RAIL_BELOW, FULL_BELOW } from "./commands.js";
+import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, panelState, RAIL_PX, FULL_BELOW } from "./commands.js";
 import * as notifier from "./notify.js";
 
 export const VISIBLE_MS = 1000;
 export const HIDDEN_MS = 5000;
 export const POP_MS = 1200;
+/** A burst of pops rises this soon after the click (DESIGN §13.5: one after(16) per burst). */
+export const POP_RISE_MS = 16;
+/** Risen pops are removed after their 700 ms transition (one after(800) per burst). */
+export const POP_PRUNE_MS = 800;
 export const SHORT_BELOW = 640;
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
 const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };
@@ -71,11 +75,18 @@ export function demoState(t) {
 export class Session {
   /**
    * role: "panel" | "ribbon" | null (null: read props().role in init).
-   * opts: { isFolded(vm, ui, key) } (from ui/flock.js, passed by main.js).
+   * opts: { isFolded(vm, ui, key), sectionIndex(vm, ui, key) } (from
+   * ui/flock.js) and `scroll`, a ScrollHandle created in init (all passed by
+   * main.js). With both of the last two, a counts-chip ● / ◗ or a ribbon tally
+   * scrolls the Flock to its group (DESIGN §3.1).
    */
   constructor(role = null, opts = {}) {
     this.role = role === "ribbon" ? "ribbon" : role === "panel" ? "panel" : null;
     this.isFolded = typeof opts.isFolded === "function" ? opts.isFolded : null;
+    this.sectionIndex = typeof opts.sectionIndex === "function" ? opts.sectionIndex : null;
+    this.scroll = opts.scroll && typeof opts.scroll.scroll_to_item === "function" ? opts.scroll : null;
+    this.popRise = null;
+    this.popPrune = null;
     this.ui = newUi();
     this.slot = null;
     this.copyId = null;
@@ -186,8 +197,9 @@ export class Session {
     slot.layout = L;
     const stale = staleFor(this.interval);
     const panelAlive = roleAlive(slot, "panel", t, stale);
-    const pw = slot.widths.panel;
-    const panelShown = panelAlive && !L.panelHidden && !(typeof pw === "number" && pw < RAIL_BELOW);
+    // Folded or not is the layout's weight, not the measured width (r2-13).
+    const pst = panelState(slot, L);
+    const panelShown = panelAlive && pst !== "hidden" && pst !== "folded";
     slot.presence = { visible, active, panelShown };
     // Narrow-window hint epochs: a new Files-panel opening allows the hint again (§2.3).
     if (L.filesShown && !slot.narrow.filesWas) slot.narrow.filesEpoch += 1;
@@ -203,7 +215,7 @@ export class Session {
     slot.panes = panes;
     const day = localDay(t);
     // A panel too narrow for the full view draws the rail: no mat on screen.
-    const matShown = visible && panelShown && !(typeof pw === "number" && pw < FULL_BELOW);
+    const matShown = visible && panelShown && pst === "full";
     const sig = signature(obs.list);
     const pres = `${visible}|${active}|${matShown}|${day}`;
     if (sig !== slot.obs.sig) {
@@ -243,7 +255,7 @@ export class Session {
     const calm = !!(slot.state && slot.state.settings.calm);
     const b = bucket(t, calm);
     const arming = this.ui.confirm && typeof this.ui.armedAt === "number" && t - this.ui.armedAt < 3000;
-    if (slot.rev !== this.lastRev || b !== this.lastBucket || arming || this.ui.pops.length) {
+    if (slot.rev !== this.lastRev || b !== this.lastBucket || arming || this.ui.pops.length || this.ui.scrollTo !== null) {
       this.lastRev = slot.rev;
       this.lastBucket = b;
       this.changed(cx, t);
@@ -257,13 +269,41 @@ export class Session {
    */
   changed(cx, t = undefined) {
     if (!this.loading()) {
+      let vm = null;
       try {
-        this.vm(t);
+        vm = this.vm(t);
       } catch {
         // render builds it again and shows the problem there
       }
+      this.consumeScroll(vm);
     }
     notifyCx(cx);
+  }
+
+  /**
+   * A pending `ui.scrollTo` (a counts chip, a ribbon tally): the Flock scrolls
+   * to that group's section with the ScrollHandle (DESIGN §3.1), then it is
+   * cleared, so it never pins its group open (r2-19: the group was unfolded by
+   * `folded[key] = false`; its header folds it again). Runs in a handler or
+   * the tick, never in render; the request is consumed after the next layout.
+   */
+  consumeScroll(vm) {
+    const u = this.ui;
+    const key = u.scrollTo;
+    if (key === null || key === undefined) return;
+    if (this.role !== "panel") {
+      u.scrollTo = null; // the ribbon draws no Flock (its request went to the panel copy)
+      return;
+    }
+    if (!vm) return;
+    u.scrollTo = null;
+    if (!this.scroll || !this.sectionIndex || u.tab !== "flock") return;
+    try {
+      const i = this.sectionIndex(vm, u, key);
+      if (typeof i === "number" && i >= 0) this.scroll.scroll_to_item(i);
+    } catch {
+      // a released handle (hot reload): the group is unfolded all the same
+    }
   }
 
   /** close(cx): the ticker starts one final write at once (≤ 250 ms on a VM restart). */
@@ -280,6 +320,17 @@ export class Session {
         // already gone
       }
       this.timer = null;
+    }
+    for (const k of ["popRise", "popPrune"]) {
+      const h = this[k];
+      this[k] = null;
+      if (h && typeof h.cancel === "function") {
+        try {
+          h.cancel();
+        } catch {
+          // already fired
+        }
+      }
     }
     if (!wasTicker || !slot.state || slot.readOnly) return null;
     const t = clockNow();
@@ -377,6 +428,7 @@ export class Session {
     const r = this.slot && this.slot.request;
     if (!r || this.role !== "panel" || r.at <= this.handledRequest) return;
     this.handledRequest = r.at;
+    // (a group request's scroll runs at the next changed(): never in render)
     if (r.select !== undefined) {
       this.ui.tab = "flock";
       this.ui.selected = r.select;
@@ -416,8 +468,11 @@ export class Session {
       height: this.role === "ribbon" ? 30 : this.height,
       handlers: this.handlers,
     };
+    if (this.role === "panel" && this.scroll) ctx.scroll = this.scroll;
     if (slot && s) {
       ctx.save = store.saveInfo(slot, t);
+      // The rail's chevron: unfold the rail weight, else fold (a tight rail too).
+      if (this.role === "panel") ctx.folded = panelState(slot) === "folded";
       if (this.role === "ribbon") {
         ctx.panelShown = !!slot.presence.panelShown;
         ctx.narrowHint = this.narrowHint(t);
@@ -428,18 +483,74 @@ export class Session {
     return ctx;
   }
 
-  /** §2.3: the ribbon's one-time "fold to a rail?" chip. */
+  /**
+   * §2.3: the ribbon's one-time "fold to a rail?" chip. Offered while the
+   * panel is unfolded (by its layout weight) and folding gives the terminals
+   * room: wider than the rail's 64 (an unfolded panel at its 64 px min, zoom
+   * 1.5 with Files open, gains nothing), and either the terminals are under
+   * 600 or the panel is a tight rail under FULL_BELOW holding its whole
+   * column (r2-13, r2-14: 124 or 106 at zoom 1.5 too).
+   */
   narrowHint(_t) {
     const slot = this.slot;
     const s = slot && slot.state;
     if (!s || this.role !== "ribbon" || typeof this.width !== "number") return false;
     const L = slot.layout;
     const Wp = slot.widths.panel;
-    if (!slot.presence.panelShown || typeof Wp !== "number" || Wp < RAIL_BELOW) return false;
+    if (!slot.presence.panelShown || typeof Wp !== "number" || Wp <= RAIL_PX + 8) return false;
+    const st = panelState(slot);
+    if (st !== "full" && st !== "tight") return false;
     const mainEst = this.width - 16 - (Wp + 8) - (L.filesShown ? filesEstimate(L, Wp) + 8 : 0);
-    if (mainEst >= 600) return false;
+    if (mainEst >= 600 && st === "full") return false;
     if (L.filesShown) return slot.narrow.dismissed !== slot.narrow.filesEpoch;
     return s.ui.narrowHintDay !== s.day;
+  }
+
+  /**
+   * DESIGN §13.5: one cx.timer.after(16) per burst raises every new pop
+   * (`risen`: top − 28, opacity 0 over 700 ms), one after(800) removes the
+   * risen ones; at most one of each is pending, so fast clicking keeps two
+   * timers (r2-20: they used to wait for the 1 s data tick). The data tick's
+   * prunePops stays the fallback when a timer cannot be set.
+   */
+  schedulePops(cx) {
+    const timer = cx && cx.timer;
+    if (!timer || typeof timer.after !== "function") return;
+    if (this.popRise === null) {
+      try {
+        this.popRise = timer.after(POP_RISE_MS, (tcx) => {
+          this.popRise = null;
+          let any = false;
+          for (const p of this.ui.pops) {
+            if (!p.risen) {
+              p.risen = true;
+              any = true;
+            }
+          }
+          if (any) notifyCx(tcx);
+        });
+      } catch {
+        this.popRise = null;
+      }
+    }
+    this.schedulePrune(timer);
+  }
+
+  schedulePrune(timer) {
+    if (this.popPrune !== null || !timer || typeof timer.after !== "function") return;
+    try {
+      this.popPrune = timer.after(POP_PRUNE_MS, (tcx) => {
+        this.popPrune = null;
+        const t = clockNow();
+        const before = this.ui.pops.length;
+        // Risen and through their 700 ms transition (a later click's pops wait for the next one).
+        this.ui.pops = this.ui.pops.filter((p) => !(p.risen && t - p.at >= POP_PRUNE_MS - 100));
+        if (this.ui.pops.length) this.schedulePrune(tcx && tcx.timer);
+        if (this.ui.pops.length !== before) notifyCx(tcx);
+      });
+    } catch {
+      this.popPrune = null;
+    }
   }
 
   prunePops(t) {
@@ -531,7 +642,8 @@ export class Session {
     const t = clockNow();
     slot.request = { ...req, at: Math.max(t, (slot.request ? slot.request.at : 0) + 1) };
     touch(slot);
-    showPanel(slot);
+    // A tight panel cannot show more: show() flashes why (r2-12).
+    showPanel(slot, undefined, t);
     notifyCx(cx);
   }
 
@@ -555,6 +667,7 @@ export class Session {
             self.popSeq += 1;
             const pops = ui().pops.concat([{ id: `pop${self.popSeq}`, label: `+${formatCount(sum, s.settings.style)}`, x: a.x, y: a.y, risen: false, at: clockNow() }]);
             ui().pops = pops.slice(-5);
+            self.schedulePops(cx);
           }
         }
         self.changed(cx);
@@ -608,7 +721,7 @@ export class Session {
         self.changed(cx);
       },
       show(cx) {
-        if (self.slot && !self.demo) showPanel(self.slot);
+        if (self.slot && !self.demo) showPanel(self.slot, undefined, clockNow());
         self.changed(cx);
       },
       tab(name, cx) {
@@ -628,8 +741,10 @@ export class Session {
         const u = ui();
         u.selected = helperId === null || helperId === undefined ? null : String(helperId);
         u.tab = "flock";
-        const folded = self.role === "panel" && typeof self.width === "number" && self.width < RAIL_BELOW;
-        if (self.role === "ribbon" || folded) self.requestPanel({ select: u.selected }, cx);
+        // The panel copy draws the rail below FULL_BELOW (folded or tight): it
+        // shows no selection, so the click unfolds the panel or says why not (r2-12).
+        const rail = self.role === "panel" && typeof self.width === "number" && self.width < FULL_BELOW;
+        if (self.role === "ribbon" || rail) self.requestPanel({ select: u.selected }, cx);
         else self.changed(cx);
       },
       toggleGroup(key, cx) {
@@ -646,8 +761,8 @@ export class Session {
         u.tab = "flock";
         u.folded[k] = false;
         u.scrollTo = k;
-        const folded = self.role === "panel" && typeof self.width === "number" && self.width < RAIL_BELOW;
-        if (self.role === "ribbon" || folded) self.requestPanel({ group: k }, cx);
+        const rail = self.role === "panel" && typeof self.width === "number" && self.width < FULL_BELOW;
+        if (self.role === "ribbon" || rail) self.requestPanel({ group: k }, cx);
         else self.changed(cx);
       },
       details(on, cx) {

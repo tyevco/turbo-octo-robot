@@ -405,11 +405,18 @@ test.after(() => {
 // 120 days (a 187 KiB save, well under where the failure was seen); the
 // year-size run asserts the budgets and reports the teardown as a todo.
 
-/** The save text after `days` days of 20 agents a day (3 fledglings each), and the pane helper count. */
+/**
+ * The save text after `days` days of 20 agents a day (3 fledglings each), and
+ * the pane helper count. Mail Sorter opens the Bundles; the timed boosts
+ * (Rush, Storm, Chorus) are left on the tray the whole time and opened only at
+ * the end, after their helpers were compacted (review r2-02: they used to pile
+ * up for ever, and opening them un-compacted their Album records).
+ */
 async function churnSave(days) {
   const engine = await import("../../mods/creaseworks/engine/index.js");
   const T0 = Date.UTC(2026, 10, 25, 9);
   const s = engine.newGame({ seed: 5, now: T0, day: "2026-11-25" });
+  s.bought["mail-sorter"] = true;
   let seq = 0;
   const act = (a) => engine.apply(s, { w: "w-yearchurn01", s: ++seq, ...a });
   const obs = (t, helpers) => act({ t, type: "observe", helpers, visible: true, active: true, matShown: true, day: "2026-11-25" });
@@ -425,12 +432,21 @@ async function churnSave(days) {
     }
     obs((t += 1000), list);
     obs((t += 3600000), list.map((o) => ({ ...o, turn: 2, status: "idle" })));
-    for (const id of Object.keys(s.envelopes)) act({ t, type: "open", helperId: id });
     obs((t += 1000), []);
     t = T0 + (d + 1) * 86400000;
     engine.advance(s, t);
   }
-  return { engine, text: engine.serialize(s), clock: s.clock, n };
+  const K = engine.CONTENT.K;
+  // the tray holds only envelopes of helpers the Album keeps whole
+  assert.ok(Object.keys(s.envelopes).length <= K.albumKeep, `${Object.keys(s.envelopes).length} envelopes waiting`);
+  for (const id of Object.keys(s.envelopes)) act({ t: (t += 100), type: "open", helperId: id });
+  obs((t += 1000), []);
+  assert.equal(Object.keys(s.envelopes).length, 0);
+  const text = engine.serialize(s);
+  // every compacted helper still packs: opening its envelope did not keep it whole
+  const packed = Object.values(JSON.parse(text).state.helpers).filter(Array.isArray).length;
+  assert.equal(packed, n - K.albumKeep);
+  return { engine, text, clock: s.clock, n };
 }
 
 /**
@@ -438,9 +454,9 @@ async function churnSave(days) {
  * live agents, plays 40 s (save cycles included) and checks every step and the
  * written save. Returns the slowest step and the dispose error, if any.
  */
-async function churnRun(days, tag) {
+async function churnRun(days, tag, maxKiB = 512) {
   const { engine, text, clock, n } = await churnSave(days);
-  assert.ok(text.length < 512 * 1024, `${text.length} bytes`);
+  assert.ok(text.length < maxKiB * 1024, `${text.length} bytes`);
   const { createHost: freshHost } = await import(`../../tools/qjs/harness.mjs?${tag}`);
   const now = clock + 1000;
   const live = roster(30);
@@ -454,7 +470,13 @@ async function churnRun(days, tag) {
     const load = await host.load();
     const steps = [load.ms.init];
     steps.push(...host.advance(0).stepMs);
-    for (let i = 0; i < 40; i++) steps.push(...host.advance(1000).stepMs);
+    const cycles = [];
+    for (let i = 0; i < 40; i++) {
+      const before = host.callsTo("writeTextFile").length;
+      const ms = host.advance(1000).stepMs;
+      steps.push(...ms);
+      if (host.callsTo("writeTextFile").length > before) cycles.push(Math.max(...ms));
+    }
     assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
     for (const ms of steps) assert.ok(ms < BUDGETS.timer, `step ${ms} ms`);
     const save = slotJson(host, ".save");
@@ -466,7 +488,9 @@ async function churnRun(days, tag) {
     assert.equal(back.ok, true);
     assert.equal(Object.values(back.state.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
     slowest = Math.max(...steps);
-    log(`qjs ${days}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; slowest step ${f1(slowest)} ms`);
+    assert.ok(cycles.length >= 2, "save cycles ran");
+    log(`qjs ${days}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; init ${f1(load.ms.init)} ms, ` +
+      `slowest step ${f1(slowest)} ms, slowest save-cycle step ${f1(Math.max(...cycles))} ms (cycles: ${cycles.map(f1).join(", ")})`);
   } catch (e) {
     try {
       host.dispose();
@@ -493,6 +517,20 @@ let yearLeak = null;
 
 test("a save after a year of 20 agents a day loads and saves within budget (Album compaction, R13)", { timeout: 180000 }, async () => {
   ({ leak: yearLeak } = await churnRun(365, "churn365"));
+});
+
+// Review r2-01: every save cycle used to serialise and hash the whole Album
+// (≈ 0.8 ms per KiB), so a save of about 600 KiB passed the 500 ms budget.
+// Format 3 re-hashes only the chunks that changed; twice the year (≈ 590 KiB)
+// must stay in budget, load included, and under herdr's 1 MiB write limit.
+let twoYearLeak = null;
+
+test("a save after two years of 20 agents a day loads and saves within budget (chunked save check, R13)", { timeout: 300000 }, async () => {
+  ({ leak: twoYearLeak } = await churnRun(730, "churn730", 1024));
+});
+
+test("the QuickJS runtime frees cleanly after the two-year save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
+  if (twoYearLeak) throw twoYearLeak;
 });
 
 test("the QuickJS runtime frees cleanly after the year-size save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {

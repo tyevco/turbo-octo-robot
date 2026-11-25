@@ -1000,6 +1000,14 @@ the Perks heading and the garland stripes it is named for were below the fold (r
 * **Footer save line** (`store.saveInfo`): a `conflict` notice reads "Merging another window's
   save…" and a `fresh` one "Started fresh · saved …", so the problem glyph never sits next to a
   bare "Saved".
+* **Palette entries outside the layout (r2-27).** herdr's palette adds every mod's `mod.json`
+  `palette` entries in every layout (defaults/frame/palette/main.js `modPalettes`, `entries`) and
+  cannot scope them. Outside Creaseworks the mod has no shown copy (`place: "none"`), so the three
+  `creaseworks.*` entries return `unknown command …` (src/window.rs `run_as`, src/mods.rs
+  `send_command` delivers only to shown copies) and `layout.toggle {id: "cw-panel"}` returns
+  `no node "cw-panel" in the shown layout`; herdr toasts each as "<name> failed". Nothing else
+  happens. The entries stay (the toggle is the only way to hide the panel, DESIGN §2.2); RECIPE's
+  Watch out and README's Keys say so (`test/layout` checks both).
 * **Narrow windows and zoom.** Superseded by B15 (the panel used to be `{px: 320}` and was
   pushed off-screen at 1100 px with Files open and at zoom 1.5).
 
@@ -1013,6 +1021,8 @@ the Perks heading and the garland stripes it is named for were below the fold (r
 * **The layout now** (`tools/layout/build.mjs`). `cw-panel` is `{"weight": 0.39}`, `min: 64`, no
   `max`; herdr's Files column (`panel`) is `{"weight": 0.66}` (its `min: 280`, `max: 900` and every
   other field kept); `main` is herdr's weight 1 with **`min: 80`** (`MAIN_MIN`; was 360).
+  `work-body` is **`main | cw-panel | panel`**: the game sits right after the terminals and the
+  optional Files column ends the row (r2-15, below), so herdr clips Files first.
 * **Why main's min is 80.** herdr's own `main` has no min; the 360 was ours, and it was what
   pushed the game off-screen at zoom 1.5 with Files open (1100×700: the rail at x = 1400, none of
   it on screen, Files 133 of 420 px; 1440×900: 41 of the rail's 96 px). The tightest window we
@@ -1033,12 +1043,31 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   | 1100×700 zoom 1.5 | 475 / – / 185 (124 design px: rail) | 133 / 420 / 96 (64: rail) | 133 / 420 / 96 |
   | 1440×900 zoom 1.5 | 720 / – / 281 (187: Narrow) | 409 / 420 / 160 (106: rail) | 473 / 420 / 96 |
 
-  Every node is on screen in every row (no clipping, no empty strip). **This changes the default
+  Every node is on screen in every row (no clipping, no empty strip); the envelope is zoom ≤ 1.5
+  (zoom 1.5 with Files open needs 724 × 1.5 + 1 = 1087 px; the rail itself is whole from about
+  1076). Past it, see the next point. **This changes the default
   look:** the designed panel was 320 px everywhere (DESIGN §2.1–§2.2); now the 1100×700 default
   is the **Narrow** state (mat at full width, Flock dense, Shop icons only) and so is 1440×900
   with Files open; big windows are Wide with no cap (the old max was 560; 2560 gives 636). The
   terminals gain what the game gives up (1100×700: 581 instead of 488). Shots: `narrow` 226,
   `narrow-files` 146, `wide-2560` 636 and `window-1920x1080-*` (456) cover these widths.
+* **Past zoom 1.5: Files is clipped, never the game (r2-15).** herdr's zoom runs 0.5–3.0 in 0.1
+  steps (settings.rs), `render_node` makes every container `overflow_hidden` (src/window.rs
+  ~4624) and a row never wraps, so once the mins do not fit, the row's END is cut. With Files
+  open the row needs 268z (sidebar) + 1 + 16z (padding) + 16z (gaps) + (80 + 280 + 64)z =
+  724z + 1 px: 1100 px from zoom 1.6, 1280 from 1.8, 1440 from 2.0. With `cw-panel` last (as built
+  until r2-15) that cut the game: 1100×700 zoom 1.6 lost 47 of the rail's 102 px, zoom 2 put all of
+  it off-screen, and so did 1440×900 zoom 2.5. B15 used to say "every node is on screen" without
+  naming its zoom ≤ 1.5 envelope. Now `cw-panel` comes before Files, so the same windows cut Files
+  (1100×700 zoom 1.6: Files 401 of 448 px; zoom 2: 226 of 560; zoom 2.5: 8 of 700) and keep the
+  terminals and the game whole as long as `work-body`'s content box holds (80 + 8 + 64) × zoom.
+  The only windows short of that are zoom 3 below about 1300 px, where herdr's own px sidebar
+  (804 px) leaves `work-body` less than that; there the game loses part of the rail too, but only
+  after Files is gone. The ribbon (outside `work-body`, the full work column) keeps every helper's
+  mark, the counts and save problems on screen in all of these. **main's min stays 80**: any min
+  above 88 cuts Files at 1100×700 zoom 1.5 (inside the envelope), and where everything fits the min
+  does not change main's width; past the envelope a higher min would only trade Files px for main
+  px. `test/layout` "past zoom 1.5" checks zooms 1.6–3.0 at 1100–2560 px in every state.
 * **No `max` on a weight node.** herdr keeps grow factors normalised to the original siblings
   after a node freezes at its max (`pane_size::shares`; taffy, CSS flexbox 9.7 step 4b), so a
   capped weight node leaves the rest of its share empty: `{weight: 1, max: 320}` would leave a
@@ -1066,11 +1095,15 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   `tools/mock/commands.js` `applyLayoutCommand` applies `layout.toggle|show|hide|resize` and
   `applyDrag` a divider drag (port of `drag_to`) to a tree as the window does. Tests:
   `test/layout/layout.test.mjs` (every state at 1100–2560 px, zoom 1 and 1.5, none skipped;
-  folding helps; the designed widths above), `test/glue/commands.test.mjs` (the commands' own runs
+  zooms 1.6–3.0 clip Files before the game; folding helps; the designed widths above; RECIPE.md
+  written from the built files), `test/glue/commands.test.mjs` (the commands' own runs
   applied and laid out with Files open at zoom 1 and 1.5; dragging the rail open), and
-  `test/tooling/window.test.mjs` (geometry against hand-worked numbers, zoom 1.5 window shots).
+  `test/tooling/window.test.mjs` (geometry against hand-worked numbers, Files clipped before the
+  rail at 1000 px zoom 1.5, zoom 1.5 window shots).
 * **DESIGN to follow** (owned elsewhere): §2.1's diagram ("320 (64 … 560)", "main … min 360"),
   §2.2's table and its "(3) main has min 360", §2.3 ("mainEst 112", "folding gives the terminals
-  368 px", `filesPx`), §2.4 (which windows give which state by default), §2.5's layout block and
+  368 px", `filesPx`), §2.4 (which windows give which state by default; past zoom 1.5 Files, not
+  the panel, is what gets clipped), §2.5's layout block (with `cw-panel` between `main` and `panel`,
+  r2-15; §2.1's diagram should put the game left of Files too) and
   §2.6's "`layout.resize` to 64 or to the last unfolded width, default 320". `test/layout` "is
   exactly the layout in DESIGN §2.5" fails until §2.5 shows `layouts/Creaseworks.json` as built.

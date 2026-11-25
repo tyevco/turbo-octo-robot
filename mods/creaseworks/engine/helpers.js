@@ -1,10 +1,10 @@
 // Helpers: observation reconciliation, identity, production b_i, rest, warm,
 // thanks, fledglings, Album and Elsewhere (DESIGN §5, §6.1, §12.5).
 
-import { K, SPECIES, NAME_A, NAME_B } from "./content.js";
+import { K, SPECIES, NAMES, NAME_SKIP } from "./content.js";
 import { fnv1a32n } from "./hash.js";
 import { crowd, benchSum } from "./economy.js";
-import { addUnits } from "./envelopes.js";
+import { addUnits, settleEnvelope, pushNotice } from "./envelopes.js";
 import { clip, cleanTitle } from "./text.js";
 
 const STATUSES = ["working", "blocked", "done", "idle"];
@@ -29,14 +29,21 @@ function hex8(n) {
   return ("0000000" + n.toString(16)).slice(-8);
 }
 
-/** Species index, hue index and base name from the identity hash. */
+/** Species index, hue index and base name from the identity hash (names: content.js NAMES, §5.1). */
 export function lookOf(id) {
   const h = parseInt(id, 16) >>> 0;
   return {
     species: SPECIES[h % 12],
     hue: (h >>> 4) % 8,
-    name: NAME_A[(h >>> 8) % 16] + NAME_B[(h >>> 12) % 12],
+    name: NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)],
   };
+}
+
+/** True when a display name's base ("Loli" of "Loli 2") is one the game no longer gives (NAME_SKIP, §5.1). */
+export function skippedName(name) {
+  if (typeof name !== "string") return false;
+  const sp = name.indexOf(" ");
+  return NAME_SKIP.indexOf(sp < 0 ? name : name.slice(0, sp)) >= 0;
 }
 
 /** Status group (needs|finished|working|resting|album), or "elsewhere" from `writerId`'s view. */
@@ -228,22 +235,28 @@ export function packAlbum(h) {
 
 const isFiniteNum = (v) => typeof v === "number" && Number.isFinite(v);
 
+const HEX8 = /^[0-9a-f]{8}$/;
+
 /** The in-memory compact record of a packed Album entry, or null when the entry is malformed. */
 export function unpackAlbum(id, a) {
-  if (typeof id !== "string" || !/^[0-9a-f]{8}$/.test(id) || !Array.isArray(a)) return null;
-  if (a.length !== 4 && a.length !== 6) return null;
-  if (a[0] !== 0 && (typeof a[0] !== "string" || a[0].length === 0)) return null;
-  for (let i = 1; i < a.length; i++) if (!isFiniteNum(a[i])) return null;
-  const look = lookOf(id);
+  // Runs once per Album helper on every load (thousands after a year): no
+  // allocation beyond the record itself (the look is computed inline).
+  if (typeof id !== "string" || id.length !== 8 || !HEX8.test(id) || !Array.isArray(a)) return null;
+  const len = a.length;
+  if (len !== 4 && len !== 6) return null;
+  const a0 = a[0];
+  if (a0 !== 0 && (typeof a0 !== "string" || a0.length === 0)) return null;
+  for (let i = 1; i < len; i++) if (!isFiniteNum(a[i])) return null;
   const stats = { tasks: a[2], folds: a[1], run: 0, envelopes: 0, checkIns: 0 };
-  if (a.length === 6) {
+  if (len === 6) {
     if (!(a[4] > 0)) return null;
     stats.kidsPast = a[4];
     stats.kidsFolds = a[5];
   }
+  const h = parseInt(id, 16) >>> 0;
   return {
-    id, kind: "pane", parent: null, species: look.species, hue: look.hue,
-    name: a[0] === 0 ? look.name : a[0],
+    id, kind: "pane", parent: null, species: SPECIES[h % 12], hue: (h >>> 4) % 8,
+    name: a0 === 0 || skippedName(a0) ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : a0,
     joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0, stats,
     missingSince: a[3] * MINUTE, gone: true, compact: true,
   };
@@ -258,7 +271,7 @@ function compactRecord(h) {
   const a = [h.name, round4(s.folds), isFiniteNum(s.tasks) ? s.tasks : 0, Math.floor(m / MINUTE)];
   if (s.kidsPast > 0 && isFiniteNum(s.kidsPast)) a.push(s.kidsPast, isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
   const look = lookOf(h.id);
-  if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0) a[0] = 0;
+  if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0 || skippedName(a[0])) a[0] = 0;
   const c = unpackAlbum(h.id, a);
   if (!c) return false; // not an engine-made id (a legacy or hand-edited save): kept whole
   for (const k of Object.keys(h)) delete h[k];
@@ -321,8 +334,9 @@ function rejoin(h, o, slots, t) {
     h.lastTurn = Number(o.turn) || 0;
     h.joined = t;
   }
-  // Its old name may have been given to a present namesake meanwhile.
-  if (nameTaken(slots, h.name)) h.name = freeName(slots, lookOf(h.id).name);
+  // Its old name may have been given to a present namesake meanwhile (or be
+  // one the game no longer gives, from an older save).
+  if (nameTaken(slots, h.name) || skippedName(h.name)) h.name = freeName(slots, lookOf(h.id).name);
   takeName(slots, h.name);
 }
 
@@ -383,8 +397,11 @@ function finish(state, ctx, h, t, ev) {
   let units;
   if (h.kind === "kid") {
     units = quick ? K.unitKidQuick : K.unitKid;
+    // A fledgling's units go to its parent while that parent is present; with
+    // the parent gone (or unknown) they stay with the fledgling itself, so no
+    // envelope is ever filed under an Album record (R13, review r2-18).
     const p = h.parent ? state.helpers[h.parent] : null;
-    if (p) to = p;
+    if (p && !p.gone) to = p;
   } else {
     units = quick ? K.unitPaneQuick : K.unitPane;
   }
@@ -458,6 +475,20 @@ export function observe(state, ctx, action, t, ev) {
         // a stale observation replayed after a newer one (or after the agent left)
         if (h.gone ? t < h.missingSince : t < h.lastSeen) continue;
         if (h.gone) rejoin(h, o, names(), t);
+        else if (skippedName(h.name)) {
+          // a present helper from an older save named before NAME_SKIP (§5.1)
+          h.name = freeName(names(), lookOf(h.id).name);
+          takeName(names(), h.name);
+        }
+        // Kind follows the observation (§5.2): a sub-agent with its own pane is
+        // a fledgling only while its parent chain reaches another helper, so it
+        // becomes a pane helper when that parent leaves (and a fledgling again
+        // if it returns). The roster index is rebuilt below.
+        const kind = o.kind === "kid" ? "kid" : "pane";
+        if (h.kind !== kind) {
+          h.kind = kind;
+          h.parent = null;
+        }
         const turn = Number(o.turn) || 0;
         if (turn > h.lastTurn) {
           h.lastTurn = turn;
@@ -502,7 +533,7 @@ export function observe(state, ctx, action, t, ev) {
       if (!h.gone && h.seenBy === w && t > h.lastSeen) h.lastSeen = t;
     }
   }
-  prune(state, t);
+  prune(state, t, ctx, ev);
 }
 
 /**
@@ -598,13 +629,22 @@ function foldKid(state, h) {
   rosterChanged(state);
 }
 
+/** A compact record changed after compaction (an envelope opened or a check-in for it): fields its packed form cannot hold. */
+function compactChanged(h) {
+  const s = h.stats;
+  return h.env !== 0 || h.rest !== 0 || !s || s.run !== 0 || s.envelopes !== 0 || s.checkIns !== 0;
+}
+
 /**
  * Keep the save bounded (R13): fledglings gone for 30 days, or beyond the
  * K.kidAlbumKeep most recently gone, fold into their parent; gone pane helpers
- * beyond the K.albumKeep most recently gone are compacted. Writers unseen for
- * 30 days are pruned.
+ * beyond the K.albumKeep most recently gone are compacted, and a compact record
+ * changed since is compacted again. With the step context, the envelope of a
+ * helper whose record is compact or no longer in the save is cashed in
+ * (settleEnvelope), so envelopes of long-gone helpers cannot pile up. Writers
+ * unseen for 30 days are pruned.
  */
-export function prune(state, t) {
+export function prune(state, t, ctx, ev) {
   const hs = state.helpers;
   const kids = [];
   const full = [];
@@ -612,11 +652,17 @@ export function prune(state, t) {
     const h = hs[id];
     if (!h.gone) continue;
     if (h.kind === "kid") {
+      if (skippedName(h.name)) h.name = lookOf(h.id).name;
       if (typeof h.missingSince !== "number") continue;
       if (t - h.missingSince > K.kidAlbumMs) foldKid(state, h);
       else kids.push(h);
-    } else if (h.compact !== true && !(h.salt > 0)) {
+    } else if (h.compact === true) {
+      if (compactChanged(h)) compactRecord(h);
+    } else if (!(h.salt > 0)) {
+      if (skippedName(h.name)) h.name = lookOf(h.id).name;
       full.push(h); // a salted record keeps its `salt` (R6), so it is never compacted
+    } else if (skippedName(h.name)) {
+      h.name = lookOf(h.id).name;
     }
   }
   if (kids.length > K.kidAlbumKeep) {
@@ -631,12 +677,33 @@ export function prune(state, t) {
     for (let i = 0; i < full.length && excess > 0; i++) if (compactRecord(full[i])) excess--;
     if (excess !== n0) rosterChanged(state);
   }
+  if (ctx && ev) settleOld(state, ctx, t, ev);
   for (const w in state.writersSeen) {
     if (t - state.writersSeen[w] > K.writerPruneMs) {
       delete state.writersSeen[w];
       delete state.applied[w];
     }
   }
+}
+
+/**
+ * Cash in every envelope whose helper's record is compact or gone from the
+ * save (§6.1, R13): at most one footer notice per call. The record stays
+ * compact (settleEnvelope adds only to its folds).
+ */
+function settleOld(state, ctx, t, ev) {
+  const hs = state.helpers;
+  let ids = null;
+  for (const id in state.envelopes) {
+    const h = hs[id];
+    if (h === undefined || h.compact === true) (ids || (ids = [])).push(id);
+  }
+  if (!ids) return;
+  ctx.refresh();
+  let amount = 0;
+  for (const id of ids) amount += settleEnvelope(state, ctx, id, t, ev);
+  const h = ids.length === 1 ? hs[ids[0]] : undefined;
+  pushNotice(state, { kind: "settled", at: t, data: { amount, count: ids.length, name: h ? h.name : null } });
 }
 
 /** Credit per-helper production shares (for the Flock card and the garland). */

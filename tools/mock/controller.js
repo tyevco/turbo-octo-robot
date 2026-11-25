@@ -258,17 +258,20 @@ function sameValue(a, b) {
 // Text sizes (no TextEncoder in the sandbox)
 // ---------------------------------------------------------------------------
 
-/** UTF-8 byte length of a JS string (a lone surrogate counts as U+FFFD, 3 bytes). */
+/**
+ * UTF-8 byte length of a JS string (a lone surrogate counts as U+FFFD, 3
+ * bytes). The string's length plus the extra bytes of each non-ASCII
+ * character, found by the regex engine: herdr measures a file natively, off
+ * the script's task step, and in the QuickJS harness this mock runs inside the
+ * VM, so a character loop over a 500 KiB save would add hundreds of ms to the
+ * step it settles in (the budget the harness measures).
+ */
 export function utf8Length(s) {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x80) n += 1;
-    else if (c < 0x800) n += 2;
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-      n += 4;
-      i++;
-    } else n += 3;
+  let n = s.length;
+  const wide = /[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g;
+  for (let m = wide.exec(s); m !== null; m = wide.exec(s)) {
+    // 2 bytes for one unit (+1); a pair is 4 bytes for two units (+2); 3 bytes for one unit (+2)
+    n += m[0].length === 2 || m[0].charCodeAt(0) >= 0x800 ? 2 : 1;
   }
   return n;
 }
@@ -361,6 +364,8 @@ class Frame {
     this.live = true;
     this.stopped = false;
     this.initializing = extra.initializing ?? null;
+    // The copy's application generation (herdr: one per loaded copy); null outside any copy.
+    this.app = extra.app ?? null;
     this.prev = null;
   }
 }
@@ -385,6 +390,12 @@ export class Controller {
     this.generation = 1;
     this.deadGens = new Set();
     this.deadOwners = new Set();
+    // herdr gives every loaded copy its own ApplicationGeneration
+    // (quickjs/mod.rs load_app); every task records the one current when it
+    // was made, whatever its owner (scheduler.rs TaskState::new).
+    this.apps = new WeakMap();
+    this.nextApp = 1;
+    this.deadApps = new Set();
     this.tasks = new Map();
     this.nextTask = 1;
     this.scope = null;
@@ -564,7 +575,7 @@ export class Controller {
     const ev = this._next(target);
     if (!ev) return false;
     if (ev.due > this.t) this.t = ev.due;
-    const frame = new Frame("task", ev.owner, ev.gen);
+    const frame = new Frame("task", ev.owner, ev.gen, { app: ev.app });
     frame.prev = null;
     this.scope = frame;
     try {
@@ -647,10 +658,78 @@ export class Controller {
     this._drop((t) => t.gen === g);
   }
 
-  /** A view went away (copy closed): tasks it owns stop, like OwnerGone. */
+  /**
+   * A copy went away (lifecycle.rs close → release_application_generation):
+   * tasks it owns stop, like OwnerGone, and so does every task made in its
+   * application generation, owner: null ones too (scheduler.rs
+   * cancel_application_generation). Their promises never settle; writes
+   * already started still land on disk, unanswered.
+   */
   closeOwner(owner) {
+    if (owner === null || owner === undefined) return;
     this.deadOwners.add(owner);
-    this._drop((t) => t.owner === owner && owner !== null);
+    const app = this.appOf(owner, false);
+    if (app !== null) this.deadApps.add(app);
+    this._drop((t) => t.owner === owner || (app !== null && t.app === app));
+  }
+
+  /**
+   * Closes a copy the way the shell does (lifecycle.rs ShellRuntime::close):
+   * view.close(cx) runs in a task scope of the copy; its returned promise is
+   * given until `deadlineMs` of virtual time (herdr: 250 ms), then the copy's
+   * application generation is released (closeOwner). Resolves with whether the
+   * promise settled in time.
+   */
+  async closeView(view, { deadlineMs = 250, step = 5 } = {}) {
+    if (this.scope) throw new Error("mock: closeView() inside an open scope");
+    let settled = true;
+    let task = null;
+    if (view && typeof view.close === "function") {
+      // close gets a task cx bound to the copy (lifecycle.rs ContextBinding::Task):
+      // it stays usable after the call, until the copy's generation is released.
+      const app = this.appOf(view);
+      const { frame } = this.enter("task", view, { app });
+      task = this._register("View.close", { kind: "close", owner: view, gen: frame.gen, app });
+      const cx = this._taskCx(task);
+      let result;
+      try {
+        result = view.close(cx);
+        await this.drain();
+      } catch (e) {
+        this._error(`error in View.close: ${describe(e)}`, e);
+      } finally {
+        this.exit(frame);
+      }
+      if (result && typeof result.then === "function") {
+        settled = false;
+        result.then(() => (settled = true), () => (settled = true));
+        await this.drain();
+        const end = this.t + deadlineMs;
+        while (!settled && this.t < end) {
+          await this.advance(Math.min(step, end - this.t));
+          await this.drain();
+        }
+      }
+    }
+    this.closeOwner(view);
+    if (task) this._finish(task);
+    return settled;
+  }
+
+  /** The application generation of copy `owner` (made on first use when `make`), or null. */
+  appOf(owner, make = true) {
+    if (owner === null || (typeof owner !== "object" && typeof owner !== "function")) return null;
+    let app = this.apps.get(owner);
+    if (app === undefined) {
+      if (!make) return null;
+      app = this.nextApp++;
+      this.apps.set(owner, app);
+    }
+    return app;
+  }
+
+  isApplicationLive(app) {
+    return app === null || !this.deadApps.has(app);
   }
 
   _drop(match) {
@@ -679,7 +758,7 @@ export class Controller {
    */
   enter(phase, owner = null, opts = {}) {
     if (!PHASES.includes(phase)) throw new TypeError(`mock: unknown phase ${phase}`);
-    const frame = new Frame(phase, owner, opts.gen ?? this.generation, opts);
+    const frame = new Frame(phase, owner, opts.gen ?? this.generation, { ...opts, app: this._frameApp(owner, opts) });
     frame.prev = this.scope;
     this.scope = frame;
     const cx = opts.cx === "ambient" ? this._ambientCx() : this._callCx(frame);
@@ -724,10 +803,16 @@ export class Controller {
    */
   makeCx(phase, owner = null, opts = {}) {
     if (!PHASES.includes(phase)) throw new TypeError(`mock: unknown phase ${phase}`);
-    const frame = new Frame(phase, owner, opts.gen ?? this.generation, opts);
+    const frame = new Frame(phase, owner, opts.gen ?? this.generation, { ...opts, app: this._frameApp(owner, opts) });
     const cx = this._callCx(frame);
     this._cxFrames.set(cx, frame);
     return cx;
+  }
+
+  /** The application generation a scope for `owner` runs under (opts.app overrides). */
+  _frameApp(owner, opts) {
+    if (opts && opts.app !== undefined) return opts.app;
+    return this.appOf(owner ?? (opts && opts.initializing) ?? null);
   }
 
   get _cxFrames() {
@@ -775,10 +860,10 @@ export class Controller {
   /** The async cx a spawn body or timer callback gets: bound to the task's build and owner. */
   _taskCx(task) {
     const run = (body) => {
-      if (this.deadGens.has(task.gen)) throw new TypeError(MESSAGES.ended);
+      if (this.deadGens.has(task.gen) || (task.app != null && this.deadApps.has(task.app))) throw new TypeError(MESSAGES.ended);
       if (this.scope) return body(this.scope);
       if (this.strict) throw new TypeError(MESSAGES.noHostCall);
-      const frame = new Frame("task", task.owner, task.gen);
+      const frame = new Frame("task", task.owner, task.gen, { app: task.app });
       this.scope = frame;
       try {
         return body(frame);
@@ -942,6 +1027,8 @@ export class Controller {
     task.seq = ++this.seq;
     task.cancelled = false;
     task.done = false;
+    // made in a copy's scope: cancelled with that copy (closeOwner), whatever its owner
+    if (task.app === undefined) task.app = this.scope ? this.scope.app ?? null : null;
     this.tasks.set(task.id, task);
     return task;
   }
@@ -1033,7 +1120,7 @@ export class Controller {
 
   /** Lists outstanding tasks (diagnostics, leak checks). */
   pendingTasks() {
-    return [...this.tasks.values()].map((t) => ({ id: t.id, api: t.api, kind: t.kind, fn: t.fn && typeof t.fn === "string" ? t.fn : undefined, due: t.due, gen: t.gen }));
+    return [...this.tasks.values()].map((t) => ({ id: t.id, api: t.api, kind: t.kind, fn: t.fn && typeof t.fn === "string" ? t.fn : undefined, due: t.due, gen: t.gen, app: t.app }));
   }
 
   // -------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 // changes it (the engine's own cached helper index aside).
 //
 // opts (all optional; ARCHITECTURE B10):
-//   role        "panel" | "ribbon" (a panel narrower than 140 px is the rail)
+//   role        "panel" | "ribbon" (a panel narrower than 200 px is drawn as the rail)
 //   width       the copy's measured width (ribbon: work width W; panel: Wp)
 //   dense       boolean override of the Roster density setting
 //   style       "short" | "sci" override of the number style
@@ -196,14 +196,17 @@ export function view(state, now, opts = undefined) {
 
   const roster = rosterOf(state, writer, idx);
   const loops = budget(state, E, t, { calm, role, matShown, tilesShown, roster });
+  // Needs you counts waiting fledglings too (r2-17): the chip ▲, the rail
+  // button, the mat chips and the marks use the same list as the glue's
+  // waiting() (the answer key, ▲'s click), though each is a pip on its parent.
   const counts = {
-    needs: roster.groups.needs.length,
+    needs: roster.needs.length,
     finished: roster.groups.finished.length,
     working: roster.groups.working.length,
     resting: roster.groups.resting.length,
   };
   const liveRate = r.Rw + r.Hs;
-  const header = { folds: cnt(state.bank, style), rate: formatRate(liveRate, style), wishes: state.wishes, counts };
+  const header = { folds: cnt(state.bank, style), rate: formatRate(liveRate, style), wishes: state.wishes, counts, kidsWaiting: roster.kidsWaiting.length };
   const saveNotice = o.saveNotice && typeof o.saveNotice === "object" && typeof o.saveNotice.kind === "string" ? o.saveNotice : null;
   const away = awayCard(state, E, style);
   const marks = marksOf(state, t, roster);
@@ -245,6 +248,7 @@ function rosterOf(state, writer, idx) {
   const groups = { needs: [], finished: [], working: [], resting: [] };
   const elsewhere = [];
   const kidsOf = Object.create(null);
+  const kidsWaiting = [];
   const tiles = [];
   const present = idx.present;
   const here = Object.create(null);
@@ -255,6 +259,7 @@ function rosterOf(state, writer, idx) {
     // A fledgling is a pip on its parent's tile (§3.3); one without a present parent gets its own tile.
     if (h.kind === "kid" && h.parent && here[h.parent]) {
       (kidsOf[h.parent] || (kidsOf[h.parent] = [])).push(h);
+      if (statusOf(h) === "blocked" && !(other && h.seenBy && h.seenBy !== writer)) kidsWaiting.push(h);
       continue;
     }
     if (other && h.seenBy && h.seenBy !== writer) elsewhere.push(h);
@@ -271,7 +276,10 @@ function rosterOf(state, writer, idx) {
   for (const k in kidsOf) kidsOf[k].sort(byJoin);
   const workspace = state.settings.order === "workspace";
   const ordered = workspace ? tiles.sort(byPlace) : groups.needs.concat(groups.finished, groups.working, groups.resting);
-  return { groups, elsewhere, kidsOf, ordered, workspace };
+  // Every helper that needs you, longest waiting first: the tiles of Needs
+  // you and the waiting fledglings drawn as pips on a present parent (r2-17).
+  const needs = kidsWaiting.length ? groups.needs.concat(kidsWaiting).sort(byWait) : groups.needs;
+  return { groups, elsewhere, kidsOf, kidsWaiting, needs, ordered, workspace };
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +299,7 @@ function budget(state, E, t, c) {
   // 1. Needs-you pulse: the most recent waits within 10 s (≤ 6), one mark per
   //    helper: the tile while the Flock tab shows, else the mat chip.
   if (c.tilesShown || c.matShown) {
-    const cand = c.tilesShown ? c.roster.groups.needs : c.roster.groups.needs.slice(0, LOOP_BUDGET.chips);
+    const cand = c.tilesShown ? c.roster.groups.needs : c.roster.needs.slice(0, LOOP_BUDGET.chips);
     const recent = [];
     for (const h of cand) {
       const since = t - num(h.blockedAt, -Infinity);
@@ -599,6 +607,8 @@ function mark(state, t, h, elsewhere) {
   const word = WORD[status];
   const mid = [agentOf(h.title), place(h)].filter(Boolean).join(" · ");
   let tip = nameOfHelper(h, CLIP.long);
+  const parent = h.kind === "kid" && h.parent && Object.hasOwn(state.helpers, h.parent) ? state.helpers[h.parent] : null;
+  if (parent) tip += ` (fledgling of ${nameOfHelper(parent, CLIP.long)})`;
   if (mid) tip += ` — ${mid}`;
   tip += ` — ${elsewhere ? `${word} (another window)` : word}`;
   if (status === "blocked" && typeof h.blockedAt === "number") tip += ` · ${ago(t - h.blockedAt)}`;
@@ -613,10 +623,30 @@ function mark(state, t, h, elsewhere) {
   };
 }
 
-/** Group order with join order inside (or workspace order); Elsewhere last at 50 %. */
+/**
+ * Group order with join order inside (or workspace order); Elsewhere last at
+ * 50 %. A waiting fledgling gets its own needs-you mark (r2-17: in Needs you,
+ * or right after its parent in workspace order); its click opens it.
+ */
 function marksOf(state, t, roster) {
   const g = roster.groups;
-  const list = roster.workspace ? roster.ordered : g.needs.slice().sort(byJoin).concat(g.finished, g.working, g.resting);
+  let list;
+  if (!roster.workspace) list = roster.needs.slice().sort(byJoin).concat(g.finished, g.working, g.resting);
+  else if (!roster.kidsWaiting.length) list = roster.ordered;
+  else {
+    const kidsBy = Object.create(null);
+    for (const k of roster.kidsWaiting) (kidsBy[k.parent] || (kidsBy[k.parent] = [])).push(k);
+    list = [];
+    for (const h of roster.ordered) {
+      list.push(h);
+      if (kidsBy[h.id]) {
+        for (const k of kidsBy[h.id]) list.push(k);
+        delete kidsBy[h.id];
+      }
+    }
+    // (a parent drawn Elsewhere: its waiting fledgling still gets a mark)
+    for (const p in kidsBy) for (const k of kidsBy[p]) list.push(k);
+  }
   const out = new Array(list.length + roster.elsewhere.length);
   let k = 0;
   for (const h of list) out[k++] = mark(state, t, h, false);
@@ -664,7 +694,7 @@ function ribbonVm(state, all, W, header, saveNotice, envelopes, style, liveRate)
 
 function matVm(state, t, E, loops, short, calm, roster) {
   const sp = state.spawn;
-  const waiting = roster.groups.needs;
+  const waiting = roster.needs;
   const chips = [];
   for (let i = 0; i < waiting.length && i < LOOP_BUDGET.chips; i++) {
     const h = waiting[i];

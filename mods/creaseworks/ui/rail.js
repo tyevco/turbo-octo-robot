@@ -14,10 +14,19 @@ import { iconButton, text, hoverOn } from "./widgets.js";
 import { bannerNotices } from "./banner.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140 });
+export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140, flash: 80 });
 
 const PITCH = 14;
 const COLS = 4;
+const MAX_COLS = 12;
+/** A rail at least this wide (tight: unfolded, under 200) also shows the flash line. */
+const FLASH_ABOVE = 120;
+
+/** Pip columns for a rail `width` px wide: 4 in the 64 px rail, more in a tight one (r2-14: it uses its column). */
+export function pipColumns(width) {
+  const w = typeof width === "number" && Number.isFinite(width) ? width : 64;
+  return Math.max(COLS, Math.min(MAX_COLS, Math.floor((w - 8) / PITCH)));
+}
 
 function handler(ctx, name) {
   const h = ctx && ctx.handlers;
@@ -46,7 +55,8 @@ function railButton(id, glyphEl, n, tooltip, onClick, T) {
   return el;
 }
 
-function pipGrid(marks, T, openHelper, select) {
+function pipGrid(marks, T, openHelper, select, cols) {
+  const COLS = cols;
   const rows = Math.ceil(marks.length / COLS);
   const grid = div().relative().w(COLS * PITCH).h(Math.max(PITCH, rows * PITCH)).flex_none();
   marks.forEach((m, k) => {
@@ -114,6 +124,12 @@ export function renderRail(vm, ui, ctx) {
       .child(text(clip(String(rail.count ?? header.folds ?? ""), RAIL_CLIP.count), { size: 11, weight: 600, color: T.foreground }, T))
       .child(text(clip(String(rail.rate ?? header.rate ?? ""), RAIL_CLIP.rate), { size: 11, color: T.muted }, T)),
   );
+  // 2b. A tight rail shows the flash (why a click could not open the full
+  // panel, r2-12) under the count; the 64 px rail has no room for it.
+  const flashNote = Array.isArray(vm.notices) ? vm.notices.find((n) => n && n.kind === "flash" && typeof n.text === "string") : null;
+  if (flashNote && typeof ctx.width === "number" && ctx.width >= FLASH_ABOVE) {
+    root.child(text(clip(flashNote.text, RAIL_CLIP.flash), { id: "cw-rail-flash", size: 11, color: T.foreground }, T).w_full().px(6).text_center());
+  }
   // 3. Mini Sheet: one fold per click.
   const frame = num(vm.sheet && vm.sheet.frame, 0);
   const { base, shade } = sheetPaths(frame);
@@ -158,7 +174,7 @@ export function renderRail(vm, ui, ctx) {
   ));
   // 6. Per-helper pip grid.
   const marks = Array.isArray(rail.pips) ? rail.pips : [];
-  root.child(pipGrid(marks, T, openHelper, select));
+  root.child(pipGrid(marks, T, openHelper, select, pipColumns(ctx.width)));
   // 7. Gilded crane (only while one is live; clicking counts as catching it).
   const craneId = rail.crane ?? (vm.mat && vm.mat.crane ? vm.mat.crane.id : null);
   if (craneId) {
@@ -183,9 +199,12 @@ export function renderRail(vm, ui, ctx) {
   }
   // 8. Unfold chevron.
   // A rail drawn only because the window leaves the panel too little room
-  // (unfolded, 140–199 px) cannot unfold further: its chevron folds it to 64.
-  const tight = typeof ctx.width === "number" && ctx.width >= 140;
-  const tip = tight ? "Too narrow for the full panel: fold to a slim rail (close Files or widen the window for more)" : "Unfold Creaseworks";
+  // (unfolded, under 200 px: 146 with Files open, 124 or 106 at zoom 1.5)
+  // cannot unfold further: its chevron folds it to 64 and gives the terminals
+  // the room. Folded or not is the layout's weight (ctx.folded, r2-13); a ctx
+  // without it falls back to the width.
+  const tight = typeof ctx.folded === "boolean" ? !ctx.folded : typeof ctx.width === "number" && ctx.width >= 140;
+  const tip = tight ? "Too narrow for the full panel: fold to a slim rail and give the terminals room (close Files or widen the window for the full panel)" : "Unfold Creaseworks";
   root.child(iconButton("cw-rail-unfold", tight ? "fold" : "chevron", tip, { size: 16, onClick: (e, cx) => fold(cx) }, T));
   return root;
 }

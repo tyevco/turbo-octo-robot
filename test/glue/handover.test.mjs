@@ -250,7 +250,7 @@ test("r1-01: a second panel opened in the same code generation keeps a live clai
   for (let i = 0; i < 5; i++) await w.advance(50);
   const claim = w.slot.save.writing;
   assert.notEqual(claim, null, "the reset holds the claim (keeping the old save aside)");
-  await w.copy("panel"); // the layout opened twice, or a panel closed and reopened: same generation
+  await w.copy("panel"); // the layout opened twice: same generation, and the first panel stays open
   assert.equal(w.slot.save.writing, claim, "the claim is kept: its task is still running");
   await w.advance(3000);
   assert.match(w.slot.flash && w.slot.flash.text, /Started a new game\. The old save was kept as save\.damaged-1\.json\./);
@@ -285,4 +285,68 @@ test("r1-01: a claim that never settles is released after WRITE_STALL_MS, with t
   await w.advance(10000);
   assert.equal(w.slot.save.writing, null);
   assert.equal(parsed(w.ctl).state.stats.hits, 2);
+  // r2-03: never silent (an interrupted merge or Settings tool did not finish).
+  assert.equal(w.slot.notice && w.slot.notice.kind, "recovered");
+  assert.match(w.slot.notice.text, /A save step stopped before finishing; saving again/);
+});
+
+test("r2-06: a copy closed during its Reset: herdr cancels the copy's owner:null tasks, and the claim is released and said", async () => {
+  const { ORPHAN_MS, WRITE_STALL_MS } = await import("../../mods/creaseworks/glue/store.js");
+  w = win({ latency: { write: 400, read: 0 } });
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  await w.advance(3000);
+  await w.hits(panel, 5);
+  await w.advance(18000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 5);
+  await w.handler(panel, "resetGame");
+  for (let i = 0; i < 5; i++) await w.advance(50);
+  assert.notEqual(w.slot.save.writing, null, "the reset holds the claim (keeping the old save aside)");
+  assert.equal(w.slot.save.writingBy, panel.session.copyId);
+  // The panel closes (layout.hide, the window's panel closed): herdr releases its
+  // application generation, which cancels the Reset task although it is owner: null.
+  await w.ctl.closeView(panel);
+  assert.ok(w.ctl.deadApps.size >= 1);
+  const left = w.ctl.pendingTasks().filter((t) => t.app === w.ctl.appOf(panel, false));
+  assert.ok(left.every((t) => t.kind === "host" && t.fn === "writeTextFile"), `every task of the closed copy stopped; only a write already started lands, unanswered (${JSON.stringify(left)})`);
+  assert.notEqual(w.slot.save.writing, null, "nothing settles the claim");
+  await w.advance(ORPHAN_MS + 2000);
+  assert.ok(ORPHAN_MS + 2500 < WRITE_STALL_MS);
+  assert.equal(w.slot.save.writing, null, "released once its copy stayed gone, long before WRITE_STALL_MS");
+  // Never silent: said until dismissed (the Reset did not take effect).
+  const n = w.slot.notice;
+  assert.ok(n && n.kind === "recovered" && /cut off when a Creaseworks view closed/.test(n.text), JSON.stringify(n));
+  assert.match(ribbon.session.ctx().save.text, /Saved/);
+  await w.advance(5000);
+  assert.equal(w.slot.save.status, "ok");
+  assert.equal(w.slot.notice, n, "still shown after the next save");
+  assert.equal(parsed(w.ctl).state.stats.hits, w.slot.state.stats.hits, "the game in memory is on disk");
+});
+
+test("r2-06: a copy only taken over by a newly opened one keeps its claim (it beats again)", async () => {
+  const { ORPHAN_MS } = await import("../../mods/creaseworks/glue/store.js");
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 2);
+  const { codeGeneration } = await import("../../mods/creaseworks/glue/live.js");
+  // A long-running claim of the first panel (e.g. a slow disk), still alive.
+  Object.assign(w.slot.save, { writing: 99, writingBy: v.session.copyId, writingGen: codeGeneration(), writingAt: Date.now(), status: "saving" });
+  await w.copy("panel"); // takeOver drops the first panel's entry; it beats again on its next tick
+  assert.equal(w.slot.save.writing, 99);
+  await w.advance(ORPHAN_MS + 5000);
+  assert.equal(w.slot.save.writing, 99, "a copy that is still open is not an orphan");
+  assert.equal(w.slot.notice, null);
+});
+
+test("r2-06: closeView gives close(cx) its 250 ms, then releases the copy (its final write lands)", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 3);
+  const settled = await w.ctl.closeView(v);
+  assert.equal(settled, true, "the final write settled inside the deadline");
+  assert.equal(parsed(w.ctl).state.stats.hits, 3);
+  assert.equal(w.slot.save.writing, null);
+  assert.deepEqual(w.ctl.errors, []);
 });

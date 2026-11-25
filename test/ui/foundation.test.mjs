@@ -519,6 +519,73 @@ test("widgets: chip keeps a 28 px clickable target and stops propagation when as
   assert.equal(stopped, 1);
 });
 
+test("widgets: an unbounded chip never truncates its label; maxW bounds the pill and truncates (r2-16)", () => {
+  const T = THEMES.graphite;
+  const st = (n, k) => (n.styles || []).find((x) => x[0] === k);
+  const labelOf = (pill) => pill.children[pill.children.length - 1];
+  const free = W.chip("cw-chip-n", "64", { status: "working", onClick() {} }, T, P.S_DARK).toJSON().children[0];
+  assert.equal(st(free, "max_w"), undefined, "no max_w without maxW");
+  assert.equal(st(free, "overflow_hidden"), undefined);
+  const fl = labelOf(free);
+  assert.equal(st(fl, "truncate"), undefined, "the count is never truncated");
+  assert.ok(st(fl, "flex_none") && st(fl, "whitespace_nowrap"), "the count never shrinks or wraps");
+  assert.deepEqual(fl.children.map((c) => c.text), ["64"]);
+  const bounded = W.chip("cw-chip-b", "Save problem", { icon: "warn", maxW: 60, onClick() {} }, T, P.S_DARK).toJSON().children[0];
+  assert.equal(st(bounded, "max_w")[1], 60);
+  assert.ok(st(labelOf(bounded), "truncate"), "a bounded label truncates");
+});
+
+test("ribbon: level-C tally chips show the whole count and the middle reserves it (r2-16)", async () => {
+  const { installMockWindow } = await import("../../tools/mock/gpui-kit.js");
+  installMockWindow();
+  const R = await import("../../mods/creaseworks/ui/ribbon.js");
+  // The defect: tally() bounded "64" to 34 + 2 × 6.4 = 47 px, 13 px for two
+  // 11/600 digits that Geist draws at about 13.3 px (regular) or more, so the
+  // pills read "6…" and "5…". Digits now count WIDE_CELL (≥ 7.2) px a cell.
+  assert.ok(R.WIDE_CELL >= 7.2);
+  for (const d of ["64", "130", "1,234"]) {
+    const digits = d.replace(/[^0-9]/g, "").length;
+    for (const wt of [400, 600]) assert.ok(R.textBound(d, wt) >= digits * 7.2, `${d}/${wt}: ${R.textBound(d, wt)}`);
+  }
+  assert.ok(R.textBound("Welcome back +12.4M", 600) >= 2 * 7.2 * 2 + 12 * 6.4, "capitals and digits count wide");
+  const st = (n, k) => (n.styles || []).find((x) => x[0] === k);
+  const find = (json, id) => {
+    let out = null;
+    walk(json, (n) => { if (!out && n.id === id) out = n; });
+    return out;
+  };
+  for (const name of ALL) {
+    const dark = isDark(name);
+    for (const window of [1100, 1440]) {
+      for (const narrowHint of [false, true]) {
+        const s = F.scenario("ribbon-130", { window });
+        const ctx = { T: THEMES[name], S: P.pickScene(dark), hues: P.pickHues(dark), dark, zoom: 1, calm: false,
+          width: s.width, height: s.height, panelShown: true, narrowHint, handlers: {} };
+        const lay = R.ribbonLayout(s.vm, ctx, s.width);
+        const json = R.renderRibbon(s.vm, s.ui, ctx).toJSON();
+        const tag = `${name} ${window} hint ${narrowHint}`;
+        assert.ok(lay.lead + lay.need <= lay.w, `${tag}: ${lay.lead} + ${lay.need} > ${lay.w}`);
+        for (const t of lay.tallies) {
+          const status = t.status === "working" ? "working" : "idle";
+          const hit = find(json, `cw-rib-tally-${status}`);
+          assert.ok(hit, `${tag}: tally ${status} drawn`);
+          const pill = hit.children[0];
+          assert.equal(st(pill, "max_w"), undefined, `${tag}: tally pill is not bounded`);
+          assert.equal(st(pill, "overflow_hidden"), undefined, `${tag}: tally pill does not clip`);
+          const label = pill.children[pill.children.length - 1];
+          assert.equal(st(label, "truncate"), undefined, `${tag}: tally count is not truncated`);
+          const shown = label.children.map((c) => c.text).join("");
+          assert.equal(shown, String(t.label ?? t.count), `${tag}: the whole count`);
+          assert.ok(!shown.includes("\u2026") && !shown.includes(".."), `${tag}: no ellipsis`);
+          const digits = String(t.label ?? t.count).length;
+          assert.ok(R.tallyBound(t) >= 34 + digits * 7.2, `${tag}: ${R.tallyBound(t)} reserved for ${digits} digits`);
+        }
+        if (lay.level === "C") assert.equal(lay.tallies.reduce((a, t) => a + t.count, 0) > 0, true, tag);
+      }
+    }
+  }
+});
+
 test("widgets: glyph badges use the guarded colour on T.popover; envelope marker is ink on sheet", () => {
   for (const name of ALL) {
     const T = THEMES[name];

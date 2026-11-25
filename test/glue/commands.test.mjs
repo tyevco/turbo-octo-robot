@@ -11,7 +11,12 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { win, agent, term } from "./_util.mjs";
-import { layoutInfo, filesEstimate, DEFAULT_PANEL_WEIGHT, RAIL_WEIGHT, FILES_PX_FALLBACK } from "../../mods/creaseworks/glue/commands.js";
+import { layoutInfo, filesEstimate, panelState, DEFAULT_PANEL_WEIGHT, RAIL_WEIGHT, FILES_PX_FALLBACK, TIGHT_TEXT } from "../../mods/creaseworks/glue/commands.js";
+import { findById } from "../../tools/mock/gpui-kit.js";
+import { ScrollHandle } from "gpui-base";
+import { sectionIndex } from "../../mods/creaseworks/ui/flock.js";
+import { pipColumns } from "../../mods/creaseworks/ui/rail.js";
+import { POP_RISE_MS, POP_PRUNE_MS } from "../../mods/creaseworks/glue/session.js";
 import { applyLayoutCommand, applyDrag } from "../../tools/mock/commands.js";
 import { layoutBoxes } from "../../tools/render/window.mjs";
 import { PANEL_WEIGHT, RAIL_WEIGHT as BUILD_RAIL_WEIGHT, MAIN_MIN } from "../../tools/layout/build.mjs";
@@ -347,4 +352,183 @@ test("narrow window (§2.3): the ribbon offers to fold once per Files opening an
   await w.advance(1000);
   assert.equal(ribbon.session.ctx().narrowHint, false, "wide enough");
   assert.equal(panel.session.ctx().narrowHint, undefined, "a ribbon-only chip");
+});
+
+// ---------------------------------------------------------------------------
+// Verification round 2: r2-12, r2-13, r2-14 (tight and zoomed panels), r2-19
+// (counts chip scroll), r2-20 (pops), r2-21 (Elsewhere marks)
+
+const sizeOf = (v, width, height) => w.ctl.within("event", v, (cx) => v.session.onSize({ width, height }, cx));
+const styleOf = (node, name) => (node && Array.isArray(node.styles) ? node.styles.find((x) => x[0] === name) : undefined);
+const resizes = () => runsOf(w.ctl, "layout.resize").map((r) => r.args.weight);
+
+test("r2-12: the tight rail (unfolded, 146 px with Files open) answers every click: select, showGroup and show flash why, the chevron folds", async () => {
+  const { panel, ribbon } = await game({ layout: LAYOUT({ files: true }) });
+  sizeOf(panel, 146, 584);
+  sizeOf(ribbon, 832, 30);
+  await w.advance(1000);
+  assert.equal(panelState(w.slot), "tight");
+  assert.ok(findById(w.render(panel).tree, "cw-rail"), "drawn as the rail");
+  assert.equal(panel.session.ctx().folded, false);
+  const t3 = byAddr(w.slot, "t3");
+  const before = w.ctl.runs.length;
+  // A rail pip (panel copy), a ribbon mark, a ribbon tally, the save chip / Welcome pill.
+  for (const [v, name, ...args] of [[panel, "select", t3.id], [ribbon, "select", t3.id], [ribbon, "showGroup", "working"], [panel, "showGroup", "finished"], [ribbon, "show"]]) {
+    w.slot.flash = null;
+    await w.handler(v, name, ...args);
+    assert.equal(w.slot.flash && w.slot.flash.text, TIGHT_TEXT, `${name}: says why the full panel cannot open`);
+  }
+  assert.equal(w.ctl.runs.length, before, "no resize: the game never widens itself past its weight");
+  assert.equal(ribbon.session.vm().ribbon.pill, TIGHT_TEXT, "the ribbon shows it");
+  const flashEl = findById(w.render(panel).tree, "cw-rail-flash");
+  assert.ok(flashEl, "the tight rail shows it under the count");
+  assert.ok(JSON.stringify(flashEl).includes("close Files"));
+  // Its chevron folds it to the rail weight.
+  const chevron = findById(w.render(panel).tree, "cw-rail-unfold");
+  assert.match(styleOf(chevron, "tooltip")[1], /fold to a slim rail/);
+  await w.handler(panel, "fold");
+  assert.deepEqual(resizes(), [RAIL_WEIGHT]);
+  // Folded (the rail weight, 64): a pip select unfolds the panel with it selected.
+  w.ctl.layoutValue = LAYOUT({ files: true, panelSize: { weight: RAIL_WEIGHT } });
+  await w.advance(1000);
+  sizeOf(panel, 64, 584);
+  assert.equal(panel.session.ctx().folded, true);
+  await w.handler(panel, "select", t3.id);
+  assert.deepEqual(resizes(), [RAIL_WEIGHT, DEFAULT_PANEL_WEIGHT]);
+  panel.session.vm();
+  assert.equal(panel.session.ui.selected, t3.id);
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r2-13: an unfolded panel measured under 140 (zoom 1.5) folds; folded is the layout weight, not the width", async () => {
+  const { panel, ribbon } = await game({ layout: LAYOUT() });
+  for (const width of [124, 106]) {
+    w.ctl.runs.length = 0;
+    w.ctl.layoutValue = LAYOUT();
+    await w.advance(1000);
+    sizeOf(panel, width, 584);
+    assert.equal(panelState(w.slot), "tight", `${width}`);
+    assert.equal(panel.session.ctx().folded, false);
+    const chevron = findById(w.render(panel).tree, "cw-rail-unfold");
+    assert.match(styleOf(chevron, "tooltip")[1], /fold to a slim rail/, `${width}: the chevron folds`);
+    await w.handler(ribbon, "fold");
+    // A second press before the next tick unfolds again (the slot notes the resize at once).
+    await w.handler(panel, "fold");
+    assert.deepEqual(resizes(), [RAIL_WEIGHT, DEFAULT_PANEL_WEIGHT], `${width}: folds, then unfolds`);
+  }
+  // The narrow hint is offered there too (folding gives the terminals 60 px); not for an unfolded panel at its 64 px min.
+  w.ctl.layoutValue = LAYOUT();
+  await w.advance(1000);
+  sizeOf(panel, 124, 584);
+  sizeOf(ribbon, 650, 30);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, true, "124 px");
+  sizeOf(panel, 64, 584);
+  await w.advance(1000);
+  assert.equal(panelState(w.slot), "tight");
+  assert.equal(ribbon.session.ctx().narrowHint, false, "at its 64 px min folding changes nothing");
+  // A px panel at 64 (an old state file) and an unknown layout fall back as before.
+  assert.equal(panelState({ widths: { panel: 64 }, layout: layoutInfo(LAYOUT({ panelSize: { px: 64 } })) }), "folded");
+  assert.equal(panelState({ widths: { panel: 120 }, layout: layoutInfo(null) }), "folded");
+  assert.equal(panelState({ widths: { panel: 146 }, layout: layoutInfo(null) }), "tight");
+  assert.equal(panelState({ widths: { panel: 320 }, layout: layoutInfo(LAYOUT({ panelHidden: true })) }), "hidden");
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r2-14: a tight rail uses its column (more pip columns) and the ribbon offers to give the terminals the room", async () => {
+  assert.equal(pipColumns(64), 4);
+  assert.equal(pipColumns(146), 9);
+  assert.equal(pipColumns(199), 12);
+  assert.equal(pipColumns(undefined), 4);
+  const { panel, ribbon } = await game({ layout: LAYOUT({ files: true }) });
+  sizeOf(panel, 146, 584);
+  sizeOf(ribbon, 1600, 30); // terminals over 600: only the tight rail's wasted column asks
+  await w.advance(1000);
+  const grid = findById(w.render(panel).tree, "cw-rail-pips").children[0];
+  assert.equal(styleOf(grid, "w")[1], 9 * 14);
+  assert.equal(ribbon.session.ctx().narrowHint, true);
+  sizeOf(panel, 320, 584);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, false, "a full panel with room to spare");
+});
+
+test("r2-19: the counts chip ● / ◗ scrolls the Flock to its group, then the group's header folds it again", async () => {
+  const { panel, ribbon } = await game();
+  const handle = w.ctl.within("event", panel, () => ScrollHandle.new());
+  panel.session.scroll = handle;
+  panel.session.sectionIndex = sectionIndex;
+  await w.advance(1000);
+  await w.handler(panel, "showGroup", "finished");
+  assert.equal(panel.session.ui.scrollTo, null, "consumed");
+  const calls = handle.__mock.calls;
+  assert.equal(calls.length, 1);
+  const tree = w.render(panel).tree;
+  const content = findById(tree, "cw-content");
+  assert.ok(styleOf(content, "track_scroll"), "the Flock's scroll area tracks the handle");
+  assert.equal(content.children[calls[0][1]].id, "cw-flock-sec-finished", "scroll_to_item reveals the group's section");
+  const shown = () => findById(w.render(panel).tree, "cw-flock-sec-finished").children.length;
+  assert.equal(shown(), 2);
+  await w.handler(panel, "toggleGroup", "finished");
+  assert.equal(shown(), 1, "folds");
+  await w.handler(panel, "toggleGroup", "finished");
+  assert.equal(shown(), 2, "unfolds");
+  // From a ribbon tally: the panel copy scrolls at its next tick (never in render).
+  await w.handler(ribbon, "showGroup", "needs");
+  await w.advance(1000);
+  assert.equal(calls.length, 2);
+  const c2 = findById(w.render(panel).tree, "cw-content");
+  assert.equal(c2.children[calls[1][1]].id, "cw-flock-sec-needs");
+  assert.equal(panel.session.ui.scrollTo, null);
+  // Without a handle (an older main.js) the group still unfolds and nothing stays pinned.
+  panel.session.scroll = null;
+  await w.handler(panel, "showGroup", "finished");
+  assert.equal(panel.session.ui.scrollTo, null);
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r2-20: floating +N numbers rise within one after(16) of the click and are removed by one after(800)", async () => {
+  w = win({ agents: [agent(1)], terminals: [term(1)], layout: LAYOUT() });
+  const panel = await w.copy("panel");
+  await w.advance(2000);
+  await w.handler(panel, "click", "sheet", null, { x: 150, y: 116 });
+  const pops = () => panel.session.ui.pops;
+  assert.equal(pops().length, 1);
+  assert.equal(pops()[0].risen, false, "drawn at the click point first");
+  await w.advance(POP_RISE_MS + 4);
+  assert.equal(pops()[0].risen, true, "rises at once, not at the next 1 s tick");
+  await w.advance(POP_PRUNE_MS);
+  assert.equal(pops().length, 0, "removed after the transition");
+  // A burst of 12 clicks 80 ms apart: every pop rises before the next click.
+  let fresh = 0;
+  for (let i = 0; i < 12; i++) {
+    await w.handler(panel, "click", "sheet", null, { x: 150, y: 116 });
+    await w.advance(20);
+    if (pops().every((p) => p.risen)) fresh++;
+    assert.ok(pops().length <= 5);
+    await w.advance(60);
+  }
+  assert.equal(fresh, 12);
+  await w.advance(2000);
+  assert.equal(pops().length, 0);
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r2-21: a needs-you mark of an Elsewhere helper says it is in another window, not that it has gone", async () => {
+  const { panel, ribbon } = await game();
+  const t1 = byAddr(w.slot, "t1");
+  w.slot.state.helpers[t1.id].seenBy = "other-window";
+  w.ctl.setAgents([agent(2, "blocked"), agent(3, "done")]);
+  w.ctl.setTerminals([term(2, "blocked"), term(3, "idle", { turn: 1 })]);
+  await w.advance(1000);
+  const h = w.slot.state.helpers[t1.id];
+  assert.equal(h.gone, false);
+  const m = ribbon.session.vm().ribbon.marks.find((x) => x.helperId === t1.id);
+  assert.deepEqual([m.status, m.opacity], ["blocked", 0.5]);
+  const runs = w.ctl.runs.length;
+  for (const v of [ribbon, panel]) {
+    w.slot.flash = null;
+    await w.handler(v, "openHelper", t1.id);
+    assert.equal(w.ctl.runs.length, runs, "nothing to open in this window");
+    assert.equal(w.slot.flash.text, "That agent is in another window");
+  }
 });

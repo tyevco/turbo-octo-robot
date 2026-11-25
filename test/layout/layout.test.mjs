@@ -150,12 +150,14 @@ describe(`layouts/${GAME.layout}.json`, () => {
     assert.ok(isDir(MOD_DIR), `mods/${GAME.mod} is missing`);
   });
 
-  test("cw-panel is the last child of work-body, not under panel-body", () => {
+  test("cw-panel sits in work-body right after main and before the Files column, not under panel-body", () => {
     const path = pathTo(LAYOUT, "cw-panel");
     assert.deepEqual(path, ["root", "work", "work-body", "cw-panel"]);
     assert.ok(!path.includes("panel-body") && !path.includes("panel"));
     const workBody = walkNodes(LAYOUT).find(({ node }) => node.id === "work-body").node;
-    assert.equal(workBody.children.at(-1).id, "cw-panel");
+    // herdr clips a too-tight row at its end (r2-15): the optional Files column
+    // ends the row, so it is what gives way first, never the game.
+    assert.deepEqual(workBody.children.map((c) => c.id), ["main", "cw-panel", "panel"]);
   });
 
   test("cw-panel: a weight beside main, never below the 64 px rail, no max; content is the panel copy", () => {
@@ -223,8 +225,9 @@ describe(`layouts/${GAME.layout}.json`, () => {
           const b = boxesAt(state, width, height, zoom);
           const p = b["cw-panel"];
           const wb = b["work-body"].inner;
-          // No empty strip after the panel (a capped weight node would leave one), no overflow.
-          assert.ok(Math.abs(p.x + p.width - (wb.x + wb.width)) < 0.5, `ends at ${p.x + p.width} of ${wb.x + wb.width}`);
+          // No empty strip at the end of the row (a capped weight node would leave one), no overflow.
+          const last = state.startsWith("files") ? b.panel : p;
+          assert.ok(Math.abs(last.x + last.width - (wb.x + wb.width)) < 0.5, `ends at ${last.x + last.width} of ${wb.x + wb.width}`);
           assert.ok(Math.abs(p.visible.width - p.width) < 0.5, `panel ${p.width} px, ${p.visible.width} on screen`);
           assert.ok(p.width >= 64 * zoom - 0.01, `panel ${p.width}`);
           if (state.endsWith("folded")) assert.ok(Math.abs(p.width - 64 * zoom) < 0.01, `the rail is 64 px: ${p.width}`);
@@ -239,6 +242,59 @@ describe(`layouts/${GAME.layout}.json`, () => {
       }
     }
   }
+
+  // r2-15: herdr's zoom goes to 3.0 in 0.1 steps, and past 1.5 a window with
+  // Files open runs out of room for every min ((80 + 280 + 64) x zoom). herdr
+  // renders containers overflow_hidden and clips a row at its end, so Files
+  // (the last child) gives way first: main and the game stay whole wherever
+  // work-body holds main's min, a gap and the 64 px rail.
+  const ZOOMS_PAST = [1.6, 1.7, 1.8, 2, 2.2, 2.5, 3];
+  for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
+    for (const zoom of ZOOMS_PAST) {
+      for (const state of Object.keys(STATES)) {
+        test(`past zoom 1.5: ${width}x${height} zoom ${zoom}, ${state}: the game is clipped last`, () => {
+          const b = boxesAt(state, width, height, zoom);
+          const p = b["cw-panel"];
+          const wb = b["work-body"].inner;
+          const fits = wb.width >= (MAIN_MIN + 8 + 64) * zoom - 0.01;
+          // The terminals keep their min and are never clipped while it fits.
+          assert.ok(b.main.width >= MAIN_MIN * zoom - 0.01, `terminals ${b.main.width}`);
+          assert.ok(b.main.x + b.main.width <= p.x + 0.01, "main comes before the game");
+          if (fits) {
+            assert.ok(Math.abs(b.main.visible.width - b.main.width) < 0.5, `main ${b.main.width} px, ${b.main.visible.width} on screen`);
+            assert.ok(Math.abs(p.visible.width - p.width) < 0.5, `panel ${p.width} px, ${p.visible.width} on screen`);
+            assert.ok(p.width >= 64 * zoom - 0.01, `panel ${p.width}`);
+            assert.ok(p.x + p.width <= width + 0.01, `panel ends at ${p.x + p.width} of ${width}`);
+          }
+          if (state.startsWith("files")) {
+            // Files ends the row, so anything that does not fit is cut from Files first.
+            assert.ok(b.panel.x >= p.x + p.width - 0.01, "Files comes after the game");
+            if (p.visible.width < p.width - 0.5) assert.ok(b.panel.visible.width < 0.5, "the game is cut only once Files is gone");
+          } else {
+            // Without Files the game ends the row and fills it (no strip) wherever it fits. Only
+            // zoom 3 below about 1300 px does not: herdr's own px sidebar (268 x 3) leaves
+            // work-body less than main's min + the rail, which no order of ours can help.
+            if (fits) assert.ok(Math.abs(p.x + p.width - (wb.x + wb.width)) < 0.5, `ends at ${p.x + p.width} of ${wb.x + wb.width}`);
+            else assert.ok(zoom === 3 && width < 1300, `${width}x${height} zoom ${zoom} should fit without Files`);
+          }
+        });
+      }
+    }
+  }
+
+  test("past zoom 1.5 the reviewed windows keep the game on screen (r2-15)", () => {
+    // Before the reorder: 1100 x 700 zoom 1.6 cut 47 of the rail's 102 px; zoom 2 put it all off-screen;
+    // 1440 x 900 zoom 2.5 put it off-screen.
+    for (const [w, h, z] of [[1100, 700, 1.6], [1100, 700, 2], [1100, 700, 2.5], [1440, 900, 2], [1440, 900, 2.5], [1440, 900, 3]]) {
+      const b = boxesAt("files", w, h, z);
+      const p = b["cw-panel"];
+      assert.ok(Math.abs(p.visible.width - p.width) < 0.5 && p.x + p.width <= w, `${w}x${h} zoom ${z}: the game ${p.x}..${p.x + p.width}, ${p.visible.width} of ${p.width} on screen`);
+      assert.ok(Math.abs(b.main.visible.width - b.main.width) < 0.5, `${w}x${h} zoom ${z}: main on screen`);
+    }
+    // At 1100 x 700 zoom 1.6 Files loses 47 px; at zoom 2 it keeps 226 of 560.
+    const z16 = boxesAt("files", 1100, 700, 1.6);
+    assert.ok(z16.panel.visible.width < z16.panel.width && z16.panel.visible.width > 380, `Files ${z16.panel.visible.width}`);
+  });
 
   test("folding gives the terminals room whenever the panel is wider than the rail (the narrow hint's promise)", () => {
     for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
@@ -344,5 +400,127 @@ describe(`mods/${GAME.mod}/mod.json`, () => {
       { title: "x", command: "layout.toggle", args: [] },
     ];
     for (const p of bad) assert.notEqual(paletteEntryError(p, GAME.mod, find), null, JSON.stringify(p));
+  });
+});
+
+// r2-26: RECIPE.md is the brief another agent rebuilds the game from (herdr's
+// defaults/AGENTS.md: "Write it from the real files ... nothing the build
+// doesn't do"). It described the old px layout (main min 360, cw-panel px 320
+// max 560, Files 368, layout.resize {px}, the rail below 140), which would
+// bring the off-screen panel back. These checks read it against the files.
+describe("RECIPE.md is written from the built files", () => {
+  const recipe = readFileSync(at("RECIPE.md"), "utf8");
+  const readme = readFileSync(at("README.md"), "utf8");
+  const section = (name) => {
+    const start = recipe.indexOf(`## ${name}`);
+    assert.ok(start >= 0, `RECIPE.md has no "## ${name}"`);
+    const rest = recipe.slice(start + 3);
+    const end = rest.search(/\n## /);
+    return end < 0 ? rest : rest.slice(0, end);
+  };
+  const node = (id) => walkNodes(LAYOUT).find(({ node: n }) => n.id === id).node;
+  const workBody = node("work-body");
+  const modFiles = (dir = MOD_DIR) => readdirSync(dir).flatMap((f) => {
+    const p = resolve(dir, f);
+    return isDir(p) ? modFiles(p) : f.endsWith(".js") ? [p] : [];
+  });
+  const sources = modFiles().map((p) => readFileSync(p, "utf8"));
+
+  test("has the share format's sections, in order", () => {
+    const heads = [...recipe.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
+    assert.deepEqual(heads, ["What you see", "How it behaves", "Built from", "Watch out", "Done when"]);
+  });
+
+  test("Built from: the node tree has work-body's children in order, with their sizes as built", () => {
+    const tree = section("Built from").match(/```\n([\s\S]*?)```/)[1];
+    const lineOf = (id) => tree.split("\n").find((l) => new RegExp(`[─└├]\\s${id} \\(`).test(l));
+    const ids = workBody.children.map((c) => c.id);
+    const at = ids.map((id) => tree.indexOf(lineOf(id) ?? `missing ${id}`));
+    assert.ok(at.every((i) => i >= 0), `tree lines for ${ids}`);
+    assert.deepEqual([...at].sort((a, b) => a - b), at, `work-body order ${ids}`);
+    for (const c of workBody.children) {
+      const line = lineOf(c.id);
+      if (c.size?.weight !== undefined) assert.ok(line.includes(`weight ${c.size.weight}`), `${c.id}: ${line}`);
+      if (c.size?.px !== undefined) assert.ok(line.includes(`${c.size.px}`), `${c.id}: ${line}`);
+      if (c.min !== undefined) assert.ok(line.includes(`min ${c.min}`), `${c.id}: ${line}`);
+      if (c.max !== undefined) assert.ok(line.includes(`max ${c.max}`), `${c.id}: ${line}`);
+      else assert.ok(!/\bmax \d/.test(line), `${c.id} has no max: ${line}`);
+      if (c.hidden) assert.ok(line.includes("hidden"), `${c.id}: ${line}`);
+    }
+    assert.ok(lineOf("cw-ribbon").includes(`px ${node("cw-ribbon").size.px}`));
+    assert.ok(section("Built from").includes(`"min": ${MAIN_MIN}`), "the main min it adds");
+    assert.ok(section("Built from").includes(`{"weight": ${FILES_WEIGHT}}`), "the Files weight");
+  });
+
+  test("What you see: the work body in the built order and sizes", () => {
+    const see = section("What you see");
+    const iMain = see.indexOf("**Terminal panes** (`main`");
+    const iGame = see.indexOf("**Creaseworks panel** (`cw-panel`");
+    const iFiles = see.indexOf("**Files / Changes panel**");
+    assert.ok(iMain >= 0 && iGame >= 0 && iFiles >= 0);
+    const order = workBody.children.map((c) => ({ main: iMain, "cw-panel": iGame, panel: iFiles })[c.id]);
+    assert.deepEqual([...order].sort((a, b) => a - b), order, "same order as work-body");
+    const line = (i) => see.slice(i, see.indexOf("\n", i));
+    assert.ok(line(iMain).includes(`min ${MAIN_MIN} px`), line(iMain));
+    assert.ok(line(iGame).includes(`weight ${PANEL_WEIGHT}`) && line(iGame).includes("min 64") && line(iGame).includes("no max"), line(iGame));
+    assert.ok(line(iFiles).includes(`weight ${FILES_WEIGHT}`) && line(iFiles).includes("min 280") && line(iFiles).includes("max 900"), line(iFiles));
+  });
+
+  test("no figure of the old px layout is left", () => {
+    for (const re of [/min:? 360/, /"min": 360/, /px 320/, /max 560/, /drag range/, /resize \{[^}]*\bpx\}/, /below 140 px it draws/, /panel is clipped/]) {
+      assert.ok(!re.test(recipe), `RECIPE.md still says ${re}`);
+    }
+  });
+
+  test("the rail threshold is ui/panel.js's", () => {
+    const full = Number(readFileSync(resolve(MOD_DIR, "ui/panel.js"), "utf8").match(/export const FULL_BELOW = (\d+);/)[1]);
+    assert.ok(section("What you see").includes(`below ${full} px it draws the rail`));
+    assert.ok(section("Built from").includes(`draws the rail below ${full} px`));
+  });
+
+  test("herdr functions: exactly what the mod imports from \"herdr\"", () => {
+    const imported = new Set();
+    for (const src of sources) {
+      for (const m of src.matchAll(/^import\s*\{([^}]*)\}\s*from\s*"herdr";/gm)) {
+        for (const part of m[1].split(",")) {
+          const name = part.trim().split(/\s+as\s+/)[0];
+          if (name) imported.add(name);
+        }
+      }
+    }
+    assert.ok(imported.has("pickFiles") && imported.has("run"));
+    const para = section("Built from").split("\n").find((l) => l.startsWith("**herdr functions**"));
+    const listed = new Set([...para.matchAll(/`(\w+)\(\)`/g)].map((m) => m[1]));
+    assert.deepEqual([...listed].sort(), [...imported].sort());
+  });
+
+  test("Commands run: every command the glue and the palette run, and resize by weight only", () => {
+    const run = new Set();
+    for (const src of sources) {
+      for (const m of src.matchAll(/\b(?:safeRun|run)\(\s*"([a-z]+\.[a-z_]+)"/g)) run.add(m[1]);
+      for (const m of src.matchAll(/\bcommand = "([a-z]+\.[a-z_]+)"/g)) run.add(m[1]);
+    }
+    const meta = readJson(resolve(MOD_DIR, "mod.json"));
+    for (const p of meta.palette) if (find(p.command)) run.add(p.command);
+    assert.ok(run.has("layout.resize") && run.has("pane.focus") && run.has("terminal.peek"), [...run].join(" "));
+    const para = section("Built from").split("\n").find((l) => l.startsWith("**Commands run**"));
+    for (const c of run) assert.ok(para.includes(`\`${c} {`), `${c} missing from: ${para}`);
+    assert.match(para, /`layout\.resize \{id:"cw-panel", weight\}`/);
+    assert.ok(!/layout\.resize \{[^}]*px/.test(para), "never px");
+  });
+
+  // r2-27: herdr's palette lists every mod's entries in every layout and
+  // cannot scope them; outside Creaseworks they fail with a toast. That is
+  // said where a person and a rebuilding agent will read it.
+  test("Watch out and README say the palette entries work only in the Creaseworks layout", () => {
+    const meta = readJson(resolve(MOD_DIR, "mod.json"));
+    if (!Array.isArray(meta.palette) || !meta.palette.length) return;
+    const watch = section("Watch out");
+    assert.match(watch, /\*\*Palette entries show in every layout\.\*\*/);
+    assert.match(watch, /no node "cw-panel" in the shown layout/);
+    assert.match(watch, /unknown command/);
+    assert.match(readme, /palette entries in every layout, but these work only while the Creaseworks layout is shown/);
+    // "Commands always have a receiver" is true inside the layout only.
+    assert.ok(!/Commands need a shown copy\. The ribbon is always shown/.test(watch));
   });
 });

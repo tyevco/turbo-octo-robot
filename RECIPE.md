@@ -12,20 +12,20 @@ Left to right, then top to bottom. Sizes are logical px before zoom.
 - **Work column** (`canvas`):
   - **Tabs bar (42)**: the shipped `tabs` mod.
   - **Work body** (a row with padding 8 and gap 8):
-    - **Terminal panes** (`main`, min 360 px): the shipped tab block with 10 px rounded pane frames and a 30 px pane header.
-    - **Files / Changes panel** (hidden, 368 px): the shipped panel, unchanged.
-    - **Creaseworks panel** (`cw-panel`, 320 px, drag range 64–560, radius 10, 1 px `border`, `chrome` background). From top to bottom:
+    - **Terminal panes** (`main`, weight 1, min 80 px): the shipped tab block with 10 px rounded pane frames and a 30 px pane header.
+    - **Creaseworks panel** (`cw-panel`, weight 0.39, min 64, no max, radius 10, 1 px `border`, `chrome` background), right of the terminals. It shares the row with them by weight: 226 px at 1100×700, 322 at 1440×900, 456 at 1920×1080 and 636 at 2560×1440. From top to bottom:
       - **Header (44)**: fold count (18/600), rate per second (11, muted), a counts chip (`▲2 ✓1 ●5 ◗14`), Wishes, and a gear.
       - **Save banner (28)**: shown only when there is a save problem.
-      - **Mat (304×232)**: a green cutting mat (`#2f6a55` light / `#1d3a32` dark) with a 16/64 px grid. The 112×112 Sheet (`#fbf7ee` / `#d9d1c0`) sits in the middle and steps through eight fold pictures (square, triangle, kite, square base, bird base, narrow, wings, crane), with 8 fold ticks under it. A top band shows needs-you chips, or the shelf of the last 12 figures when nobody is waiting. A bottom band shows the envelope tray (up to 6 envelopes, then `+n`) and the streak meter. Numbered crease nodes, scraps, the daily Fresh Ream, the gilded crane (`#f0c24b`) and the Paper Boat appear on free slots of the mat.
+      - **Mat (the panel width minus 16, 232 tall; laid out on a 304×232 grid)**: a green cutting mat (`#2f6a55` light / `#1d3a32` dark) with a 16/64 px grid. The 112×112 Sheet (`#fbf7ee` / `#d9d1c0`) sits in the middle and steps through eight fold pictures (square, triangle, kite, square base, bird base, narrow, wings, crane), with 8 fold ticks under it. A top band shows needs-you chips, or the shelf of the last 12 figures when nobody is waiting. A bottom band shows the envelope tray (up to 6 envelopes, then `+n`) and the streak meter. Numbered crease nodes, scraps, the daily Fresh Ream, the gilded crane (`#f0c24b`) and the Paper Boat appear on free slots of the mat.
       - **Boost bar (26)**: one chip with a countdown bar per running boost.
       - **Tabs (32)**: Flock, Shop and String. Settings opens from the gear.
       - **Content**: a scrolling area for the current tab.
       - **Footer (22)**: a save glyph with "Saved 12 s ago", plus In step and Calm chips.
+    - **Files / Changes panel** (hidden until opened, weight 0.66, min 280, max 900): the shipped panel, last in the row. Open, it takes 280 px at 1100×700 and 367 at 1440×900, and the game panel narrows to 146 and 217.
   - **Ribbon** (`cw-ribbon`, 30 px, `chrome`, full work width, always shown). From left to right: the fold count and rate (118 px). Then one status mark per helper, never capped: 20×20 chips with a 2 px identity-colour bar while they fit, then two rows of 12 px pips, then tallies for working and resting helpers only beyond 82 helpers at 1100 px or 130 at 1440 px. Then the envelope count, a mini Sheet (shown while the panel is folded or hidden) and the fold button.
   - **Status bar (28)**: the shipped `workspace-status`.
 - **Rail** (the panel folded to 64 px): from top to bottom, the count, a 44 px mini Sheet, a needs-you button, an envelope button, a pip grid with one mark per helper (4 columns at a 14 px pitch), the gilded crane while one is live, and an unfold chevron.
-- **Panel widths**: below 140 px it draws the rail. From 140 to 279 px it is narrow (icon-only shop, dense tiles). From 280 to 399 px it is standard. At 400 px and over it is wide (taller mat, more Flock columns). A panel shorter than 640 px uses a 304×184 mat with a 96 px Sheet.
+- **Panel widths**: below 200 px it draws the rail: folded (64 px), or unfolded but squeezed by the window (for example 146 px at 1100×700 with Files open). A squeezed rail of 140 px or more shows a fold button instead of the unfold chevron, since nothing can widen it. From 200 to 279 px it is narrow (icon-only shop, dense tiles, a 184 px tall mat). From 280 to 399 px it is standard (232 px mat). At 400 px and over it is wide (260 px mat, more Flock columns). The mat is always the panel width minus 16. A panel shorter than 640 px uses the 184 px mat with a 96 px Sheet.
 - **Type and colour**: the text is the person's UI font, at 11 px or larger everywhere. UI and status colours come from the person's theme (`chrome`, `raised`, `popover`, `border`, `muted`, `accent`, `working`, `blocked`, `done`, `idle`). Scene colours come from one fixed palette with a light and a dark set. Helper identity uses 8 hues (vermilion `#b8432a`, saffron `#946000`, leaf `#3b7330`, teal `#1d7373`, sky `#2b62b0`, violet `#6a4cb0`, plum `#9c3a72` and slate `#4c5a68` in light themes; lighter versions in dark themes) on 12 animal silhouettes: crane, frog, fox, koi, rabbit, turtle, butterfly, whale, owl, boat, mouse and snail.
 
 ## How it behaves
@@ -57,11 +57,11 @@ A status colour that falls below 3:1 on its surface falls back to `muted`, then 
 
 | Chord | Action | Does |
 |---|---|---|
-| `ctrl-shift-g` | `creaseworks.fold` | Folds the panel to the 64 px rail, or unfolds it to its last width (default 320). Shows the panel first if it is hidden |
+| `ctrl-shift-g` | `creaseworks.fold` | Folds the panel to the 64 px rail, or unfolds it to its last share of the row (default weight 0.39, about 320 px at 1440×900). Shows the panel first if it is hidden |
 | `ctrl-shift-y` | `creaseworks.answer` | Opens the helper that has waited longest. Repeat presses cycle through them |
 | `ctrl-shift-j` | `creaseworks.envelope` | Opens the oldest envelope |
 
-The palette also has "Creaseworks: hide or show the panel" (`layout.toggle {id:"cw-panel"}`).
+The palette also has "Creaseworks: hide or show the panel" (`layout.toggle {id:"cw-panel"}`), next to entries for the three commands above. They work only while the Creaseworks layout is shown (see Watch out).
 
 **Away.** Up to 8 hours of folds accrue while herdr is closed or the machine sleeps. The rate is 25 %, raised to 35 % or 45 % by upgrades. On return, a non-blocking "While you were away" card shows the time, folds, envelopes, who needs you, who rested and what you can now afford. One **Collect** click banks the folds, or they bank themselves after 10 minutes. A hidden window is not away: it keeps ticking every 5 s.
 
@@ -73,7 +73,7 @@ The palette also has "Creaseworks: hide or show the panel" (`layout.toggle {id:"
 
 ## Built from
 
-**Layout** `layouts/Creaseworks.json`: the shipped `main.json` with every id and root field kept (`titlebar:"none"`, `traffic_lights:[12,16]`, `background:"canvas"`, `terminal_padding:[14,12]`). It adds `"preview": "mods/creaseworks/art/layout-preview.png"` and `"min": 360` on `main`, and two blocks:
+**Layout** `layouts/Creaseworks.json`, written by `tools/layout/build.mjs` from the shipped `main.json`: every id and root field kept (`titlebar:"none"`, `traffic_lights:[12,16]`, `background:"canvas"`, `terminal_padding:[14,12]`). It adds `"preview": "mods/creaseworks/art/layout-preview.png"` and `"min": 80` on `main`, sizes the Files column `panel` by `{"weight": 0.66}` instead of `{"px": 368}` (its min 280 and max 900 kept), and adds two blocks:
 
 ```
 root (row)
@@ -81,9 +81,9 @@ root (row)
 └─ work (column, resizable:false)
    ├─ tabs (42)                                   mod tabs
    ├─ work-body (row, padding 8, gap 8)
-   │  ├─ main (tab:active, pane frame, min 360)
-   │  ├─ panel (hidden, 368) > panel-body (stack) > files · changes
-   │  └─ cw-panel (px 320, min 64, max 560, radius 10, border, chrome)   mod creaseworks {role:"panel"}
+   │  ├─ main (tab:active, pane frame, min 80)
+   │  ├─ cw-panel (weight 0.39, min 64, no max, radius 10, border, chrome)   mod creaseworks {role:"panel"}
+   │  └─ panel (hidden, weight 0.66, min 280, max 900) > panel-body (stack) > files · changes
    ├─ cw-ribbon (px 30, chrome)                   mod creaseworks {role:"ribbon"}
    └─ status (28)                                 mod workspace-status
 ```
@@ -94,15 +94,15 @@ The layout uses theme token names only. It sets no `theme` or `colors`.
 
 **Mod** `mods/creaseworks/`:
 - `mod.json`: `{"place":"none","title":"Creaseworks","palette":[…4 entries…]}`.
-- `main.js`: the View class. It renders the ribbon or the panel by `props().role`; the panel draws the rail below 140 px.
+- `main.js`: the View class. It renders the ribbon or the panel by `props().role`; the panel draws the rail below 200 px (`ui/panel.js` `FULL_BELOW`).
 - `engine/`: pure and deterministic. It has no herdr, no gpui, no `Date.now` and no `Math.random`. It uses a seeded mulberry32 with keyed draws, and its actions carry `(writer, seq)` for idempotent merges.
 - `glue/`: the only files that import `herdr`.
 - `ui/`: gpui-kit element builders.
 - `art/`: 120 single-colour SVGs (`fill="#000"`, tinted through `svg()`), `notify-icon.svg` (the one full-colour file) and `layout-preview.png` (216×124).
 
-**herdr functions**: `agents()` and `terminals()` (one read of each per data tick, joined by address), `layout()`, `theme()`, `settings()`, `props()`, `window()`, `appHome()`, `checking()`, `readTextFile` / `writeTextFile` (compare-and-swap), `nextCommand()`, `notify()`, `run()`.
+**herdr functions**: `agents()` and `terminals()` (one read of each per data tick, joined by address), `layout()`, `theme()`, `settings()`, `props()`, `window()`, `appHome()`, `checking()`, `readTextFile()` / `writeTextFile()` (compare-and-swap), `shared()` / `setShared()` (the writer ids this window's VMs used, so a VM restart's last write is not taken for another window's), `pickFiles()` (Settings → Save → "Choose save.json…"), `nextCommand()`, `notify()`, `run()`.
 
-**Commands run**: `pane.focus {pane}` / `{terminal}`, `terminal.peek {terminal}`, `layout.resize {id:"cw-panel", px}`, `layout.show {id:"cw-panel"}`, `layout.show {id:"cw-ribbon"}` (once per save-problem episode when both pieces are hidden), and `layout.toggle {id:"cw-panel"}` (palette).
+**Commands run**: `pane.focus {pane}` / `{terminal}`, `terminal.peek {terminal}`, `layout.resize {id:"cw-panel", weight}` (fold: `weight` 0.001, held at the 64 px min; unfold: the remembered share of `main`'s weight, else 0.39; never `px`), `layout.show {id:"cw-panel"}`, `layout.show {id:"cw-ribbon"}` (once per save-problem episode when both pieces are hidden), and `layout.toggle {id:"cw-panel"}` (palette).
 
 **Keys**: `keys.json`, section `layout:Creaseworks`, with three string actions in `<mod>.<cmd>` form.
 
@@ -115,11 +115,15 @@ The layout uses theme token names only. It sets no `theme` or `colors`.
 - **Not run in a live herdr build.** It was built against the herdr-app v0.1.18 source and checked with a Node mock of herdr, a QuickJS-ng harness with herdr's budgets (render 50 ms, callbacks 500 ms, module load 500 ms), frozen prototypes and Playwright screenshots. Things still to check by eye on the first real run:
   - Whether faceted sprites keep their shading through `svg()` alpha masks. If they flatten, set `FACETS = "split"` in `ui/art.js`.
   - Whether clicking the panel ever moves keyboard focus off a terminal.
-  - Whether `layout.resize` widths persist across restarts.
-- **Two windows means two app homes.** Two herdr windows are two processes with separate homes, so each has its own `data/creaseworks/save.json` by default. To play one game in both, open Settings → Save → "Share a save with another herdr home…" in window B and enter the absolute path of window A's `save.json`. B then writes only a `location.json` pointer. The windows merge progress through idempotent actions. The compare-and-swap has no cross-process lock, so up to about 15 s of one window's progress can be overwritten until that window's next save re-applies it. Displayed numbers may jump a little when a merge lands, and the `merged` banner says so.
-- **Files panel at narrow widths.** `main` keeps `min: 360`. At about 1100 px wide with Files/Changes open, the expanded game panel overflows the work row and is clipped, with only its left edge showing. The ribbon then offers "Narrow window: fold Creaseworks to a rail?". Folded, everything fits. The game never resizes itself.
+  - Whether `layout.resize` weights persist across restarts.
+- **Two windows means two app homes.** Two herdr windows are two processes with separate homes, so each has its own `data/creaseworks/save.json` by default. To play one game in both, open Settings → Save → "Share a save with another herdr home…" in window B and choose window A's `save.json` with "Choose save.json…" (herdr's file picker). B then writes only a `location.json` pointer. The windows merge progress through idempotent actions. The compare-and-swap has no cross-process lock, so up to about 15 s of one window's progress can be overwritten until that window's next save re-applies it. Displayed numbers may jump a little when a merge lands, and the `merged` banner says so.
+- **Size the game panel and Files by weight, never px.** herdr makes a `{px}` node `flex_none`; `min` and `max` only bound it, so a px panel never gives way, and a row too tight for its nodes is clipped at its end. A px game panel beside `main` with a large min was pushed off-screen at 1100 px with Files open and at zoom 1.5. So `cw-panel` and Files are weights that shrink to their mins, `main`'s min is only 80 (the tightest supported window, 1100×700 at zoom 1.5 with Files open, gives the terminals 133 px; any min above 88 cuts something there), and the fold commands resize by `weight`. herdr's divider drag keeps a px side as px, so a `{px}` rail would stay px once dragged open.
+- **Keep Files last in the row.** herdr's zoom goes to 3.0. With Files open, the row needs about 724 × zoom px (1100 px from zoom 1.6, 1440 from 2.0), and the end of the row is cut. Files comes after the game, so herdr cuts Files first and the terminals and the game (at least the rail) stay whole. Only zoom 3 under about 1300 px leaves too little for even that, because herdr's own 268 px sidebar takes 804. The ribbon spans the whole work column and always shows every helper.
+- **No `max` on the game panel.** herdr keeps the grow factors normalised after a weight node stops at its max, so a capped weight panel leaves an empty strip beside it.
+- **A narrow window draws the rail.** At 1100×700 with Files open, the unfolded panel gets 146 px and draws the rail. Its last button then folds it to 64, and the ribbon offers "Narrow window: fold Creaseworks to a rail?" (also whenever an unfolded panel leaves the terminals under 600 px). The game never resizes itself.
 - **Notifications** are off by default. Turned on, they send at most 3 a day across all events and windows, never play a sound and never fire for agent status, because herdr already toasts "needs you" and "finished". Nothing is sent while the panel is shown and the window is active. Save problems never depend on notifications.
-- **Keys**: one bad entry makes herdr reject the whole `keys.json`, so merge ours carefully. The actions are `creaseworks.<cmd>`, not `creaseworks:<cmd>`: `herdr.d.ts` shows a colon form that herdr rejects. `ctrl-shift-u` is avoided because of IBus Unicode entry. Other input methods may claim a chord, in which case rebind it in the `layout:Creaseworks` section. Commands need a shown copy. The ribbon is always shown, so they always have a receiver.
+- **Keys**: one bad entry makes herdr reject the whole `keys.json`, so merge ours carefully. The actions are `creaseworks.<cmd>`, not `creaseworks:<cmd>`: `herdr.d.ts` shows a colon form that herdr rejects. `ctrl-shift-u` is avoided because of IBus Unicode entry. Other input methods may claim a chord, in which case rebind it in the `layout:Creaseworks` section. Commands need a shown copy. Inside the Creaseworks layout the ribbon is always shown, so they always have a receiver.
+- **Palette entries show in every layout.** herdr adds every mod's `mod.json` `palette` entries each time the palette opens, whichever layout is shown, and has no way to scope them. In another layout the mod has no shown copy (`"place":"none"`), so the three `creaseworks.*` entries fail with `unknown command "creaseworks.fold"…` and "hide or show the panel" fails with `no node "cw-panel" in the shown layout`, each as a "… failed" error toast. Nothing else happens. The keys have no such problem: they are in the `layout:Creaseworks` section. The entries are kept because "hide or show the panel" is the only way to hide the panel.
 - **Install leaves `preview.png` out.** The Settings picture therefore lives at `mods/creaseworks/art/layout-preview.png`. Keep `"place":"none"` and keep `mod.json` valid JSON. An invalid `mod.json` docks a 320 px copy into the person's other layouts.
 - **Never put the game under `panel-body`.** The tabs mod hides that panel when the space changes.
 - **VM restart**: if herdr restarts the mod VM (memory pressure), the in-memory slot is lost. The game reloads from disk and loses at most the last 15 s or so. A hot reload loses nothing.

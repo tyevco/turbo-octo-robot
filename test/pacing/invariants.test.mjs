@@ -221,6 +221,10 @@ test("inv. 7 and 9: after the P7 run the save holds 64 pane helpers and their fl
 
 test("inv. 7 (R13): a year of agents coming and going keeps every pane agent saved and the save under its bound", () => {
   const s = engine.newGame({ seed: 7, now: day2.finalState.clock, day: day2.finalState.day });
+  // Mail Sorter opens the Bundles; every timed boost is left on the tray until
+  // the year ends (review r2-02: they piled up for ever, ≈ 3,000 of them, and
+  // opening them then un-compacted their Album records past 1 MiB).
+  s.bought["mail-sorter"] = true;
   const T = s.clock;
   const ag = (i, extra = {}) => ({
     addr: `w1:t${i}`, created: T + i * 997, status: "working", raw: "working", turn: 0, parent: null,
@@ -237,14 +241,26 @@ test("inv. 7 (R13): a year of agents coming and going keeps every pane agent sav
     }
     act(s, observeAt((t += 1000), list, s.day));
     act(s, observeAt((t += HOUR), list.map((o) => ({ ...o, turn: 2, status: "idle", raw: "idle" })), s.day));
-    for (const id of Object.keys(s.envelopes)) act(s, { t, type: "open", helperId: id });
     act(s, observeAt((t += 1000), [], s.day));
     t = T + (d + 1) * 24 * HOUR;
     engine.advance(s, t);
   }
   assert.equal(Object.values(s.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
+  const K = engine.CONTENT.K;
+  // no envelope waits under a compacted helper: the tray is bounded by the full Album
+  const waitingIds = Object.keys(s.envelopes);
+  assert.ok(waitingIds.length <= K.albumKeep, `${waitingIds.length} envelopes waiting`);
+  for (const id of waitingIds) assert.notEqual(s.helpers[id].compact, true, id);
+  assert.ok(engine.serialize(s).length < I.churnKiB * 1024);
+  // opening the rest keeps every compacted helper packed (nothing un-compacts)
+  for (const id of waitingIds) act(s, { t: (t += 100), type: "open", helperId: id });
+  act(s, observeAt((t += 1000), [], s.day));
   const text = engine.serialize(s);
   assert.ok(text.length < I.churnKiB * 1024, `${(text.length / 1024).toFixed(0)} KiB`);
+  assert.equal(Object.values(JSON.parse(text).state.helpers).filter(Array.isArray).length, n - K.albumKeep);
+  const v = s.stats.units;
+  const waiting = Object.values(s.envelopes).reduce((a, e) => a + e.units, 0);
+  assert.ok(Math.abs(v.created - (v.opened + v.converted + waiting)) < 1e-9, "inv. 9 holds with envelopes cashed in");
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
   assert.equal(engine.serialize(back.state), text);

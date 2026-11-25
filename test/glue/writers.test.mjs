@@ -8,7 +8,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { win, SAVE, parsed, agent, term, engine, HOME } from "./_util.mjs";
-import { newSlot, dispatch, COALESCE_AT, PENDING_MAX } from "../../mods/creaseworks/glue/live.js";
+import { newSlot, dispatch, COALESCE_AT, PENDING_MAX, LOG_HELPERS_MAX } from "../../mods/creaseworks/glue/live.js";
 import * as store from "../../mods/creaseworks/glue/store.js";
 import * as notifier from "../../mods/creaseworks/glue/notify.js";
 import { localDay } from "../../mods/creaseworks/glue/clock.js";
@@ -318,18 +318,22 @@ test("r1-05: a log given up while a merge yields is still replayed whole", async
   for (let i = 0; i < N; i++) click(A, t + i * 10);
   otherWriterSaves(w.ctl, t + 5);
   let sleeps = 0;
+  let merging = 0;
   const sliced = {
     now: () => Date.now(),
     sleep: () => {
       sleeps += 1;
-      // during the first yield the log grows past PENDING_MAX and is given up
-      if (sleeps === 1) for (let i = 0; i <= PENDING_MAX - N + 5; i++) click(A, t + (N + i) * 10);
+      // The merge yields after the read and after the parse (r2-03), then between
+      // replay slices: during the first replay yield the log grows past
+      // PENDING_MAX and is given up.
+      if (A.notices.write && A.notices.write.kind === "conflict") merging += 1;
+      if (merging === 3) for (let i = 0; i <= PENDING_MAX - N + 5; i++) click(A, t + (N + i) * 10);
       return Promise.resolve();
     },
   };
   w.ctl.setNow(t + 300000);
   assert.equal(await hostWork(w.ctl, () => store.cycle(A, sliced)), true);
-  assert.ok(sleeps > 1);
+  assert.ok(merging >= 3, "the log was given up while the merge replayed it");
   const disk = parsed(w.ctl).state;
   assert.equal(disk.applied.wA, A.seq, "every action of this window");
   assert.equal(disk.applied.wB, 1, "merged, not overwritten: the other writer's click stays");
@@ -368,4 +372,82 @@ test("r1-05: a long backlog merges in slices with a yield between them, nothing 
   assert.equal(p.applied.wA, N + joined, "every action of this window once");
   assert.equal(p.applied.wB, 3);
   assert.equal(A.pending.length, 0);
+});
+
+test("r2-04: the unconfirmed log is bounded by size too: big rosters give it up long before PENDING_MAX", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  // 130 agents whose roster changes on every observation (a turn counter moves): none coalesce.
+  const roster = (k) => {
+    const list = [];
+    for (let i = 1; i <= 130; i++) {
+      const status = (i + k) % 3 ? "working" : "idle";
+      list.push({ addr: `t${i}`, created: i, status, raw: status, turn: k, parent: null, pane: `p${i}`, title: `agent ${i} · ${k}`, paneName: "", space: "s", tab: "1", kind: "pane" });
+    }
+    return list;
+  };
+  const most = Math.floor(LOG_HELPERS_MAX / 130);
+  let k = 0;
+  for (; k < most; k++) dispatch(A, { type: "observe", helpers: roster(k), visible: true, active: true, matShown: true, day: localDay(t) }, t + k * 2500);
+  assert.equal(A.save.logLost, false);
+  assert.equal(A.pending.length, most);
+  assert.equal(A.logHelpers, most * 130, "the log counts the helper entries it holds");
+  dispatch(A, { type: "observe", helpers: roster(k), visible: true, active: true, matShown: true, day: localDay(t) }, t + k * 2500);
+  assert.equal(A.save.logLost, true, `given up past ${LOG_HELPERS_MAX} helper entries (${most + 1} observations, not ${PENDING_MAX})`);
+  assert.equal(A.pending.length, 0);
+  assert.equal(A.logHelpers, 0);
+  // The next save writes this window's game whole (as for PENDING_MAX), and the count follows the log.
+  otherWriterSaves(w.ctl, t + 500);
+  dispatch(A, { type: "observe", helpers: roster(k + 1), visible: true, active: true, matShown: true, day: localDay(t) }, t + (k + 1) * 2500);
+  assert.equal(A.logHelpers, 130);
+  w.ctl.setNow(t + (k + 2) * 2500);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
+  assert.equal(parsed(w.ctl).state.applied.wA, A.seq, "this window's game on disk");
+  assert.equal(A.pending.length, 0);
+  assert.equal(A.logHelpers, 0, "a save that confirms the log empties the count");
+  assert.equal(A.save.logLost, false);
+});
+
+test("r2-04: coalesced observations leave the size count", () => {
+  const A = newSlot(HOME, store.slotPaths(HOME));
+  A.writerId = "wA";
+  A.state = engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) });
+  const t = Date.now();
+  for (let i = 0; i < COALESCE_AT; i++) click(A, t + i * 10);
+  for (let k = 0; k < 40; k++) dispatch(A, { type: "observe", helpers: obs(0).map((o) => ({ ...o, title: `t${k}` })), visible: true, active: true, matShown: true, day: localDay(t) }, t + 10000 + k * 1000);
+  const rosters = A.pending.filter((a) => a.type === "observe" && Array.isArray(a.helpers));
+  assert.ok(rosters.length < 40);
+  assert.equal(A.logHelpers, rosters.length, "one entry per kept observation of one agent");
+});
+
+test("r2-03: a CAS merge takes in, parses, replays and serialises in separate task steps", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 5, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  A.bakText = A.baseText; // no backup rotation in this cycle
+  A.bakAt = t;
+  click(A, t + 10);
+  otherWriterSaves(w.ctl, t + 5);
+  const seq = [];
+  const calls = () => w.ctl.calls.filter((c) => c.fn === "readTextFile" || c.fn === "writeTextFile").length;
+  const sliced = {
+    now: () => Date.now(),
+    sleep: () => {
+      seq.push(`sleep@${calls()}`);
+      return Promise.resolve();
+    },
+  };
+  w.ctl.resetCounts();
+  w.ctl.setNow(t + 1000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, sliced)), true);
+  const io = w.ctl.calls.filter((c) => c.fn === "readTextFile" || c.fn === "writeTextFile").map((c) => c.fn);
+  assert.deepEqual(io, ["writeTextFile", "readTextFile", "writeTextFile"], "write, CAS, read, merged write");
+  // Yields: before the first serialisation; after the read settles (before the parse);
+  // after the parse (before replay and advance); before the merged serialisation.
+  assert.deepEqual(seq, ["sleep@0", "sleep@2", "sleep@2", "sleep@2"]);
+  assert.equal(parsed(w.ctl).state.applied.wB, 1);
+  assert.equal(parsed(w.ctl).state.applied.wA, A.seq);
 });

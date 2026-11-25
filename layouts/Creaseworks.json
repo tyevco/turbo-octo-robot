@@ -135,6 +135,26 @@
               }
             },
             {
+              "id": "cw-panel",
+              "type": "block",
+              "size": {
+                "weight": 0.39
+              },
+              "min": 64,
+              "radius": 10,
+              "border": {
+                "width": 1,
+                "color": "border"
+              },
+              "background": "chrome",
+              "content": {
+                "mod": "creaseworks",
+                "props": {
+                  "role": "panel"
+                }
+              }
+            },
+            {
               "id": "panel",
               "type": "column",
               "hidden": true,
@@ -166,26 +186,6 @@
                   ]
                 }
               ]
-            },
-            {
-              "id": "cw-panel",
-              "type": "block",
-              "size": {
-                "weight": 0.39
-              },
-              "min": 64,
-              "radius": 10,
-              "border": {
-                "width": 1,
-                "color": "border"
-              },
-              "background": "chrome",
-              "content": {
-                "mod": "creaseworks",
-                "props": {
-                  "role": "panel"
-                }
-              }
             }
           ]
         },

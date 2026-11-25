@@ -58,6 +58,38 @@ export function addUnits(state, ctx, to, units, t, ev, key) {
   }
 }
 
+/**
+ * Cash in `helperId`'s envelope without the player (§6.1, R13): its helper left
+ * long ago (its Album record is compact or gone from the save). A Bundle pays
+ * what opening it would (`45 · Rp · u · envMult · crowd(N)`, no Tailwind); a
+ * timed boost converts like units above the cap (`45 · Rp · crowd(N) · u`).
+ * The folds go to the record's Album total only (a compact record keeps its
+ * packed form). Returns the folds paid (0 when there is no envelope).
+ */
+export function settleEnvelope(state, ctx, helperId, t, ev) {
+  const env = state.envelopes[helperId];
+  if (!env) return 0;
+  delete state.envelopes[helperId];
+  const u = env.units;
+  const r = ctx.rates(t);
+  const c = crowd(ctx.idx.panes.length);
+  let amount;
+  if (env.type === "bundle") {
+    amount = K.envRp * r.Rp * u * ctx.E.envMult * c;
+    state.stats.units.opened += u;
+    credit(state, "env", amount);
+    ev.push({ kind: "earn", source: "env", amount });
+  } else {
+    amount = K.envRp * r.Rp * c * u;
+    state.stats.units.converted += u;
+    credit(state, "overflow", amount);
+    ev.push({ kind: "earn", source: "overflow", amount });
+  }
+  const h = state.helpers[helperId];
+  if (h) h.stats.folds += amount;
+  return amount;
+}
+
 /** Add a notice; at most K.noticesMax kept (oldest footer notes dropped first). */
 export function pushNotice(state, n) {
   const list = state.notices;
