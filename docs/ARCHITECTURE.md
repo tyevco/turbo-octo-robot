@@ -37,6 +37,8 @@ tools/
     gpui-methods.json          allowlist extracted from docs/research/gpui-kit.d.ts
     themes.json                graphite + paper colours exactly as src/settings.rs resolves them
   node/register.mjs            Node module hooks: "herdr", "gpui-kit", "gpui", "gpui-base" -> tools/mock/*
+                               (bare "gpui-kit"/"gpui" -> node/gpui-kit-public.mjs: the real exports only)
+  node/frozen.mjs              opt-in: freezes the five prototypes like the sandbox (npm run test:frozen)
   qjs/harness.mjs              QuickJS-ng (wasm) host faithful to herdr's sandbox and budgets
   render/html.mjs              element tree -> HTML/CSS for screenshots
   render/window.mjs            whole-window frame: a layout JSON + mock sidebar/tabs/terminals + mod blocks
@@ -208,7 +210,10 @@ It provides: every function in `defaults/herdr.d.ts` (unimplemented ones throw "
 implemented"); `run(name, args)` validating names and argument names against a table copied from
 `src/commands.rs` for the commands we use (throws the real error text) and logging calls;
 `notify` logging; `readTextFile`/`writeTextFile` with the exact `src/mod_files.rs` semantics and
-error strings (1 MiB limit, CAS, create_new, parent creation); fault injection
+error strings (1 MiB limit, CAS, create_new, parent creation; relative paths resolve against
+`scenario.cwd`, default "/", with a logged warning); host results converted like rquickjs `Object::set`
+under frozen prototypes (a `constructor`/`toString`/… key throws "'<key>' is read-only", `__proto__`
+sets the prototype); fault injection
 (`failNextWrite(message)`, `externalWrite(path, text)`); a virtual clock (`now`, `advance(ms)`
 running due `cx.timer` callbacks and settling host promises in order); `cx` factory with phase
 checks (`cx.notify()` in render throws the real message). `Date.now()` in glue reads the virtual
@@ -226,6 +231,11 @@ id, handlers, hover, transitions, loops, frames, spin }`. Rules mirrored from th
 * Colour arguments validated with the real rules and messages; lengths validated
   (`rounded("50%")`, `p("auto")` throw); `frames` interval ≥ 16, `loop` period ≥ 100, `spin` ≥ 100,
   `loop/transition` properties ∈ {opacity,width,height,left,top}.
+* Behaviour arguments checked as the shell does at the call site (`id` string, `tooltip`, `role`,
+  `tab_index`, `href`, `value`, counts); handlers take the function first (`on_action`/`on_mouse_*`
+  take a name/button first); a lazy list's item renderer (Layout phase) cannot register handlers or
+  build lists; `ScrollHandle`/`VirtualListScrollHandle.new()` and `FocusHandle.focus()` are refused
+  in render/layout.
 * A child element can be consumed once (reuse throws). `.when(c, f)`, `.map(f)` behave as in
   gpui. `hover(f)`/`active(f)` record styles from a detached collector.
 * `toJSON()` gives a serialisable tree (handlers become `{handler: "<event>"}` with a stable path)
@@ -241,7 +251,9 @@ Module loader follows `qjs/mod.rs` resolution: built-ins `gpui-kit`/`gpui`/`gpui
 map to `tools/mock/*`; relative and bare-with-slash specifiers resolve inside the mod root;
 `with_extension("js")` fallback; anything escaping the root is refused with the real message.
 Budgets via the interrupt handler: module graph load 500 ms, constructor 500, `init` 500, each
-render 50, each handler / timer callback / promise drain 500; overruns fail the test.
+render 50, each handler / timer callback / promise drain 500; overruns fail the test. On `reload()`
+the constructor and `init` share ONE 500 ms budget (watch.rs → `instantiate_for_view` opens one
+Event scope for both). `render()` must return a live element, an Entity or a string.
 API:
 ```js
 const host = await createHost({ modRoot, scenario });
@@ -278,7 +290,9 @@ within its tolerance, plus the invariants listed there.
 
 ### A12. Tests (node:test)
 
-`npm test` = `node --import ./tools/node/register.mjs --test test/`. Suites: engine (determinism,
+`npm test` = `node --import ./tools/node/register.mjs --test --test-concurrency=1 "test/*.test.mjs" "test/tooling/*.test.mjs"`
+(globs: Node 22's `--test` does not take a directory); `npm run test:frozen` runs the same suites with
+`tools/node/frozen.mjs` first (frozen prototypes as in herdr; the Playwright suites skip there). Suites: engine (determinism,
 formulas vs DESIGN tables, idempotent apply, merge, offline cap, prestige), text clipping (emoji
 corpus incl. ZWJ, flags, keycaps, skin tones, tags), save codec (damaged inputs:
 `"{{{not json"`, `"null"`, `"42"`, `'"old shape"'`, `"[]"`, truncated file, bad check, newer

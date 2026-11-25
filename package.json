@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node --import ./tools/node/register.mjs --test --test-concurrency=1 \"test/*.test.mjs\" \"test/tooling/*.test.mjs\"",
     "test:qjs": "node --test --test-concurrency=1 \"test/qjs/*.test.mjs\"",
-    "test:frozen": "node --import ./tools/node/frozen.mjs --import ./tools/node/register.mjs --test \"test/*.test.mjs\" \"test/tooling/*.test.mjs\"",
+    "test:frozen": "node --import ./tools/node/frozen.mjs --import ./tools/node/register.mjs --test --test-concurrency=1 \"test/*.test.mjs\" \"test/tooling/*.test.mjs\"",
     "shots": "node --import ./tools/node/register.mjs tools/shots/shoot.mjs",
     "sim": "node tools/sim/pacing.mjs",
     "check": "npm test && npm run test:qjs && npm run sim -- --assert"

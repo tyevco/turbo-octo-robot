@@ -610,6 +610,16 @@ function genericMethod(name) {
 // and nested lists are refused (mod.rs ShellRuntime::apply, guard_lazy_list).
 let itemRendererDepth = 0;
 
+/**
+ * The shell's current scope phase as far as the mocks can tell: "layout"
+ * inside a lazy list's item renderer, else the mock herdr controller's open
+ * scope (render / event / task / layout), else null (no host call known).
+ */
+export function currentPhase() {
+  if (itemRendererDepth > 0) return "layout";
+  return globalThis.__herdr?.scope?.phase ?? null;
+}
+
 const MOUSE_BUTTONS = ["left", "right", "middle", "back", "forward"];
 
 function refuseInItemRenderer(name, tail) {

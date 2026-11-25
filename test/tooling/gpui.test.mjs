@@ -477,3 +477,31 @@ test("lengths are trimmed with Rust's whitespace set, not JavaScript's", () => {
   throwsType(() => div().w("auto\uFEFF"), '`w` expects a length: a number of pixels, or a string like "50%", "12px", "1rem" or "auto"; got "auto\uFEFF"');
   div().p("\u008512px\u0085").w(" auto\u3000");
 });
+
+test("scroll handles: not created in render or layout, unusable once released, strategy checked", async () => {
+  const { createController } = await import("../../tools/mock/controller.js");
+  const ctl = createController({});
+  try {
+    for (const phase of ["render", "layout"]) {
+      throwsType(() => ctl.within(phase, null, () => ScrollHandle.new()),
+        "ScrollHandle.new() cannot run during render; create state in init() or in an event handler and keep it on the view");
+      throwsType(() => ctl.within(phase, null, () => VirtualListScrollHandle.new()),
+        "VirtualListScrollHandle.new() cannot run during render; create state in init() or in an event handler and keep it on the view");
+    }
+    // Inside a lazy list's item renderer (the shell's Layout phase) too, even without a controller scope.
+    const rows = v_virtual_list("rows", 1, 10, (i) => String(i), () => [div().child(String(ScrollHandle.new()))]);
+    assert.throws(() => kit.serialize(rows, { cx: {} }), /ScrollHandle\.new\(\) cannot run during render/);
+    const v = ctl.within("event", null, () => VirtualListScrollHandle.new());
+    throwsType(() => v.scroll_to_item(1, "bottom"), "unknown scroll strategy `bottom`; expected top or center");
+    v.scroll_to_item(1, "center");
+    assert.equal(v.release(), true);
+    assert.equal(v.release(), false);
+    throwsType(() => v.scroll_to_bottom(), "this scroll handle has been released");
+    throwsType(() => v.offset(), "this scroll handle has been released");
+    const s = ScrollHandle.new();
+    s.release();
+    throwsType(() => s.scroll_to_item(0), "this scroll handle has been released");
+  } finally {
+    ctl.dispose();
+  }
+});

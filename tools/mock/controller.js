@@ -886,16 +886,33 @@ export class Controller {
     return Object.freeze({ appearance: this._dark() ? "dark" : "light", colors });
   }
 
+  /** entity_api.rs focus handles: focus() refused in render/layout; both calls need a live call; released is final. */
   _focusHandle() {
     const handle = this.nextHandle++;
     let released = false;
     const ctl = this;
+    const alive = () => {
+      if (released) throw new TypeError("this focus handle has been released");
+    };
+    const needsCall = (what) => {
+      if (!ctl.scope && ctl.strict) {
+        throw new TypeError(`${what} needs a live host call; call it from render or an event handler`);
+      }
+    };
     return {
       __handle: handle,
       focus() {
+        const phase = ctl.scope?.phase;
+        if (phase === "render" || phase === "layout") {
+          throw new TypeError("FocusHandle.focus() cannot run during render or layout; mutate state from an event handler or task");
+        }
+        alive();
+        needsCall("focus()");
         ctl.focusedHandle = handle;
       },
       is_focused() {
+        alive();
+        needsCall("is_focused()");
         return ctl.focusedHandle === handle;
       },
       release() {

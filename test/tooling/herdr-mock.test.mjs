@@ -548,11 +548,21 @@ describe("clock, timers and cx", () => {
   test("focus handles", () => {
     make();
     const h = inEvent((cx) => cx.focus_handle());
-    assert.equal(h.is_focused(), false);
-    h.focus();
-    assert.equal(h.is_focused(), true);
+    assert.equal(inEvent(() => h.is_focused()), false);
+    inEvent(() => h.focus());
+    assert.equal(inEvent(() => h.is_focused()), true);
+    // entity_api.rs: both need a live host call; focus() is refused in render and layout.
+    assert.throws(() => h.is_focused(), { name: "TypeError", message: "is_focused() needs a live host call; call it from render or an event handler" });
+    assert.equal(ctl.within("render", VIEW, () => h.is_focused()), true);
+    for (const phase of ["render", "layout"]) {
+      assert.throws(() => ctl.within(phase, VIEW, () => h.focus()), {
+        name: "TypeError",
+        message: "FocusHandle.focus() cannot run during render or layout; mutate state from an event handler or task",
+      });
+    }
     assert.equal(h.release(), true);
     assert.equal(h.release(), false);
+    assert.throws(() => inEvent(() => h.focus()), { name: "TypeError", message: "this focus handle has been released" });
   });
 
   test("spawn: body runs synchronously; errors are logged, not thrown", async () => {
