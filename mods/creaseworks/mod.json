@@ -1,0 +1,10 @@
+{
+  "place": "none",
+  "title": "Creaseworks",
+  "palette": [
+    { "title": "Creaseworks: fold or unfold the panel", "command": "creaseworks.fold" },
+    { "title": "Creaseworks: hide or show the panel", "command": "layout.toggle", "args": { "id": "cw-panel" } },
+    { "title": "Creaseworks: open the helper that needs you", "command": "creaseworks.answer" },
+    { "title": "Creaseworks: open the oldest envelope", "command": "creaseworks.envelope" }
+  ]
+}

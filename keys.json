@@ -1,0 +1,7 @@
+{
+  "layout:Creaseworks": {
+    "ctrl-shift-g": "creaseworks.fold",
+    "ctrl-shift-y": "creaseworks.answer",
+    "ctrl-shift-j": "creaseworks.envelope"
+  }
+}

@@ -541,3 +541,82 @@ finalState }` and a CLI `node tools/sim/pacing.mjs [--profile P1] [--seeds 1-20]
 Milestone keys are the sim keys in BALANCE.md (`buy:<id>`, `own:workshops>=10`, `spawn:crane#1`,
 `run:1e6`, `wish:available`, `wish2:available`). Profiles and windows are parsed from
 `docs/BALANCE.md` tables; the pass rule is BALANCE §2.
+
+### B9. Engine as built (engine builder's additions; B2–B5 still hold)
+
+Everything below is exported from `engine/index.js`; the glue, view, simulator and tests use
+these instead of private variants.
+
+**Signatures.** `advance(state, now, writerId?)` and `rates(state, writerId?)`: the glue passes
+its `writerId` so helpers another window stopped observing fall back to the away rate after 60 s
+(§10.2; nothing after 8 h). Without a writer (simulator, tests) every helper counts as seen.
+`apply` uses the action's `w`. Extra read-only helpers: `effects(state)` (every bought effect as
+numbers: `G hand echo gapMs comboMax folk stepIn stepMult glowMult restFullMs restMax kidBonus
+awayF envMult durMult rushMult stormMult chainK chainEveryMs scrapMult craneLo craneLifeMs
+nodeLifeMs scrapLifeMs boatLifeMs boat envCap life gather Rw`), `itemInfo(state, item, count)`
+(`{kind, id, count, cost, unlocked, have, ok}`), `workshopCost`, `maxAffordable`, `tierOf`,
+`estimate(state, item, {activeFrac, cps})` (BALANCE §3.1 Δ, for the best-buy dot and the sim),
+`eff`, `crowd`, `cranes`, `lifetimeFor`, `wishInfo` (`{cranes, total, gain, needed, can}`),
+`stringInfo` (`{cranes, of, nextIn, lifetime, gain, needed, can}` for the String tab),
+`groupFor(h, writerId)`, `helperId`, `lookOf`, `nodeId(chain, i)`, `slotXY(slot)` (mat px of a
+slot centre), `lifeLeft(state, E, what, item)`, `rhythmAt(state, E, now)`, `inStep`, `combo`,
+`hitBoost(state, E, t)`, `stackFactor`, `envelopeDef`, `isOn(state, automationId)`,
+`fnv1a32`, `fnv1a32n`, `canonicalState`, `validateState`, `CLICK_SOURCES`, `MAP_FIELDS`.
+`engine/view.js` is a placeholder that throws until the view builder replaces it.
+
+**State additions to B4.**
+* `rev` (+1 per apply / advance), `autoAt: { fox }`, `presence.handBy` (writer of the latest hand
+  input), `stats.units: { created, opened, converted }` (BALANCE inv. 9).
+* `boosts`: `rush`/`storm` are remaining ms for display; their truth is `rushEnd`/`stormEnd`
+  (wall ms on the hand-input timeline, moved by the gap of an away segment, so a hit merged in
+  late gets the boost it had in its window). `tailwind` = opens left, `tailwindMs` = its 10-min
+  window (live time).
+* `spawn`: `shownMs` (mat-shown live ms: lives run on it), `activeMs` (spawn clocks run on it),
+  `syncedTo` (wall ms the spawn clocks have reached), `seq` (item ids `c<n> s<n> g<n> b<n> r<n>`),
+  `lastChain: { result: "done"|"torn", slots, at }` (crease line / fade). Items carry `born`
+  (a `spawn.shownMs` value) instead of `bornActiveMs`: chain `{ id, k, next, born, nodes: [{ i,
+  slot, done }] }`, scrap `{ id, slot, born }`, crane `{ id, slot, born, outcome }`, boat
+  `{ id, born }`, ream `{ id, day, slot: 0 }`. At most 3 scraps live.
+* `away`: `pot` = `{ seconds, gap, capped, folds, split: { workshops, helpers }, envelopes,
+  needs: [helperId], rested, best, affordable: [itemId ≤ 3], at, liveMs }`; `last` (latest
+  credited away, for the footer); `busy` accumulator `{ since, folds, tasks }`.
+* `notices` kinds the engine writes: `clock` (banner, until dismissed), `overflow`
+  (`data: { helperId, name, amount }`, 60 s), `away` (`data: { seconds, folds }`, 60 s),
+  `busy` (the "While you were busy" card, `data: { seconds, folds, tasks, envelopes }`, 30 min).
+* Envelope `{ type, units, landedAt, lastAt }`. Garland stripes are `[colourKey, weight, label]`
+  with `colourKey` `hue:<0-7>` | `hands` | `workshops` | `rest`.
+* HelperRecord adds `gone`, `stats.run` (this run's folds, for garlands), `stats.kidsPast`,
+  `stats.kidsFolds`, and for present helpers `title pane paneName space tab` (titles clipped to
+  80 graphemes). **Album records are compact**: only `id kind parent species hue name joined
+  status lastTurn rest env stats missingSince gone` (folds rounded to 6 digits); the rest comes
+  back when the agent returns (the id is the hash of `addr#created`, so it finds its record).
+  Use `groupFor(h, writerId)`, never `h.group`, which Album records do not carry. `parent` of a
+  fledgling is the **pane helper at the root** of its parent chain.
+
+**Actions added to B5.** `{ type: "checkin", helperId }` (a click on a needs-you cue, §5.6).
+`observe` with `helpers: null` updates presence and day only and refreshes `lastSeen` of that
+writer's helpers. `dismiss` with `notice: "away"` collects the pot. A refused purchase returns
+`{ kind: "ignored", reason: "afford"|"locked"|"owned"|"unknown", item, cost? }` (the `merged`
+banner lists refunds from these).
+
+**Merge-safety decisions (A5), measured by `test/engine/merge.test.mjs`** (two writers within
+0.75 % of one writer over 3 h for 12 seeds):
+* Every roll is a *keyed* draw: mulberry32 seeded by `fnv1a32n(key) ^ seed`, with keys such as
+  `env:<helperId>:<turn>`, `fig:<hits>`, `slot:<seq>:<j>`, `crane:<seq>`, so merged lineages roll
+  the same envelope types, figures and spawns whatever the order. `state.rng` stays in the save
+  (`next()` is still exported) but the engine's rules no longer step it.
+* Spawn clocks belong to the window being played (`presence.handBy`). Other writers advancing
+  the shared clock leave the mat alone; the owner's actions merged in late first run the spawn
+  clocks up to their own time (`spawn.syncedTo`). A background window's `observe` does not
+  overwrite the presence flags of a window with a hand input in the last 30 s.
+* The stored rhythm `r` is not reset by ticks (a late hit must keep its streak); read it through
+  `rhythmAt(state, E, now)`. A stale observation (older than the helper's `lastSeen`, or than
+  its `missingSince` for the Album) is skipped for that helper.
+
+**Other decisions.** Spawn slots: DESIGN §3.2 says "minus six slots"; the geometry puts twelve
+slot centres on the Sheet (cols 3–6 × rows 1–3), so `content.js FREE_SLOTS` leaves out those
+twelve plus the ream slot (37 slots). The Crease Helper completes the whole chain at 80 % of its
+life, paying half of `V` (no combo or boost) per remaining node and for the finish. The first
+wish's gain is `floor(cranes/100) − W` (exactly 10 at L = 6e9). The notification counter counts
+each `notified` action of the current day and keeps the later day (`max`). Spawn catch-up is
+skipped for lags over 120 s (`K.spawnCatchUpMs`).
