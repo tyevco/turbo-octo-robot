@@ -44,8 +44,8 @@ export const LOOP_BUDGET = Object.freeze({
 });
 /** Ribbon geometry (DESIGN §3.10): left block 118, right block 100, 16 px gutters. */
 export const RIBBON = Object.freeze({ left: 118, right: 100, pad: 16, chip: 22, pip: 14, defaultWidth: 1172 });
-/** Rail below this panel width (DESIGN §2.4). */
-const RAIL_BELOW = 140;
+/** Rail below this panel width (DESIGN §2.4: folded below 140, too narrow for the full panel below 200). */
+const RAIL_BELOW = 200;
 /** Boost bar totals: the remaining-time caps (DESIGN §6.2; Flock Song 120 s; Tailwind 10 min). */
 const BOOST_CAP = { rush: 90000, storm: 30000, chorus: 240000, song: 120000, tailwind: 600000 };
 const SAVE_TEXT = {

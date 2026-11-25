@@ -15,7 +15,7 @@ import { now as clockNow, localDay, bucket } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, signature } from "./observe.js";
-import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, RAIL_BELOW } from "./commands.js";
+import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, RAIL_BELOW, FULL_BELOW } from "./commands.js";
 import * as notifier from "./notify.js";
 
 export const VISIBLE_MS = 1000;
@@ -202,7 +202,8 @@ export class Session {
     slot.live = live;
     slot.panes = panes;
     const day = localDay(t);
-    const matShown = visible && panelShown;
+    // A panel too narrow for the full view draws the rail: no mat on screen.
+    const matShown = visible && panelShown && !(typeof pw === "number" && pw < FULL_BELOW);
     const sig = signature(obs.list);
     const pres = `${visible}|${active}|${matShown}|${day}`;
     if (sig !== slot.obs.sig) {

@@ -32,6 +32,8 @@ export const DEFAULT_PANEL_WEIGHT = 0.39;
 const WEIGHT_MIN = 0.05;
 const WEIGHT_MAX = 20;
 export const RAIL_BELOW = 140;
+/** Below this the panel is drawn as the rail although unfolded (ui/panel.js FULL_BELOW): no mat. */
+export const FULL_BELOW = 200;
 const WIDTH_KEY = "creaseworks.panelWidth";
 const WEIGHT_KEY = "creaseworks.panelWeight";
 const CYCLE_MS = 30000;

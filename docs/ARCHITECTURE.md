@@ -1026,7 +1026,7 @@ the Perks heading and the garland stripes it is named for were below the fold (r
 
   | Window | Files closed | Files open | Folded, Files open |
   |---|---|---|---|
-  | 1100×700 | 581 / – / 226 (Narrow) | 373 / 280 / 146 (Narrow) | 443 / 292 / 64 |
+  | 1100×700 | 581 / – / 226 (Narrow) | 373 / 280 / 146 (drawn as the rail: below 200) | 443 / 292 / 64 |
   | 1440×900 | 825 / – / 322 (Standard) | 556 / 367 / 217 (Narrow) | 648 / 427 / 64 |
   | 1920×1080 | 1171 / – / 456 (Wide) | 790 / 521 / 308 (Standard) | 937 / 618 / 64 |
   | 2560×1440 | 1631 / – / 636 (Wide) | 1102 / 727 / 430 (Wide) | 1322 / 873 / 64 |

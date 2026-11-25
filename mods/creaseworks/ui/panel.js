@@ -29,6 +29,12 @@ export const FRAME = Object.freeze({ header: 44, matTop: 4, boost: 26, tabs: 32,
 
 /** Below this width the panel copy draws the rail (§2.4). */
 export const RAIL_BELOW = 140;
+/**
+ * The full panel needs this much (the mat's 200 px minimum; the header's
+ * counts chip between the fold and gear buttons). A panel the window leaves
+ * narrower (1100 × 700 with Files open: 146) is drawn as the rail too.
+ */
+export const FULL_BELOW = 200;
 
 const TABS = Object.freeze([
   { key: "flock", label: "Flock" },
@@ -236,10 +242,10 @@ function footer(vm, ctx) {
   return row;
 }
 
-/** The whole panel copy (or the rail below 140 px). Pure (B11). */
+/** The whole panel copy (or the rail below FULL_BELOW px). Pure (B11). */
 export function renderPanel(vm, ui, ctx) {
   const width = num(ctx.width, 320);
-  if (width < RAIL_BELOW) return renderRail(vm, ui, ctx);
+  if (width < FULL_BELOW) return renderRail(vm, ui, ctx);
   const T = ctx.T;
   const tab = activeTab(ui);
   const root = v_flex().id("cw-panel").relative().size_full().min_h(0).bg(T.chrome).text_color(T.foreground).overflow_hidden();

@@ -468,7 +468,7 @@ add("ribbon-window", { roster: { needs: 2, finished: 1, working: 5, resting: 4, 
 
 // Panel widths the shipped layout gives (ARCHITECTURE B15; DESIGN §2.4 states):
 // narrow = 1100 x 700 as shipped (226, Narrow), narrow-files = 1100 x 700 with
-// Files open (146), wide = Wide at 440, wide-2560 = 2560 x 1440 (636: no max).
+// Files open (146: drawn as the rail, below 200), wide = Wide at 440, wide-2560 = 2560 x 1440 (636: no max).
 add("narrow", { roster: { needs: 1, finished: 1, working: 6, resting: 4 }, size: { width: 226, height: 584 } }, async (v) => midGame(v));
 add("narrow-files", { roster: { needs: 1, finished: 1, working: 6, resting: 4 }, size: { width: 146, height: 584 } }, async (v) => midGame(v));
 add("wide", { roster: { needs: 1, finished: 1, working: 6, resting: 4 }, size: { width: 440, height: 784 } }, async (v) => midGame(v));

@@ -199,7 +199,7 @@ filesPx    = its px size if layout() gives it; for the shipped {weight} Files co
 | State | `Wp` | What renders |
 |---|---|---|
 | Rail | < 140 (default 64) | §3.9 |
-| Narrow | 140–279 | mat at 100 % width × 184; Flock tiles 4 across (dense); Shop shows icons only |
+| Narrow | 140–279 | mat at 100 % width × 184; Flock tiles 4 across (dense); Shop shows icons only. Below 200 (the mat's minimum width) the unfolded panel is drawn as the rail, with no mat (no pieces spawn), and its chevron folds it to 64 (1100×700 with Files open: 146) |
 | Standard | 280–399 (320 as designed; 322 at 1440×900) | every view as drawn in §3 |
 | Wide | ≥ 400 | mat 260 tall; Flock up to 8 columns; Shop rows add effect and payback columns |
 

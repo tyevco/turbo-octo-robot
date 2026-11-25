@@ -182,6 +182,10 @@ export function renderRail(vm, ui, ctx) {
     );
   }
   // 8. Unfold chevron.
-  root.child(iconButton("cw-rail-unfold", "chevron", "Unfold Creaseworks", { size: 16, onClick: (e, cx) => fold(cx) }, T));
+  // A rail drawn only because the window leaves the panel too little room
+  // (unfolded, 140–199 px) cannot unfold further: its chevron folds it to 64.
+  const tight = typeof ctx.width === "number" && ctx.width >= 140;
+  const tip = tight ? "Too narrow for the full panel: fold to a slim rail (close Files or widen the window for more)" : "Unfold Creaseworks";
+  root.child(iconButton("cw-rail-unfold", tight ? "fold" : "chevron", tip, { size: 16, onClick: (e, cx) => fold(cx) }, T));
   return root;
 }
