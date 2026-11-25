@@ -2,7 +2,35 @@
 
 A paper workshop on the corner of your desk, built for [herdr](https://herdr.dev). You fold by hand, and your coding agents (paper folk) fold beside you. Click the paper, catch the gilded cranes and open the envelopes your agents send when they finish a task. When an agent is waiting for you, a pennant goes up, and clicking it takes you to that agent's pane. Your terminals stay where they are and work as usual.
 
-![Creaseworks](preview.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/hero-light.png">
+  <img alt="A herdr window with three terminal panes (Claude Code waiting to edit a file, a zsh shell with tests passing, Codex finished) beside the Creaseworks panel: a green cutting mat with chain nodes, a gilded crane and a half-folded paper, above a Flock of 34 helpers grouped as Needs you, Finished, Working and Resting, with a ribbon of status marks under the terminals." src="docs/screenshots/hero-dark.png">
+</picture>
+
+## A look around
+
+| | |
+|---|---|
+| ![The Flock tab with 34 origami helper tiles in four groups: 3 needing you with red dashed outlines, 2 finished with blue checks and envelopes, 15 working with spinners and 14 resting with moons.](docs/screenshots/flock.png) | ![A hatched storm mat with a dashed crease line zigzagging across it ending at a +41.7K pop, a gold crane, two paper scraps, the streak meter reading In step, and Storm ×7 and Rush ×3 timers.](docs/screenshots/frenzy.png) |
+| **Every agent is a helper.** Needs you, finished, working or resting, readable at a glance. | **Clicking stays fun.** Open a Rush and a Paper Storm, chain the nodes, catch the gilded crane. |
+| ![The Shop tab: Paper Stack, Bone Folder, Scissor Stand, Glue Pot and Fold Bench with buy buttons, and a greyed Washi Vat.](docs/screenshots/shop.png) | ![The String tab: 1,000 / 1,000 cranes strung on a green card and a Make the wish (+10 Wishes) button.](docs/screenshots/string.png) |
+| **Spend your folds** on workshops, tools, folk, charms, curios and automations. | **String the Thousand.** Trade 1,000 cranes for Wishes, a permanent bonus. |
+| ![A While you were away card: 7 h, +11.0M folds, 9 envelopes waiting, 3 helpers need you with an Open button, 19 helpers rested, and a Collect button.](docs/screenshots/away.png) | ![A zsh terminal and a Codex terminal beside a narrow rail showing the fold total, the paper, 3 needing you, 4 envelopes and 34 status marks.](docs/screenshots/rail.png) |
+| **While you were away.** Helpers keep folding for up to 8 hours. | **Fold it to a rail** and your terminals get the room back. |
+
+![Two frames: the Creaseworks panel with a needs-you tile clicked, then herdr showing that agent's terminal, where Claude Code asks whether to edit shop.js.](docs/screenshots/jump.png)
+
+**Click a helper who needs you, and herdr jumps to its terminal.**
+
+![A strip under the terminals: the fold total and one status mark for each of 34 helpers, an envelope count and a toggle, above herdr's status bar.](docs/screenshots/ribbon.png)
+
+**The ribbon** under your terminals shows every helper's status, even with the panel hidden.
+
+![The Creaseworks Flock and ribbon in a three-by-two grid, in the graphite, paper, ink, moss, atom-one-dark and win98 themes.](docs/screenshots/themes.png)
+
+**Follows your herdr theme**, light or dark.
+
+The herdr window around the game (sidebar, tabs, terminal transcripts) is drawn by the project's screenshot rig, not captured from herdr; the game panel and ribbon are real renders of the mod. See `docs/screenshots/CAPTIONS.md`; rebuild them with `node --import ./tools/node/register.mjs tools/shots/hero.mjs`.
 
 ## Install
 

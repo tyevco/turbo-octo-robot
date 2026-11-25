@@ -2,7 +2,7 @@
 //
 //   node --import ./tools/node/register.mjs tools/shots/hero.mjs [--only name,...]
 //
-// Names: hero-dark, hero-light, flock, mat, frenzy, shop, string, away, ribbon,
+// Names: hero-dark, hero-light, flock, frenzy, shop, string, away, ribbon,
 // themes, rail, jump (default: all). Captions: docs/screenshots/CAPTIONS.md.
 //
 // Every image is a real render through the screenshot rig: the shipped mod
@@ -14,15 +14,25 @@
 // (tools/render/window.mjs) and Playwright chromium shoots it at
 // deviceScaleFactor 2. Close-ups are crops of those whole-window renders (the
 // crop box comes from the rendered elements' own boxes); themes.png and
-// jump.png place such crops side by side under plain labels. No pixel is
-// painted on.
+// jump.png place such crops side by side under plain labels (jump.png adds a
+// "clicked" marker under its first frame, outside the frame's pixels). No
+// pixel is painted on.
 //
-// The window is 1920 x 988 with the game panel dragged a little wider than
-// the layout's 0.39 weight (a user drag: the panel is resizable). The rig's
-// terminal transcripts are up to 69 columns, so a two-column split needs
-// 1,160 px of terminals for no line to be cut: that, not taste, sets the
-// panel width. Each whole-window shot is checked: no terminal line clipped
-// at a pane edge, no sidebar row cut by the footer.
+// The hero window is 1600 x 1000 with the game panel dragged to 467 px (a
+// user drag: the panel is resizable), and the sidebar's Spaces/Agents
+// divider dragged up so the agent list ends on a whole row. herdr's chrome
+// (sidebar, tabs, pane headers, terminal transcripts, status bar) is drawn
+// by the rig, not captured from herdr; the hero's panes get their own short
+// transcripts (TRANSCRIPTS below) so no two panes repeat and no line is cut
+// at 1600 px. Each whole-window shot is checked: no terminal line clipped at
+// a pane edge, no sidebar row cut by the footer (HERO_LOOSE=1 only warns,
+// for debugging a crop).
+//
+// The rig draws a "+N" pop before its rise (a pop starts to rise 16 ms after
+// its click and hand hits are 80 ms or more apart), so a frame holds one pop
+// at full strength: the last click's. Composites (themes, jump) sit on a
+// transparent background with labels in dark pills, for GitHub's light and
+// dark pages.
 //
 // A PNG over 900 KB is re-encoded losslessly (zlib level 9, per-row filters);
 // only if it is still over is it downscaled by the browser.
@@ -38,17 +48,181 @@ import { createController } from "../mock/controller.js";
 import { beginRender, renderRoot, constructView, createMockWindow, serialize, handlersOf } from "../mock/gpui-kit.js";
 import { renderToHtml } from "../render/html.mjs";
 import { renderWindow, parseLayout, contentNodes, layoutBoxes, REPO_ROOT, THEMES } from "../render/window.mjs";
-import { HERO, RAIL, MAT, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP, rosterRoles } from "./hero-views.js";
+import { HERO, RAIL, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP, NOTES, rosterRoles } from "./hero-views.js";
 
 const OUT = resolve(REPO_ROOT, "docs/screenshots");
 const SCALE = 2;
 const LIMIT = 900 * 1024;
-/** The hero window, and the panel width that leaves the terminals 1,160 px. */
-const WIN = { width: 1920, height: 988 };
+/** The hero window (1600 x 1000) and the game panel's width in it (a user drag: the panel is resizable). */
+const WIN = { width: 1600, height: 1000 };
 const HERO_PANEL = 467;
-/** The mod's standard panel width: the String's strand card and the away card fill it edge to edge. */
+/** The rail shot's narrower window: its right terminal column and the rail make a tall crop, about 1:2. */
+const RAIL_WIN = { width: 1280, height: 1000 };
+/** The mod's standard panel width (the String's strand card and the away card fill it edge to edge). */
 const STD_PANEL = 320;
+/** The Spaces list's height in the sidebar (dragged up from half, see setSpacesHeight). */
+const SPACES_PX = 300;
 const THEME_ORDER = ["graphite", "paper", "ink", "moss", "atom-one-dark", "win98"];
+
+// ---------------------------------------------------------------------------
+// Terminal transcripts (herdr's chrome, not the mod)
+//
+// The rig's canned transcripts (tools/render/window.mjs terminalLines) give
+// every agent pane the same Read/Update of tick.js and run up to 69 columns.
+// The hero's panes each get their own short transcript, matched to the pane's
+// title, drawn in the rig's own line markup and theme colours. Like the rest
+// of herdr's chrome in these images, they are mock content: only the game
+// panel and ribbon are the shipped mod.
+
+const prompt = (cmd) => [["➜  ", "ansi2", true], ["herdr-clicker", "ansi6", true], [" git:(", "ansi4", true], ["main", "ansi1", true], [")", "ansi4", true], [" ✗ ", "ansi3", true], [cmd, "fg"]];
+const BOX = 36;
+const boxRow = (spans, color) => {
+  const used = spans.reduce((n, x) => n + [...x[0]].length, 2);
+  return [["│ ", color], ...spans, [" ".repeat(Math.max(0, BOX - used - 1)) + "│", color]];
+};
+const top = (c) => [["╭" + "─".repeat(BOX - 2) + "╮", c]];
+const bottom = (c) => [["╰" + "─".repeat(BOX - 2) + "╯", c]];
+const welcome = (cmd, name) => [prompt(cmd), top("accent"), boxRow([["✻ ", "ansi3"], [`Welcome to ${name}!`, "fg", true]], "accent"), bottom("accent"), []];
+const inputBox = () => [top("dim"), boxRow([["> ", "dim"], ["█", "cursor"]], "dim"), bottom("dim"), [["  ? for shortcuts", "dim"]]];
+const tool = (name, arg) => [["● ", "ansi2"], [name, "fg", true], [`(${arg})`, "dim"]];
+const out = (text, color = "dim") => [[`  ⎿  ${text}`, color]];
+const diff = (n, sign, code) => [[`     ${n} `, "dim"], [`${sign}  ${code}`, sign === "-" ? "ansi1" : "ansi2"]];
+const ask = (file, lines) => [
+  [["╭─ ", "ansi3"], ["Edit file ", "ansi3", true], [file, "dim"]],
+  ...lines.map(([n, sign, code]) => [["│ ", "ansi3"], [`${n} `, "dim"], [`${sign}  ${code}`, sign === "-" ? "ansi1" : "ansi2"]]),
+  [["│ ", "ansi3"], ["Make this edit to ", "fg"], [file.split("/").pop(), "fg", true], ["?", "fg"]],
+  [["│ ", "ansi3"], ["❯ 1. Yes", "accent", true]],
+  [["│ ", "ansi3"], ["  2. Yes, allow all edits this session", "fg"]],
+  [["│ ", "ansi3"], ["  3. No, tell Claude what to change", "fg"]],
+  [["╰─", "ansi3"]],
+];
+const cx = (text) => [["• ", "fg"], [text, "fg", true]];
+const cxOut = (text, color = "dim") => [[`  └ ${text}`, color]];
+
+/** Transcripts by pane title (zsh by program); a pane with none keeps the rig's. */
+const TRANSCRIPTS = {
+  // The active tab: a Claude Code waiting on an edit, a zsh shell, a Codex done.
+  "Make the offline catch-up closed-form": () => [
+    ...welcome("claude", "Claude Code"),
+    [["> ", "dim"], ["make the offline catch-up closed-form", "fg"]],
+    [],
+    tool("Read", "engine/tick.js"),
+    out("Read 142 lines"),
+    tool("Read", "engine/away.js"),
+    out("Read 96 lines"),
+    tool("Search", "simulate\\(, engine/"),
+    out("Found 3 matches in 2 files"),
+    [],
+    [["● ", "fg"], ["Catch-up runs one step per second, so", "fg"]],
+    [["  8 h away is 28,800 steps. Rates are", "fg"]],
+    [["  flat between buys, so a closed form", "fg"]],
+    [["  gives the same totals in one step.", "fg"]],
+    [],
+    tool("Update", "engine/tick.js"),
+    out("12 additions, 4 removals"),
+    diff(41, "-", "for (…) state = step(state);"),
+    diff(41, "+", "state = closedForm(state, dt);"),
+    tool("Bash", "npm test -- tick"),
+    [["  ⎿  ✔ 31 passing ", "ansi2"], ["(0.6s)", "dim"]],
+    [],
+    ...ask("engine/away.js", [[88, "-", "const credit = simulate(dt);"], [88, "+", "const credit = closedForm(dt);"]]),
+  ],
+  zsh: () => [
+    prompt("npm run lint"),
+    [],
+    [["> creaseworks@0.9.0 lint", "dim"]],
+    [["> eslint mods tools", "dim"]],
+    [],
+    [["✔ 0 problems", "ansi2"]],
+    prompt("git status --short"),
+    [[" M engine/tick.js", "ansi3"]],
+    [[" M engine/away.js", "ansi3"]],
+    [[" M docs/BALANCE.md", "ansi3"]],
+    [["?? tests/save-codec.test.js", "ansi1"]],
+    prompt("npm test"),
+    [["▶ engine", "fg"]],
+    [["  ✔ advance is deterministic ", "ansi2"], ["(2.1ms)", "dim"]],
+    [["  ✔ catch-up capped at 8h ", "ansi2"], ["(0.4ms)", "dim"]],
+    [["  ✔ a wish keeps its perks ", "ansi2"], ["(0.9ms)", "dim"]],
+    [["▶ save codec", "fg"]],
+    [["  ✔ round-trips a full save ", "ansi2"], ["(3.2ms)", "dim"]],
+    [["  ✔ rejects a damaged file ", "ansi2"], ["(0.6ms)", "dim"]],
+    [["ℹ tests 142 ", "fg"], ["ℹ pass 142 ", "ansi2"], ["ℹ fail 0", "dim"]],
+    [...prompt(""), ["█", "cursor"]],
+  ],
+  "Save codec tests": () => [
+    ...welcome("codex", "Codex"),
+    [["> ", "dim"], ["save codec tests", "fg"]],
+    [],
+    cx("Explored"),
+    cxOut("Read save-codec.js, store.js"),
+    cx("Added tests/save-codec.test.js"),
+    [["  ", "fg"], ["+64", "ansi2"], [" round-trip, truncated, bad sum", "dim"]],
+    [["• ", "fg"], ["Edited glue/store.js ", "fg", true], ["+9 ", "ansi2"], ["-2", "ansi1"]],
+    cx("Ran npm test -- save-codec"),
+    cxOut("✔ 14 passing (0.8s)", "ansi2"),
+    [],
+    [["Done: a damaged save keeps a backup.", "fg"]],
+    [],
+    ...inputBox(),
+  ],
+  // The "ui" tab (the jump shot): a Claude Code waiting on an edit, a Codex at work.
+  "Shop panel layout": () => [
+    ...welcome("claude", "Claude Code"),
+    [["> ", "dim"], ["shop panel layout", "fg"]],
+    [],
+    tool("Read", "ui/shop.js"),
+    out("Read 388 lines"),
+    tool("Read", "ui/widgets.js"),
+    out("Read 640 lines"),
+    tool("Update", "ui/shop.js"),
+    out("6 additions, 3 removals"),
+    diff(196, "-", "row.child(price(item));"),
+    diff(196, "+", "row.child(price(item).flex_none());"),
+    [],
+    ...ask("ui/shop.js", [[240, "-", "const w = 120;"], [240, "+", "const w = rowWidth(ctx);"]]),
+  ],
+  "Ribbon status icons": () => [
+    ...welcome("codex", "Codex"),
+    [["> ", "dim"], ["ribbon status icons", "fg"]],
+    [],
+    cx("Explored"),
+    cxOut("Read ribbon.js, color.js"),
+    cx("Edited ui/ribbon.js"),
+    [["  ", "fg"], ["+18 ", "ansi2"], ["-6", "ansi1"], [" one mark per helper", "dim"]],
+    cx("Running npm test -- ribbon"),
+    [],
+    [["✻ ", "ansi5"], ["Working ", "ansi3"], ["(41s · esc to interrupt)", "dim"]],
+  ],
+};
+
+const escHtml = (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** One transcript in the rig's terminal markup (window.mjs terminal(): a `.tl` div per line). */
+function transcriptHtml(lines, t) {
+  const color = (k) => (k === "fg" ? t.terminal_foreground : k === "cursor" ? t.cursor : t[k] ?? t.terminal_foreground);
+  return lines.map((spans) => `<div class="tl">${spans.length
+    ? spans.map(([text, k, bold]) => `<span style="color:${color(k)}${bold ? ";font-weight:700" : ""}">${escHtml(text)}</span>`).join("")
+    : "&nbsp;"}</div>`).join("");
+}
+
+/** Swaps the rig's transcript for the pane's own one in the window HTML (pane by pane). */
+function withTranscripts(html, agents, theme) {
+  const t = THEMES[theme];
+  for (const a of agents) {
+    const make = TRANSCRIPTS[a.program?.shell ? "zsh" : a.title];
+    if (!make) continue;
+    const at = html.indexOf(`data-pane="${a.pane}"`);
+    if (at < 0) continue;
+    const re = /<div class="terminal"[^>]*>((?:<div class="tl">(?:(?!<\/div>).)*<\/div>)*)<\/div>/gs;
+    re.lastIndex = at;
+    const m = re.exec(html);
+    if (!m) throw new Error(`no terminal markup for pane ${a.pane}`);
+    const start = m.index + m[0].length - m[1].length - "</div>".length;
+    html = html.slice(0, start) + transcriptHtml(make(), t) + html.slice(start + m[1].length);
+  }
+  return html;
+}
 
 // ---------------------------------------------------------------------------
 // Running the mod's copies (shoot.mjs runWindowCopies + the view's finale)
@@ -146,16 +320,32 @@ function setPanelWidth(layout, panelId, size, px) {
 }
 
 /**
+ * Drags the sidebar's divider between the Spaces and Agents lists so Spaces
+ * is `px` tall (the four spaces and their header; herdr lets the user drag
+ * it), which shows more agents and lets the list end on a whole row.
+ */
+function setSpacesHeight(layout, size, px) {
+  const spaces = findNode(layout, "spaces");
+  const agents = findNode(layout, "agents");
+  if (!spaces || !agents) return;
+  const boxes = layoutBoxes(layout, { width: size.width, height: size.height, zoom: 1 });
+  const avail = boxes.spaces.height + boxes.agents.height;
+  spaces.size = { weight: Math.round(px * 10000) / 10000 };
+  agents.size = { weight: Math.round((avail - px) * 10000) / 10000 };
+}
+
+/**
  * The HTML of the herdr window with `entry`'s scenario in the game blocks.
  * `chrome(out, agents)` may move herdr's own focus after the mod's commands
  * (pane.focus is herdr's to carry out; the mock records it).
  */
-async function windowHtml(base, entry, { theme, size = WIN, state = "", panel = HERO_PANEL, chrome = null }) {
+async function windowHtml(base, entry, { theme, size = WIN, state = "", panel = HERO_PANEL, spaces = SPACES_PX, chrome = null }) {
   const st = WINDOW_STATES.find((s) => s.name === state);
   if (!st) throw new Error(`no window state ${state}`);
   const layout = parseLayout(JSON.parse(JSON.stringify(base.layout)));
   const ids = gameBlocks(layout, base.mod);
   if (!state && panel) setPanelWidth(layout, ids.panel, size, panel);
+  if (spaces) setSpacesHeight(layout, size, spaces);
   st.edit(layout, ids);
   const results = await runCopies(base.Class, base.mod, entry, theme, size, layout);
   const warnings = [];
@@ -170,7 +360,8 @@ async function windowHtml(base, entry, { theme, size = WIN, state = "", panel = 
   if (chrome) agents = chrome(results, agents);
   const scenario = { agents, terminals: entry.scenario.terminals, zoom: 1, branch: "main" };
   for (const w of warnings) console.log(`warning (${entry.name}/${theme}): ${w}`);
-  return renderWindow({ layout, width: size.width, height: size.height, theme, scenario, modBlocks, gameMod: base.mod, zoom: 1 });
+  const html = renderWindow({ layout, width: size.width, height: size.height, theme, scenario, modBlocks, gameMod: base.mod, zoom: 1 });
+  return withTranscripts(html, agents, theme);
 }
 
 /** Opens `html` in a page at `size` (file:// so the mod's art loads); returns the page. */
@@ -428,7 +619,7 @@ async function windowPage(browser, base, entry, opts) {
   if (opts.check) {
     const problems = await chromeProblems(page);
     for (const p of problems) console.log(`CHECK (${entry.name}/${opts.theme}): ${p}`);
-    if (problems.length) throw new Error(`${entry.name}/${opts.theme}: ${problems.length} chrome check(s) failed`);
+    if (problems.length && !process.env.HERO_LOOSE) throw new Error(`${entry.name}/${opts.theme}: ${problems.length} chrome check(s) failed`);
   }
   return page;
 }
@@ -470,101 +661,113 @@ const fromTabs = (selector) => async (page, size) => {
   const scroller = await box(page, inPanel("cw-content"));
   const bottom = content.y + content.height;
   if (bottom > scroller.y + scroller.height + 1) throw new Error(`the content runs past the panel (${Math.round(bottom - scroller.y - scroller.height)} px): use a taller window`);
-  return panelSlice(page, size, tabs.y, bottom);
+  return insidePanel(page, size, tabs.y, bottom + 10);
 };
 
-/** The panel's header, mat and boost bar (when one shows). */
+/** The mat and the boost bar's chips under it (when one shows), inside the panel's border, a margin around. */
 async function matSlice(page, size) {
-  const p = await box(page, PANEL);
   const mat = await box(page, inPanel("cw-mat"));
-  const boost = await page.$(inPanel("cw-boostbar")) ? await box(page, inPanel("cw-boostbar")) : null;
-  const bottom = boost && boost.height ? boost.y + boost.height : mat.y + mat.height;
-  return panelSlice(page, size, p.y, bottom + 4);
+  const chips = await page.$(`${inPanel("cw-boostbar")} > *`) ? await boxAll(page, `${inPanel("cw-boostbar")} > *`) : null;
+  const bottom = chips && chips.height ? chips.y + chips.height : mat.y + mat.height;
+  return insidePanel(page, size, mat.y - 4, bottom + 8);
+}
+
+/** Inside the panel's 1 px border lines, from `top` to `bottom` (CSS px). */
+async function insidePanel(page, size, top, bottom) {
+  const p = await box(page, PANEL);
+  return edges(p.x + 1, top, p.x + p.width - 1, bottom, size);
 }
 
 const SHOTS = {
   "hero-dark": (b, base) => shotWindow(b, base, "hero-dark", HERO, { theme: "graphite" }),
+  // The README's <picture> source for prefers-color-scheme: light (the same moment).
   "hero-light": (b, base) => shotWindow(b, base, "hero-light", HERO, { theme: "paper" }),
   // The tab bar down to the last Resting row: 34 tiles fill the frame.
   flock: (b, base) => shotCrop(b, base, "flock", FLOCK, { theme: "graphite" }, fromTabs(`${PANEL} [data-id^="cw-flock-sec-"]`)),
-  mat: (b, base) => shotCrop(b, base, "mat", MAT, { theme: "graphite" }, matSlice),
   frenzy: (b, base) => shotCrop(b, base, "frenzy", FRENZY, { theme: "graphite" }, matSlice),
-  // A taller window, so the whole Works list shows without scrolling.
-  shop: (b, base) => shotCrop(b, base, "shop", SHOP, { theme: "graphite", size: { width: 1920, height: 1240 } }, fromTabs(`${PANEL} [data-id="cw-shop"] > *`)),
-  // The standard 320 px panel (the strand card is at most 304 wide) in a taller window: the wish button, Clears/Keeps, every perk and the garland show.
-  string: (b, base) => shotCrop(b, base, "string", STRING, { theme: "graphite", size: { width: 1600, height: 1240 }, panel: STD_PANEL },
-    fromTabs(`${PANEL} [data-id="cw-string"] > *`)),
-  // The standard panel, so the card is as wide as the mat; the header, the card and the first Flock row,
-  // cropped on the card's own left and right edges (the mat and the tab rule behind it stay out).
-  away: (b, base) => shotCrop(b, base, "away", AWAY, { theme: "graphite", panel: STD_PANEL }, async (page, size) => {
-    const card = await box(page, inPanel("cw-away"));
-    const row = await box(page, `${PANEL} [data-id^="cw-flock-grid-"]`);
-    const p = await box(page, PANEL);
-    return edges(card.x, p.y + 1, card.x + card.width, Math.max(card.y + card.height, row.y + row.height) + P, size);
+  // The Works list down to the Washi Vat (the tiers after it are still hidden), inside the panel's border.
+  shop: (b, base) => shotCrop(b, base, "shop", SHOP, { theme: "graphite" }, async (page, size) => {
+    const tabs = await box(page, inPanel("cw-tabs"));
+    const vat = await box(page, inPanel("cw-shop-row-washi-vat"));
+    return insidePanel(page, size, tabs.y, vat.y + vat.height + 10);
   }),
-  // The fold total and the 34 marks, with the bottom of the terminals above and herdr's status bar below.
+  // The String: its title, the strand of 1,000 and the wish button (the perks and garland below are left out).
+  // The mod's standard 320 px panel (the strand card is at most 304 wide, so it fills it).
+  string: (b, base) => shotCrop(b, base, "string", STRING, { theme: "graphite", panel: STD_PANEL }, async (page, size) => {
+    const tabs = await box(page, inPanel("cw-tabs"));
+    const wish = await box(page, inPanel("cw-string-wish"));
+    // P under the button: less than the 6 px gap to the line below it.
+    return panelSlice(page, size, tabs.y, wish.y + wish.height - 1);
+  }),
+  // The mod's standard 320 px panel (the card fills it): the panel's header and the card, the panel's edges and a margin around.
+  away: (b, base) => shotCrop(b, base, "away", AWAY, { theme: "graphite", panel: STD_PANEL }, async (page, size) => {
+    const p = await box(page, PANEL);
+    const card = await box(page, inPanel("cw-away"));
+    // 4 px under the card: the Flock rows below start 5 px under it.
+    const c = await panelSlice(page, size, p.y, card.y + card.height);
+    return { ...c, height: Math.ceil(card.y + card.height + 4) - c.y };
+  }),
+  // The ribbon, end to end: the bottom 10 px of the panes above it, herdr's status bar below.
   ribbon: (b, base) => shotCrop(b, base, "ribbon", HERO, { theme: "graphite" }, async (page, size) => {
     const r = await box(page, RIBBON);
-    const marks = await boxAll(page, `${RIBBON} [data-id^="cw-rib-m-"]`);
-    const right = marks.x + marks.width + 24;
-    // Up to 120 px of the terminals above, starting below the last line the crop's right edge would cut.
-    const top = await page.evaluate(([top, right]) => {
-      let t = top;
-      for (const line of document.querySelectorAll(".terminal .tl")) {
-        const range = document.createRange();
-        range.selectNodeContents(line);
-        const b = range.getBoundingClientRect();
-        if (b.width && b.right > right && b.bottom > t && b.top < t + 200) t = Math.max(t, b.bottom + 2);
-      }
-      return t;
-    }, [r.y - 120, right]);
-    return edges(r.x, top, right, size.height, size);
+    return edges(r.x - 8, r.y - 10, r.x + r.width + 8, size.height, size);
   }),
   themes: (b, base) => shotThemes(b, base),
-  // The right terminal column and the 64 px rail, down to just below the rail's status marks.
-  rail: (b, base) => shotCrop(b, base, "rail", RAIL, { theme: "graphite", state: "folded", check: true }, async (page, size) => {
+  // The right terminal column and the 64 px rail, from under the tab bar down to the ribbon (the rail's full height).
+  rail: (b, base) => shotCrop(b, base, "rail", RAIL, { theme: "graphite", state: "folded", size: RAIL_WIN, check: true }, async (page, size) => {
     const panes = await page.$$eval(".pane", (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; }));
-    const right = panes.reduce((a, p) => (p.x > a.x ? p : a));
-    const pips = await boxAll(page, `${PANEL} [data-id^="cw-rail-pip-"]`);
-    return edges(right.x - 6, 0, size.width, pips.y + pips.height + 24, size);
+    const left = Math.max(...panes.map((p) => p.x));
+    const topY = Math.min(...panes.map((p) => p.y));
+    const r = await box(page, RIBBON);
+    return edges(left - 5, topY - 6, size.width, r.y, size);
   }),
   jump: (b, base) => shotJump(b, base),
 };
 
 // ---------------------------------------------------------------------------
-// Composites: whole crops placed side by side under plain labels
+// Composites: whole crops placed side by side under plain labels, on a
+// transparent background (the README sits on GitHub's light or dark page)
 
-async function composite(browser, name, tiles, { cols, bg, fg, gap = 22, label = 36 }) {
+async function composite(browser, name, tiles, { cols, gap = 22, label = 40 }) {
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-html,body{margin:0;background:${bg};font-family:"Geist","Inter",system-ui,sans-serif}
+html,body{margin:0;background:transparent;font-family:"Geist","Inter",system-ui,sans-serif}
 .grid{display:inline-grid;grid-template-columns:repeat(${cols},max-content);gap:${gap}px;padding:${gap}px;align-items:start}
 .tile{display:flex;flex-direction:column;align-items:flex-start}
-.name{height:${label}px;line-height:${label - 10}px;font-size:16px;font-weight:600;color:${fg};letter-spacing:.01em;padding-left:2px}
+.name{position:relative;height:${label}px;width:100%}
+.pill{position:absolute;left:0;top:2px;display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:14px;
+  background:#2a2c31;color:#f2f1ee;font-size:15px;font-weight:600;letter-spacing:.01em;white-space:nowrap}
+.below{position:relative;height:${label}px;width:100%}
+.mark{position:absolute;top:6px;width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:13px solid #e5484d;transform:translateX(-10px)}
+.note{position:absolute;top:22px;transform:translateX(-50%);font-size:14px;font-weight:600;color:#e5484d;white-space:nowrap}
 img{display:block;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.18),0 6px 18px rgba(0,0,0,.12)}
 </style></head><body><div class="grid">${tiles
-    .map((t) => `<div class="tile"><div class="name">${t.label}</div><img src="data:image/png;base64,${t.png.toString("base64")}" ` +
-      `style="width:${t.width}px;height:${t.height}px"></div>`)
+    .map((t) => `<div class="tile" style="width:${t.width}px"><div class="name"><span class="pill">${t.label}</span></div>` +
+      `<img src="data:image/png;base64,${t.png.toString("base64")}" style="width:${t.width}px;height:${t.height}px">` +
+      `${t.mark != null ? `<div class="below"><span class="mark" style="left:${t.mark}px"></span><span class="note" style="left:${t.mark}px">clicked</span></div>` : ""}</div>`)
     .join("")}</div></body></html>`;
   const rows = Math.ceil(tiles.length / cols);
   const colW = [];
   for (let c = 0; c < cols; c++) colW.push(Math.max(...tiles.filter((_, i) => i % cols === c).map((t) => t.width)));
   const rowH = [];
-  for (let r = 0; r < rows; r++) rowH.push(Math.max(...tiles.slice(r * cols, r * cols + cols).map((t) => t.height + label)));
+  for (let r = 0; r < rows; r++) rowH.push(Math.max(...tiles.slice(r * cols, r * cols + cols).map((t) => t.height + label + (t.mark != null ? label : 0))));
   const w = colW.reduce((a, x) => a + x, 0) + gap * (cols + 1);
   const h = rowH.reduce((a, x) => a + x, 0) + gap * (rows + 1);
   const page = await openPage(browser, html, { width: Math.ceil(w), height: Math.ceil(h) }, `${name}-grid`);
   try {
     await page.waitForFunction(() => [...document.images].every((i) => i.complete));
-    return await save(browser, name, await page.screenshot({ type: "png" }));
+    return await save(browser, name, await page.screenshot({ type: "png", omitBackground: true }));
   } finally {
     await page.close();
   }
 }
 
 /**
- * The same moment in all six themes: each cell is herdr's tab bar over the
- * panel's header, mat, tabs and the Needs-you and Finished rows, labelled
- * with the theme's name and its background, chrome and accent colours.
+ * The same moment in all six themes, 3 x 2: each cell is the bottom of the
+ * window, where the theme shows most: the right edge of the Codex terminal, the
+ * panel's tabs and Flock, the ribbon and herdr's status bar (the mat, which
+ * stays a green cutting mat in every theme, is left out). Each label names
+ * the theme with swatches of its terminal background, chrome and accent
+ * (tools/mock/themes.json), all three of which show in the cell.
  */
 async function shotThemes(browser, base) {
   const tiles = [];
@@ -572,26 +775,26 @@ async function shotThemes(browser, base) {
     const page = await windowPage(browser, base, HERO, { theme, tag: "-themes" });
     try {
       const p = await box(page, PANEL);
-      const fin = await box(page, inPanel("cw-flock-sec-finished"));
-      // herdr's tab bar above the panel (its chrome colour), the panel on its own edges.
-      const clip = edges(p.x - P, 0, p.x + p.width + P, fin.y + fin.height + 8, WIN);
+      const tabs = await box(page, inPanel("cw-tabs"));
+      // 120 px of the Codex terminal: its right edge, past the end of most lines (the terminal's colour, little cut text).
+      const clip = edges(p.x - 128, tabs.y - 4, WIN.width, WIN.height, WIN);
       const t = THEMES[theme];
-      // The theme's own background, chrome and accent (tools/mock/themes.json) as swatches beside its name.
-      const swatch = (c) => `<span style="display:inline-block;width:14px;height:14px;border-radius:4px;margin-left:6px;vertical-align:-2px;background:${c};box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)"></span>`;
-      const label = `${theme}<span style="margin-left:6px">${swatch(t.background)}${swatch(t.chrome)}${swatch(t.accent)}</span>`;
+      const swatch = (c) => `<span style="display:inline-block;width:13px;height:13px;border-radius:4px;margin-left:5px;background:${c};box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)"></span>`;
+      const label = `${theme}<span style="margin-left:8px;display:inline-flex">${swatch(t.background)}${swatch(t.chrome)}${swatch(t.accent)}</span>`;
       tiles.push({ label, png: await page.screenshot({ type: "png", clip }), width: clip.width, height: clip.height });
     } finally {
       await page.close();
     }
   }
-  return composite(browser, "themes", tiles, { cols: 2, bg: "#e9e7e2", fg: "#2a2925" });
+  return composite(browser, "themes", tiles, { cols: 3 });
 }
 
 /**
  * The jump, in two real frames: the moment (a needs-you tile in the panel)
  * and the window after that tile's own click handler ran: the mod asked
  * herdr for pane.focus, and herdr (drawn by the rig) shows that pane's space,
- * tab and pane focused.
+ * tab and pane focused. A marker under the first frame, outside its
+ * pixels, points up at the tile that was clicked (the rig draws no cursor).
  */
 async function shotJump(browser, base) {
   const target = rosterRoles().jumpPane;
@@ -599,9 +802,15 @@ async function shotJump(browser, base) {
   let left;
   try {
     const p = await box(before, PANEL);
-    const needs = await box(before, inPanel("cw-flock-sec-needs"));
-    const clip = edges(p.x - P, p.y - P, p.x + p.width + P, needs.y + needs.height + P, WIN);
-    left = { label: "1 · Click a helper who needs you", png: await before.screenshot({ type: "png", clip }), width: clip.width, height: clip.height };
+    // Down to the Finished heading: the Needs-you tiles and the gap under them.
+    const fin = await box(before, inPanel("cw-flock-sec-finished"));
+    if (!NOTES.jumpTile) throw new Error("jump: no tile for the jump helper");
+    const tile = await box(before, inPanel(NOTES.jumpTile));
+    const clip = edges(p.x - P, p.y - P, p.x + p.width + P, fin.y - 1, WIN);
+    left = {
+      label: "1 · Click a helper who needs you", mark: tile.x + tile.width / 2 - clip.x,
+      png: await before.screenshot({ type: "png", clip }), width: clip.width, height: clip.height,
+    };
   } finally {
     await before.close();
   }
@@ -614,12 +823,19 @@ async function shotJump(browser, base) {
   let right;
   try {
     const pane = await box(after, `[data-pane="${target}"]`);
-    const clip = edges(0, 0, pane.x + pane.width + 8, left.height, WIN);
+    // Down past the pane's last line (its edit prompt), so no line is cut.
+    const last = await boxAll(after, `[data-pane="${target}"] .tl`);
+    let bottom = Math.max(left.height, last.y + last.height + 12);
+    // ...and past any sidebar row that edge would cut.
+    const rows = await after.$$eval(".agents > div:last-child > *", (els) => els.map((e) => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; }));
+    const cut = rows.find(([t, b]) => t < bottom && b > bottom);
+    if (cut) bottom = cut[1];
+    const clip = edges(0, 0, pane.x + pane.width + 8, bottom, WIN);
     right = { label: "2 · herdr jumps to its terminal", png: await after.screenshot({ type: "png", clip }), width: clip.width, height: clip.height };
   } finally {
     await after.close();
   }
-  return composite(browser, "jump", [left, right], { cols: 2, bg: "#e9e7e2", fg: "#2a2925" });
+  return composite(browser, "jump", [left, right], { cols: 2 });
 }
 
 // ---------------------------------------------------------------------------

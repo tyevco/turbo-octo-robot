@@ -280,7 +280,15 @@ async function moment(v, tools) {
   await spawnNow(v, tools, ["nextScrapAt"]);
   await spawnNow(v, tools, ["nextChainAt"]);
   await chainClicks(v, tools, 2);
+  // A herd this size starts with Resting folded: open it, as a click on its header does, so all four groups show.
+  S(v).ui.folded.resting = false;
+  const s = state();
+  const id = Object.keys(s.helpers).find((k) => s.helpers[k].addr === roles.jump);
+  NOTES.jumpTile = id ? `cw-flock-tile-${id}` : null;
 }
+
+/** What hero.mjs may want to know about the moment: the Flock tile of the jump shot's helper. */
+export const NOTES = { jumpTile: null, stormEnvelope: null };
 
 /** Finishes a task on the given agents (turn +1; `status` null keeps their status), then ticks so envelopes land. */
 async function finish(tools, list, status = "working") {
@@ -355,6 +363,20 @@ async function sheetPresses(view, tools, n, gap = 180) {
   }
 }
 
+/**
+ * One Sheet hit near the right edge of the Sheet's 112 px hit box, beside the
+ * folded paper: the "+N" is drawn at the click point, so it lands on the
+ * green mat next to the paper instead of on the cream paper itself.
+ */
+async function edgePress(view, tools, y = 26) {
+  await press(view, tools, "cw-sheet", "on_mouse_down", { local_position: { x: 106, y } });
+}
+
+/** Waits `ms` with no clicks (the earlier pops finish their rise and are dropped; the streak gap is 1 s). */
+async function quiet(tools, ms = 760) {
+  await tools.advance(ms);
+}
+
 // ---------------------------------------------------------------------------
 // The table
 
@@ -379,11 +401,16 @@ function view(name, setup, finale) {
   };
 }
 
-/** The last few Sheet hits of a rhythm: the streak meter up and the last hit's "+N" still on the mat. */
+/**
+ * The last few Sheet hits of a rhythm: the streak meter up, a gilded crane
+ * in, and the last hit (at the paper's right edge) with its "+N" on the mat
+ * beside the paper.
+ */
 const keepFolding = (n = 9) => async (v, tools) => {
   await sheetPresses(v, tools, n - 1);
   await craneJustIn(v, tools);
-  await sheetPresses(v, tools, 1);
+  await quiet(tools);
+  await edgePress(v, tools);
 };
 
 /** The hero: the moment, mid-rhythm. */
@@ -392,36 +419,33 @@ export const HERO = view("hero", null, keepFolding());
 /** The moment folded to the rail (no mat to click: the frame is the moment as it stands). */
 export const RAIL = view("rail");
 
-/** The mat close-up: a scrap picked up (its "+N" rises from where it lay), the chain waiting, the crane gliding. */
-export const MAT = view("mat", null, async (v, tools) => {
-  await sheetPresses(v, tools, 5);
-  await scrapJustIn(v, tools);
-  await craneJustIn(v, tools);
-  // A scrap clear of the crane and of the mat's right edge, so its "+N" reads in full.
-  const mat = S(v).vm().mat;
-  const away = (s) => Math.hypot(s.x - (mat.crane.x + 24), s.y - (mat.crane.y + 18)) - (s.x > 250 ? 1000 : 0);
-  const scrap = mat.scraps.slice().sort((a, b) => away(b) - away(a))[0];
-  if (!scrap) throw new Error("hero-views: no scrap on the mat");
-  await press(v, tools, `cw-scrap-${scrap.id}`);
-});
+/** Opens `helperId`'s envelope through the tray envelope's own click handler (the click is the player's). */
+async function openEnvelope(v, tools, helperId) {
+  await press(v, tools, `cw-env-${helperId}`);
+  if (state().envelopes[helperId]) throw new Error(`hero-views: the envelope of ${helperId} did not open`);
+}
 
 /**
- * The frenzy: a Paper Storm and a Rush running (as views.js "storm" starts
- * them: the boost clocks a crane's storm or an opened envelope would set),
- * fast clicking (the streak meter high), a fresh gilded crane and scraps. A
- * storm drops a chain every 4 s, so two are usually on the mat: the older one
- * is finished node by node (its crease line drawn, the finishing "+N" on the
- * mat), leaving one chain.
+ * The frenzy: the player opens a Rush envelope, then a Paper Storm envelope,
+ * from the tray (through the envelopes' own click handlers), and clicks fast
+ * (the streak meter high, In step). Which kind an envelope is was rolled when
+ * it landed: setup sets the roll of two of the tray's envelopes (the one
+ * engine field that decides it, as views.js moves spawn clocks). A storm
+ * drops a chain every 4 s, so two are usually on the mat; a gilded crane
+ * glides in and two scraps land. The frame is the click on the older chain's
+ * last node: its crease line is drawn across the mat and its "+N" sits where
+ * that node was, at the end of the line.
  */
 export const FRENZY = view("frenzy", async (v, tools) => {
-  const b = state().boosts;
-  const t = Date.now();
-  b.stormEnd = t + 21000;
-  b.storm = 21000;
-  b.rushEnd = t + 55000;
-  b.rush = 55000;
+  const tray = S(v).vm().tray?.envelopes ?? [];
+  if (tray.length < 3) throw new Error(`hero-views: ${tray.length} envelopes in the tray, want 3+`);
+  state().envelopes[tray[0].helperId].type = "rush";
+  state().envelopes[tray[1].helperId].type = "storm";
+  NOTES.stormEnvelope = tray[1].helperId;
+  await openEnvelope(v, tools, tray[0].helperId);
   await sheetHits(v, tools, 12, 250);
 }, async (v, tools) => {
+  await openEnvelope(v, tools, NOTES.stormEnvelope);
   const sp = state().spawn;
   // Fast clicking (the streak climbs) until the storm drops a fresh chain.
   const fresh = () => [sp.chain, sp.chain2].some((c) => c && sp.shownMs - c.born < 600);
@@ -432,30 +456,33 @@ export const FRENZY = view("frenzy", async (v, tools) => {
   if (!fresh()) throw new Error("hero-views: the storm dropped no chain");
   await scrapJustIn(v, tools);
   await craneJustIn(v, tools);
+  await scrapJustIn(v, tools);
   await sheetPresses(v, tools, 6, 100);
   await tools.advance(100);
-  if (sp.chain && sp.chain2) {
-    // Finish the older chain.
-    const older = sp.chain.born <= sp.chain2.born ? "chain" : "chain2";
-    const prefix = String(sp[older].id);
-    for (let i = 0; i < 8 && sp[older]; i++) {
-      const node = S(v).vm().mat.nodes.find((x) => x.due && String(x.id).startsWith(`${prefix}-`));
-      if (!node) break;
-      await press(v, tools, `cw-node-${node.id}`);
-      if (sp[older]) await tools.advance(100);
-    }
-  } else {
-    await chainClicks(v, tools, 2, 100);
-    const node = S(v).vm().mat.nodes.find((x) => x.due);
-    if (!node) throw new Error("hero-views: no chain on the frenzy mat");
+  // The older chain played down to its last node (the frame's click finishes it).
+  const older = sp.chain && sp.chain2 ? (sp.chain.born <= sp.chain2.born ? "chain" : "chain2") : sp.chain ? "chain" : "chain2";
+  if (!sp[older]) throw new Error("hero-views: no chain on the frenzy mat");
+  const prefix = String(sp[older].id);
+  const due = () => S(v).vm().mat.nodes.find((x) => x.due && String(x.id).startsWith(`${prefix}-`));
+  const left = () => S(v).vm().mat.nodes.filter((x) => String(x.id).startsWith(`${prefix}-`) && !x.done).length;
+  for (let i = 0; i < 8 && sp[older] && left() > 1; i++) {
+    const node = due();
+    if (!node) break;
     await press(v, tools, `cw-node-${node.id}`);
+    await tools.advance(150);
   }
+  if (!sp[older] || !due()) throw new Error("hero-views: the older chain has no last node to finish");
+  if (state().boosts.stormEnd <= Date.now()) throw new Error("hero-views: the storm ran out before the frame");
+  // The finishing click: earlier pops finish their rise first (a pop starts
+  // to rise 16 ms after its click and hand hits are at least 80 ms apart, so
+  // one frame holds one pop at full strength), then the last node.
+  await quiet(tools);
+  await press(v, tools, `cw-node-${due().id}`);
+  if (sp[older]) throw new Error("hero-views: the older chain did not finish");
 });
 
 /** The Flock with every group open. */
-export const FLOCK = view("flock", async (v) => {
-  S(v).ui.folded.resting = false; // a herd this size starts with Resting folded: open it, as a click on its header does
-});
+export const FLOCK = view("flock");
 
 export const SHOP = view("shop", async (v) => {
   const ui = S(v).ui;
@@ -501,4 +528,4 @@ export const JUMP = view("jump", null, async (v, tools) => {
   await press(v, tools, `cw-flock-tile-${id}`);
 });
 
-export default [HERO, RAIL, MAT, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP];
+export default [HERO, RAIL, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP];
