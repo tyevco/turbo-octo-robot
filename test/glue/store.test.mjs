@@ -1233,6 +1233,48 @@ test("r5-06: a damaged save.recovery.json found during play is said, kept or not
   }
 });
 
+test("r5-02: Reset while save.json is unreadable keeps the recovery game aside, is never merged back, and the other window takes it in", async () => {
+  w = win();
+  const [A, B] = twoWriters(14);
+  w.ctl.externalWrite(SAVE, HUGE);
+  clickN(A, 5, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  clickN(B, 5, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  const before = w.ctl.readFile(RECOVERY);
+  assert.ok(parsed(w.ctl, RECOVERY).state.stats.hits >= 8, "both windows' hits in the recovery game");
+  const flashes = [];
+  const env = { now: () => w.ctl.now(), seed: () => 7, flash: (m) => flashes.push(m) };
+  assert.equal(await hostWork(() => store.resetGame(A, env)), "ok");
+  assert.equal(w.ctl.readFile(damaged(1)), before, "the game being replaced is kept");
+  assert.ok(A.save.damaged.includes("save.damaged-1.json (reset)"));
+  assert.equal(flashes[0], "Started a new game. The old save was kept as save.damaged-1.json.");
+  // B saves before A's reset is written: A's write replaces it, B's game kept aside.
+  await w.advance(1000);
+  clickN(B, 1, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  const theirs = w.ctl.readFile(RECOVERY);
+  await w.advance(1000);
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  const reset = parsed(w.ctl, RECOVERY).state;
+  assert.equal(reset.stats.hits, 1, "the reset game is written, not merged with the old one");
+  assert.equal(reset.applied.wB, undefined);
+  assert.equal(w.ctl.readFile(damaged(2)), theirs, "B's game kept aside");
+  // B finds its write replaced: it takes the reset game in and names its kept copy.
+  await w.advance(1000);
+  clickN(B, 1, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  assert.equal(B.notices.load.text, store.recReplacedText("save.recovery.json", "save.damaged-2.json"));
+  assert.equal(parsed(w.ctl, RECOVERY).state.stats.hits, 2, "the reset game plus B's new hit");
+  // From then on the two merge: nothing more kept aside.
+  await w.advance(1000);
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  assert.equal(parsed(w.ctl, RECOVERY).state.stats.hits, 3);
+  assert.equal(w.ctl.readFile(damaged(3)), null);
+});
+
 test("r5 recovery notices fit the banner (NOTICE_MAX graphemes)", () => {
   for (const kept of [null, "save.damaged-5.json"]) {
     for (const text of [store.recOtherText("save.recovery.json", kept), store.recReplacedText("save.recovery.json", kept), store.recDamagedText("save.recovery.json", kept)]) {

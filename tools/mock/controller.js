@@ -411,6 +411,12 @@ export class Controller {
     this.windowState = sc.window === null ? null : { ...(sc.window ?? {}) };
     this.zoom = sc.zoom ?? 1;
     this.themeName = sc.theme ?? "graphite";
+    // r5-01: the window appearance, apart from the theme. null: in step with the
+    // theme (what the app.theme picker writes, a light/dark pair). "light" /
+    // "dark": a single-name theme ("theme": "paper") on that appearance, so
+    // settings().dark can disagree with the theme showing (settings.rs compose,
+    // layout.rs ThemeChoice::pick gives the one name for both appearances).
+    this.appearance = sc.appearance === "light" || sc.appearance === "dark" ? sc.appearance : null;
     this.colors = { ...(sc.colors ?? {}) };
     this.settingsOverrides = { ...(sc.settings ?? {}) };
     this.propsValue = sc.props === undefined ? null : bridgeIn(sc.props);
@@ -1319,6 +1325,12 @@ export class Controller {
     this._bump("theme");
   }
 
+  /** r5-01: set the window appearance ("light" / "dark") apart from the theme, or null to follow it. */
+  setAppearance(appearance) {
+    this.appearance = appearance === "light" || appearance === "dark" ? appearance : null;
+    this._bump("theme");
+  }
+
   setZoom(zoom) {
     this.zoom = zoom;
     this._bump("theme");
@@ -1411,7 +1423,9 @@ export class Controller {
     return this._themeCache;
   }
 
+  /** settings().dark: the appearance when one is set, else the theme's own lightness. */
   _dark() {
+    if (this.appearance) return this.appearance === "dark";
     const p = PALETTES[this.themeName] ?? PALETTES.graphite;
     return !isLight(p.background);
   }
@@ -1431,8 +1445,9 @@ export class Controller {
       ui_font_size: 13,
       zoom: this.zoom,
       theme: this.themeName,
-      theme_light: dark ? "paper" : this.themeName,
-      theme_dark: dark ? this.themeName : "graphite",
+      // A single-name theme gives the same name for both appearances.
+      theme_light: this.appearance ? this.themeName : dark ? "paper" : this.themeName,
+      theme_dark: this.appearance ? this.themeName : dark ? this.themeName : "graphite",
       dark,
       colors: { ...this.colors },
       pane_scrollbars: true,

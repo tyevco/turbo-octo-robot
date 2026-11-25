@@ -8,7 +8,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { win, SAVE, parsed, agent, term, engine, HOME } from "./_util.mjs";
-import { newSlot, dispatch, COALESCE_AT, PENDING_MAX, LOG_HELPERS_MAX } from "../../mods/creaseworks/glue/live.js";
+import { newSlot, dispatch, COALESCE_AT, COALESCE_HELPERS, PENDING_MAX, LOG_HELPERS_MAX } from "../../mods/creaseworks/glue/live.js";
 import * as store from "../../mods/creaseworks/glue/store.js";
 import * as notifier from "../../mods/creaseworks/glue/notify.js";
 import { localDay } from "../../mods/creaseworks/glue/clock.js";
@@ -408,6 +408,41 @@ test("r2-04: the unconfirmed log is bounded by size too: big rosters give it up 
   assert.equal(parsed(w.ctl).state.applied.wA, A.seq, "this window's game on disk");
   assert.equal(A.pending.length, 0);
   assert.equal(A.logHelpers, 0, "a save that confirms the log empties the count");
+  assert.equal(A.save.logLost, false);
+});
+
+test("r5-09: a big roster whose titles move coalesces by size, so failed saves keep the log (130 x 4 helpers)", () => {
+  const A = newSlot(HOME, store.slotPaths(HOME));
+  A.writerId = "wA";
+  A.state = engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) });
+  const t = Date.now();
+  const N = 650; // 130 agents with 4 sub-agents each
+  const roster = (k, turn = 0) => {
+    const list = [];
+    for (let i = 1; i <= N; i++) {
+      const kid = i > 130;
+      list.push({ addr: `t${i}`, created: i, status: "working", raw: "working", turn, parent: kid ? `t${1 + (i % 130)}` : null,
+        pane: kid ? null : `p${i}`, title: `agent ${i} · ${k}`, paneName: "", space: "s", tab: "1", kind: kid ? "kid" : "pane" });
+    }
+    return list;
+  };
+  const day = localDay(t);
+  // One title-only observation a second for 20 minutes, no save landing: far past the
+  // ~98 that reached LOG_HELPERS_MAX before (always under COALESCE_AT actions).
+  const OBS = 1200;
+  for (let k = 0; k < OBS; k++) {
+    dispatch(A, { type: "observe", helpers: roster(k), visible: true, active: true, matShown: true, day }, t + k * 1000);
+    assert.equal(A.save.logLost, false, `kept at observation ${k}`);
+  }
+  assert.ok(A.pending.length < COALESCE_AT, `under the count bound (${A.pending.length})`);
+  assert.ok(A.logHelpers <= COALESCE_HELPERS + 2 * N, `bounded by size (${A.logHelpers})`);
+  assert.ok(A.logHelpers < LOG_HELPERS_MAX);
+  // A turn change is never coalesced away: it and the observation after it stay in the log.
+  dispatch(A, { type: "observe", helpers: roster(OBS, 1), visible: true, active: true, matShown: true, day }, t + OBS * 1000);
+  dispatch(A, { type: "observe", helpers: roster(OBS + 1, 1), visible: true, active: true, matShown: true, day }, t + (OBS + 1) * 1000);
+  const rosters = A.pending.filter((a) => a.type === "observe" && Array.isArray(a.helpers));
+  assert.ok(rosters.some((a) => a.helpers[0].turn === 1 && a.helpers[0].title === `agent 1 · ${OBS}`), "the turn change kept");
+  assert.equal(A.logHelpers, rosters.length * N, "the size count matches the kept observations");
   assert.equal(A.save.logLost, false);
 });
 

@@ -344,6 +344,7 @@ export function runProfile(profileId, seed, opts = {}) {
     multi: Array.isArray(opts.windows) && opts.windows.length > 1,
     p: 0, // play-clock ms of the operation in progress
     milestones: Object.create(null),
+    byAway: Object.create(null), // milestones first reached by an away segment's credit
     active: Object.create(null),
     purchases: [],
     sessionRatios: [],
@@ -375,10 +376,12 @@ export function runProfile(profileId, seed, opts = {}) {
   const hit = (key, p) => {
     if (!(key in sim.milestones)) sim.milestones[key] = p;
   };
-  let last = { p: 0, run: 0, life: 0, wishCount: 0 };
+  let last = { p: 0, run: 0, live: 0, life: 0, wishCount: 0 };
+  let awayNow = false; // the events being tracked credit an away segment (a night pot)
   const cross = (key, target, prevV, v, p0, p1, continuous) => {
     if (key in sim.milestones || !(prevV < target && v >= target)) return;
     hit(key, continuous && p1 > p0 ? p0 + (p1 - p0) * (target - prevV) / (v - prevV) : p1);
+    if (awayNow) sim.byAway[key] = true;
   };
   sim.onEvents = (win, ev, wall, continuous) => {
     if (win !== primary || sim.multi) return;
@@ -404,11 +407,17 @@ export function runProfile(profileId, seed, opts = {}) {
       }
     }
     const p0 = last.p;
+    // live income this run: the run's folds without away credit (BALANCE §4 M13, review r5-21:
+    // the run total passed 1 B only through the night pot collected at the day-3 open)
+    const live = s.runFolds - (s.stats.runBySource.away || 0);
+    awayNow = ev.some((e) => e.kind === "away" || (e.kind === "earn" && e.source === "away"));
     if (s.wishCount === last.wishCount) {
       cross("run:1e6", 1e6, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
       cross("run:1e8", 1e8, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
       cross("run:1e9", 1e9, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
+      cross("live:1e9", 1e9, last.live, live, p0, p, continuous && s.wishCount === 0);
     }
+    awayNow = false;
     if (!("wish:available" in sim.milestones) && s.wishCount === 0) {
       const info = engine.wishInfo(s);
       if (info.can) {
@@ -421,7 +430,7 @@ export function runProfile(profileId, seed, opts = {}) {
       }
     }
     if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) hit("wish2:available", p);
-    last = { p, run: s.runFolds, life: s.lifetime, wishCount: s.wishCount };
+    last = { p, run: s.runFolds, live, life: s.lifetime, wishCount: s.wishCount };
   };
 
   // -- the player's actions
@@ -661,6 +670,7 @@ function summarize(prof, seed, sim, finalState, opts) {
   return {
     profile: prof.id, seed,
     milestones: { ...ms },
+    byAway: { ...sim.byAway },
     active: { ...sim.active },
     wishGain: sim.m15Gain,
     wishEvent: sim.wishEvent,
@@ -713,9 +723,11 @@ export function evaluate(runs, bal = parseBalance()) {
       const med = median(vals);
       const okMed = inWin(med, row.median);
       const okEvery = vals.every((v) => inWin(v, row.every));
+      // seeds on which the milestone was first reached by an away segment's credit (a night pot)
+      const byAway = P1.filter((r) => r.byAway && r.byAway[row.key]).length;
       add({ section: "§4", id: row.id, what: row.event, key: row.key, unit: row.median.active !== undefined ? "active s" : row.median.value !== undefined ? "value" : row.median.rel ? "M15+" : "clock",
         vals, median: med, min: Math.min(...vals), max: Math.max(...vals), window: row.median, every: row.every,
-        pass: okMed && okEvery, provisional: row.provisional });
+        pass: okMed && okEvery, provisional: row.provisional, byAway, note: byAway ? `reached by a night pot on ${byAway} of ${P1.length} seeds` : undefined });
     }
   }
   // §5 first wish across profiles

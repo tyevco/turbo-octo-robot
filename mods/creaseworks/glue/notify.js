@@ -15,7 +15,7 @@
 // per episode instead (run("layout.show", {id: "cw-ribbon"})).
 
 import { notify, run } from "herdr";
-import { wishInfo } from "../engine/index.js";
+import { stringInfo } from "../engine/index.js";
 import { dispatch, touch } from "./live.js";
 import { problemEpisode } from "./store.js";
 
@@ -42,8 +42,15 @@ export function wanted(slot, t, env) {
   if (!set || set.master !== true || env.quiet) return null;
   if (sentOn(s, env.day) >= DAILY_CAP) return null;
   const n = s.notify;
-  if (set.full !== false && !n.firedFull && wishInfo(s).can) {
-    return { event: "full", title: "Your string is full", body: "A wish is ready in Creaseworks." };
+  if (set.full !== false && !n.firedFull) {
+    // The gate can open before the String is full (W 10–39: at 500 of 1,000
+    // cranes): it is called full only when it is (review r5-12).
+    const si = stringInfo(s);
+    if (si.can) {
+      return si.full
+        ? { event: "full", title: "Your string is full", body: "A wish is ready in Creaseworks." }
+        : { event: "full", title: "A wish is ready", body: "Your string has enough cranes for a wish in Creaseworks." };
+    }
   }
   if (set.pile !== false && n.pileSince !== null && t - n.pileSince >= PILE_MS && n.pileDay !== env.day) {
     const k = Object.keys(s.envelopes).length;

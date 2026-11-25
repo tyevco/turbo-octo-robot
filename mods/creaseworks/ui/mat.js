@@ -500,7 +500,8 @@ function topBand(vm, g, T, S, openHelper, calm) {
 function envelope(env, S, open, calm, zoom) {
   const id = env.helperId;
   const type = ENV_TYPES.includes(env.type) ? env.type : "bundle";
-  const units = num(env.units, 1);
+  const label = stackLabel(env);
+  const long = label !== null && label.length > 2;
   const art = div()
     .id(`cw-env-${id}-art`)
     .absolute()
@@ -510,9 +511,15 @@ function envelope(env, S, open, calm, zoom) {
     .h(20)
     .child(svg(spritePath("scene", "envelope-body")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheet))
     .child(svg(spritePath("scene", "envelope-flap")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheetShade))
-    .child(svg(spritePath("seal", type)).absolute().top(1).left(15).w(12).h(12).text_color(S.ink));
-  if (units >= 2) {
-    art.child(div().absolute().left(2).top(6).text_size(11).font_weight(600).text_color(S.ink).child(clip(`×${Math.floor(units)}`, MAT_CLIP.label)));
+    // A longer count ("×2.8", "×12") takes the envelope's lower half under a
+    // smaller seal; a short one ("×3") sits left of the seal as before.
+    .child(long
+      ? svg(spritePath("seal", type)).absolute().top(0).left(17).w(10).h(10).text_color(S.ink)
+      : svg(spritePath("seal", type)).absolute().top(1).left(15).w(12).h(12).text_color(S.ink));
+  if (label !== null) {
+    art.child(long
+      ? div().absolute().left(0).top(9).w(28).text_center().text_size(11).line_height("127%").font_weight(600).text_color(S.ink).child(label)
+      : div().absolute().left(2).top(6).text_size(11).font_weight(600).text_color(S.ink).child(label));
   }
   if (env.bob && !calm) art.loop("top", { from: 4, to: 4 - 2 * zoom, period: 1600 });
   const word = type === "bundle" ? "Bundle" : type === "rush" ? "Rush" : type === "storm" ? "Paper Storm" : "Chorus";
@@ -529,6 +536,19 @@ function envelope(env, S, open, calm, zoom) {
       return open(id, cx);
     })
     .child(art);
+}
+
+/**
+ * The tray stack count an envelope shows (DESIGN §3.2 item 11: ×n when
+ * n ≥ 2): the vm's `label` ("×2.8"; units are 64ths of a share and a
+ * fledgling's finish adds half a one, review r5-15), else built from
+ * `units` the same way (one decimal below 10); null below 2.
+ */
+export function stackLabel(env) {
+  if (env && typeof env.label === "string" && env.label) return clip(env.label, MAT_CLIP.label);
+  const u = num(env && env.units, 1);
+  if (!(u >= 2)) return null;
+  return clip(`×${u >= 9.95 ? Math.round(u) : Math.round(u * 10) / 10}`, MAT_CLIP.label);
 }
 
 const textW = (s) => Math.ceil(String(s).length * 6.5);
@@ -556,7 +576,12 @@ function bottomBand(vm, g, T, S, open, calm, zoom) {
     .id("cw-streak")
     .gap(6)
     .flex_none()
-    .tooltip(inStep ? `In step ${label}: your helpers work faster` : `Rhythm ${label}: keep clicking in time`)
+    .tooltip(clip(
+      (inStep ? `In step ${label}: your helpers work faster` : `Rhythm ${label}: keep clicking in time`) +
+        // the banked afterglow (review r5-14; the footer chip shows it too)
+        (!inStep && typeof streak.afterglowText === "string" && streak.afterglowText ? ` · ${streak.afterglowText}` : ""),
+      MAT_CLIP.hint + 24,
+    ))
     .child(progressBar("cw-streak-bar", num(streak.fill, 0), { width: track, height: 6, track: S.grid, fill: S.node, ms: 150, calm }, T, S));
   if (inStep) {
     meter.child(h_flex().gap(4).child(icon("step", 12, S.onMat)).child(text("In step", { size: 11, weight: 600, color: S.onMat })));

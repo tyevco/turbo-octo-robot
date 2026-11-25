@@ -249,9 +249,11 @@ function tally(t, T, h) {
  * The lead elements as specs `{ key, w, label }` (no elements built). With
  * `compact` the pills drop their labels (tooltips keep the words) and the
  * narrow hint is its two buttons only ("Fold panel", "Not now"); used when
- * even level C would not fit.
+ * even level C would not fit. With `noHint` the narrow hint is left out (the
+ * save chip and the welcome pill stay): used when even the compact lead
+ * leaves too little room for every helper (r5-17).
  */
-function leadSpecs(vm, ctx, compact) {
+function leadSpecs(vm, ctx, compact, noHint = false) {
   const rib = vm.ribbon || {};
   const out = [];
   const banner = bannerNotices(vm)[0];
@@ -265,7 +267,7 @@ function leadSpecs(vm, ctx, compact) {
     const label = compact ? null : clip(pill.text, RIBBON_CLIP.pill);
     out.push({ key: "welcome", label, w: chipBound(label), pill: pill.text, flash: pill.flash });
   }
-  if (ctx && ctx.narrowHint) {
+  if (ctx && ctx.narrowHint && !noHint) {
     const label = compact ? null : clip(HINT_TEXT, RIBBON_CLIP.hint);
     const fold = buttonBound(label ? HINT_FOLD.full : HINT_FOLD.compact);
     const later = buttonBound("Not now");
@@ -402,9 +404,15 @@ export function fitLevelC(marksIn, talliesIn, avail) {
 
 /**
  * The middle area's plan for a ribbon of work width `W` (tested):
- * `{ w, lead, avail, level, marks, tallies, need, compact, specs }`. The
- * level is the denser of the view's level and the one that fits beside the
- * lead chips; at C the marks and tallies are fitted to `avail` (`fitLevelC`).
+ * `{ w, lead, avail, level, marks, tallies, need, compact, hintDropped, specs }`.
+ * The level is the denser of the view's level and the one that fits beside
+ * the lead chips; at C the marks and tallies are fitted to `avail`
+ * (`fitLevelC`). A level C that would need more room than level B (its
+ * tallies outgrow the pips they fold) is never chosen over B. The lead is
+ * tried full, then compact; if even the compact lead leaves the marks
+ * overflowing, the narrow hint is dropped (it is only an offer, and the
+ * marks are every helper's state: DESIGN §3.10 "never capped", r5-17) and
+ * the lead is tried again, full then compact. The save chip always stays.
  */
 export function ribbonLayout(vm, ctx, W) {
   const rib = (vm && vm.ribbon) || {};
@@ -415,8 +423,9 @@ export function ribbonLayout(vm, ctx, W) {
   // Helpers in all: the view's level C has already folded some into tallies.
   let n = marks0.length;
   if (viewLevel === "C") for (const t of tallies0) n += Math.max(0, num(t.count, 0));
-  const plan = (compact) => {
-    const specs = leadSpecs(vm, ctx, compact);
+  const hasHint = Boolean(ctx && ctx.narrowHint);
+  const plan = (compact, noHint) => {
+    const specs = leadSpecs(vm, ctx, compact, noHint);
     const lead = leadWidth(specs);
     const avail = Math.max(0, w - lead);
     let level = densityLevel(n, avail);
@@ -424,21 +433,39 @@ export function ribbonLayout(vm, ctx, W) {
     let marks = marks0;
     let tallies = [];
     // Level C is fitted to the width left here (the view fitted the whole middle).
-    if (level === "C") ({ marks, tallies } = fitLevelC(marks0, viewLevel === "C" ? tallies0 : [], avail));
-    return { w, lead, avail, level, marks, tallies, need: needOf(level, marks, tallies), compact, specs };
+    if (level === "C") {
+      const c = fitLevelC(marks0, viewLevel === "C" ? tallies0 : [], avail);
+      // Never C when it is wider than B (r5-17): B shows every helper as a pip
+      // in less room. Only when the view has not already folded marks into tallies.
+      if (viewLevel !== "C" && needOf("C", c.marks, c.tallies) > needOf("B", marks0, [])) level = "B";
+      else ({ marks, tallies } = c);
+    }
+    const hintDropped = hasHint && Boolean(noHint);
+    return { w, lead, avail, level, marks, tallies, need: needOf(level, marks, tallies), compact, hintDropped, specs };
   };
-  const full = plan(false);
   const hidden = (p) => {
-    let n = 0;
-    for (const t of p.tallies) if (statusOf(t.status) === "blocked") n += Math.max(0, num(t.count, 0));
-    return n;
+    let k = 0;
+    for (const t of p.tallies) if (statusOf(t.status) === "blocked") k += Math.max(0, num(t.count, 0));
+    return k;
   };
-  if (!full.specs.length || (full.need <= full.avail && !hidden(full))) return full;
-  // Even level C overflows beside the full lead, or a needs-you helper lost
-  // its own mark to it (r4-07): the compact lead, when it clips or folds less.
-  const tight = plan(true);
-  if (full.need > full.avail) return tight.need - tight.avail < full.need - full.avail ? tight : full;
-  return tight.need <= tight.avail && hidden(tight) < hidden(full) ? tight : full;
+  const fits = (p) => p.need <= p.avail;
+  // The full lead, or the compact one when it clips or folds less.
+  const pick = (noHint) => {
+    const full = plan(false, noHint);
+    if (!full.specs.length || (fits(full) && !hidden(full))) return full;
+    // Even level C overflows beside the full lead, or a needs-you helper lost
+    // its own mark to it (r4-07): the compact lead, when it clips or folds less.
+    const tight = plan(true, noHint);
+    if (!fits(full)) return tight.need - tight.avail < full.need - full.avail ? tight : full;
+    return fits(tight) && hidden(tight) < hidden(full) ? tight : full;
+  };
+  const withHint = pick(false);
+  if (!hasHint || fits(withHint)) return withHint;
+  // Even the compact lead leaves the marks overflowing (r5-17: 1100x700 at
+  // zoom 1.5, W 465, pushed the finished, working and resting counts off the
+  // edge): drop the narrow hint, keep the save chip, and plan again.
+  const bare = pick(true);
+  return fits(bare) || bare.need - bare.avail < withHint.need - withHint.avail ? bare : withHint;
 }
 
 /** The ribbon. */

@@ -90,6 +90,17 @@ function times(x) {
   return "×" + (t % 10 === 0 ? String(t / 10) : `${Math.floor(t / 10)}.${t % 10}`);
 }
 
+/**
+ * A tray stack count (DESIGN §3.2 item 11, review r5-15): "×2.8", "×3",
+ * "×12": one decimal below 10, whole from 10, so it fits the 28 px envelope
+ * at 11 px. Units are 64ths of a share, so floor would undercount by up to 1.
+ */
+function stackText(u) {
+  if (u >= 9.95) return `×${Math.round(u)}`;
+  const t = Math.round(u * 10);
+  return "×" + (t % 10 === 0 ? String(t / 10) : `${Math.floor(t / 10)}.${t % 10}`);
+}
+
 /** Up to two decimals, trailing zeros dropped ("2.25", "2.5", "3"). */
 function dec2(x) {
   const c = Math.round(x * 100);
@@ -546,7 +557,13 @@ function memoSet(state, key, v) {
 
 let f64 = null; // [Float64Array(1), Uint32Array view], made on first use (A2 rule 2)
 
-/** The gone pane records (hs order) and their FNV-1a fingerprint, two lanes over the exact bits of each leaving time and folds. */
+/**
+ * The Album's records (hs order) and their FNV-1a fingerprint, two lanes over
+ * the exact bits of each leaving time, folds and folded-in fledglings. Every
+ * gone record is one: pane helpers, archive entries and gone fledglings, which
+ * stay in the Album for their 30 days (DESIGN §5.1) before they fold into
+ * their parent's record (review r5-16).
+ */
 function albumScan(state) {
   if (!f64) {
     const buf = new Float64Array(1);
@@ -561,20 +578,23 @@ function albumScan(state) {
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (!(h.gone && h.kind === "pane")) continue;
+    if (!h.gone) continue;
     gone.push(h);
     helpers += helpersIn(h);
     fb[0] = typeof h.missingSince === "number" ? h.missingSince : NaN;
     a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
     b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
-    fb[0] = h.stats && typeof h.stats.folds === "number" ? h.stats.folds : NaN;
+    fb[0] = recordFolds(h);
+    a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
+    b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
+    fb[0] = kidsIn(h);
     a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
     b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
   }
   return { gone, helpers, a: a >>> 0, b: b >>> 0 };
 }
 
-/** The roster's Album: its gone pane helpers (hs order; rows, once built, are kept in Album order). */
+/** The roster's Album: its gone helpers (hs order; rows, once built, are kept in Album order). */
 function albumEntry(state, idx) {
   const prev = memoGet(state, ALBUM);
   if (prev && prev.idx === idx) return prev;
@@ -594,9 +614,26 @@ function albumEntry(state, idx) {
   return c;
 }
 
-/** How many helpers an Album record stands for: an archive entry (R13, r3-04) holds many. */
+/**
+ * How many helpers an Album record stands for: an archive entry (R13, r3-04)
+ * holds many, and a record counts the fledglings folded into it (r5-16).
+ */
 function helpersIn(h) {
-  return typeof h.archive === "number" && h.archive > 0 ? h.archive : 1;
+  return (typeof h.archive === "number" && h.archive > 0 ? h.archive : 1) + kidsIn(h);
+}
+
+/** The fledglings folded into a record (stats.kidsPast), 0 for none. */
+function kidsIn(h) {
+  const k = h.stats && h.stats.kidsPast;
+  return typeof k === "number" && Number.isFinite(k) && k > 0 ? k : 0;
+}
+
+/** A record's Album folds: its own and its folded-in fledglings' (r5-16). */
+function recordFolds(h) {
+  const st = h.stats;
+  if (!st) return 0;
+  const k = typeof st.kidsFolds === "number" && Number.isFinite(st.kidsFolds) && kidsIn(h) > 0 ? st.kidsFolds : 0;
+  return num(st.folds) + k;
 }
 
 /** How many helpers the Album holds (no rows, no fingerprint: every view asks). */
@@ -609,7 +646,7 @@ function albumCount(state, idx) {
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (h.gone && h.kind === "pane") n += helpersIn(h);
+    if (h.gone) n += helpersIn(h);
   }
   memoSet(state, ALBUM_N, { gen: GEN, idx, n });
   return n;
@@ -703,7 +740,7 @@ function albumRow(h, t, style, cache) {
   const nm = h.archive > 0 ? `${formatInt(h.archive)} ${h.archive === 1 ? "helper" : "helpers"}` : String(h.name ?? "");
   let name = cache.names[nm];
   if (name === undefined) name = cache.names[nm] = clip(nm, CLIP.long);
-  const folds = num(h.stats && h.stats.folds);
+  const folds = recordFolds(h);
   const row = Object.freeze({
     helperId: h.id,
     name,
@@ -718,7 +755,7 @@ function albumRow(h, t, style, cache) {
 /** True when `it` still shows `h` as it is now at time `t` in `style`. */
 function rowCurrent(it, h, t) {
   return it.m === h.missingSince && it.j === h.joined && t >= it.lo && t < it.hi &&
-    it.f === num(h.stats && h.stats.folds) && it.n === h.archive && (h.archive > 0 ? it.fr === archiveFrom(h) : it.nm === String(h.name ?? "")) &&
+    it.f === recordFolds(h) && it.n === h.archive && (h.archive > 0 ? it.fr === archiveFrom(h) : it.nm === String(h.name ?? "")) &&
     it.sp === h.species && it.hu === h.hue;
 }
 
@@ -1069,7 +1106,7 @@ function trayVm(state, t, E, r, idx, loops, style) {
         tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · ${when}`;
       }
     }
-    envelopes.push({ helperId: id, type: env.type, units: u, bob: loops.envelope === id, label: u >= 2 ? `×${dec2(u)}` : null, tooltip: clip(tooltip, CLIP.notice) });
+    envelopes.push({ helperId: id, type: env.type, units: u, bob: loops.envelope === id, label: u >= 2 ? stackText(u) : null, tooltip: clip(tooltip, CLIP.notice) });
   }
   return { envelopes, more: Math.max(0, list.length - 6) };
 }
@@ -1082,6 +1119,9 @@ function streakVm(state, E, t) {
     label: times1(1 + E.comboMax * Math.min(r, K.rMax) / K.rMax),
     inStep: inStepAt(state, E, t),
     afterglow: glow > 0 ? formatDuration(glow, { parts: 1 }) : null,
+    // What the banked afterglow does, for the footer chip (review r5-14):
+    // "Afterglow ×1.25 · 12m", or null with none banked.
+    afterglowText: glow > 0 ? `Afterglow ×${dec2(E.glowMult)} · ${formatDuration(glow, { parts: 1 })}` : null,
   };
 }
 
@@ -1236,6 +1276,18 @@ function stringVm(state, style, t) {
   const wishMoment = wishMomentOf(state, t);
   const W = state.wishes;
   const gainShown = Math.max(s.gain, s.needed);
+  // The lines name real gains (review r5-12): the gate can sit inside the
+  // String (W 10–39: 500 of 1,000), so "at N" uses the gain at N, never the
+  // gate's gain at the String's size.
+  const tail = ` (+${Math.round(PRESTIGE.perWish * 100)} % to everything each, forever)`;
+  const inside = s.gate < s.of;
+  const atOf = `at ${formatInt(s.of)}: +${formatInt(s.atOf)}`;
+  let at;
+  if (s.full) at = `Ready: +${formatInt(s.gain)} Wishes${tail}`;
+  else if (!inside) at = `At ${formatInt(s.of)}: +${formatInt(s.atOf)} Wishes${tail}`;
+  else if (s.can) at = `Ready: +${formatInt(s.gain)} Wishes · ${atOf}`;
+  else at = `At ${formatInt(s.gate)}: +${formatInt(s.needed)} Wishes · ${atOf}`;
+  const pot = state.away.pot;
   return {
     cranes: s.cranes,
     of: s.of,
@@ -1251,11 +1303,17 @@ function stringVm(state, style, t) {
       wishes: g.wishes,
     })),
     needed: s.needed,
+    // Shown cranes at which the wish opens (≤ of), and the strand it opens
+    // at when that is inside the String (the tab draws a gate mark), else null.
+    gate: s.gate,
+    gateStrand: inside ? Math.max(1, Math.min(19, Math.round((s.gate / s.of) * 20))) : null,
     strands,
     title: `${formatInt(Math.min(s.cranes, s.of))} / ${formatInt(s.of)} cranes`,
     next: `Next crane in ${cnt(s.nextIn, style)} folds · lifetime ${cnt(s.lifetime, style)}`,
-    at: `At ${formatInt(s.of)}: +${formatInt(gainShown)} Wishes (+${Math.round(PRESTIGE.perWish * 100)} % to everything each, forever)`,
+    at,
     button: `Make the wish (+${formatInt(gainShown)} Wishes)`,
+    // An uncollected away pot is credited by the wish first (review r5-13).
+    potNote: pot && pot.folds > 0 ? `First collects your +${cnt(pot.folds, style)} folds from while you were away.` : null,
     // null, or for 3 s after a wish { phase: "rise" | "settle", strands }:
     // the String as it was wished away (§3.5 wish moment).
     wishMoment,

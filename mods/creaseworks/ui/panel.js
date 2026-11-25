@@ -22,7 +22,7 @@ import { renderString } from "./string.js";
 import { renderSettings } from "./settings.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const PANEL_CLIP = Object.freeze({ folds: 10, rate: 12, count: 5, wishes: 6, boost: 22, footer: 60, tab: 12 });
+export const PANEL_CLIP = Object.freeze({ folds: 10, rate: 12, count: 5, wishes: 6, boost: 22, footer: 60, tab: 12, glow: 24 });
 
 /** Fixed heights of the frame (DESIGN §3.1). */
 export const FRAME = Object.freeze({ header: 44, matTop: 4, boost: 26, tabs: 32, footer: 22, awayTop: 36 });
@@ -241,6 +241,10 @@ function footer(vm, ctx) {
   const pill = (id, label, tip) =>
     h_flex().id(id).h(18).px(6).flex_none().rounded(9).bg(T.raised).tooltip(tip).child(text(label, { size: 11, weight: 600, color: T.foreground }, T));
   if (vm.streak && vm.streak.inStep) row.child(pill("cw-foot-instep", "In step", "In step: every working helper works faster"));
+  else if (vm.streak && typeof vm.streak.afterglowText === "string" && vm.streak.afterglowText) {
+    // The banked afterglow (review r5-14): a static chip, so calm mode is the same.
+    row.child(pill("cw-foot-glow", clip(vm.streak.afterglowText, PANEL_CLIP.glow), "Afterglow: your working helpers keep working faster while it lasts. Clicks made In step bank more."));
+  }
   if (isCalm(vm, ctx)) row.child(pill("cw-foot-calm", "Calm", "Calm mode: no motion (Settings)"));
   return row;
 }

@@ -201,6 +201,43 @@ describe("theme and settings", () => {
     assert.deepEqual(herdr.settings().sounds, { enabled: true });
   });
 
+  test("r5-01: settings().dark models the window appearance apart from the theme (single-name theme)", () => {
+    make({ theme: "paper", appearance: "dark" });
+    let s = herdr.settings();
+    assert.equal(s.dark, true, "a dark OS with a single-name paper theme");
+    assert.equal(s.theme, "paper", "paper still shows");
+    assert.equal(s.theme_light, "paper");
+    assert.equal(s.theme_dark, "paper", "ThemeChoice::One gives the one name for both appearances");
+    assert.deepEqual(herdr.theme(), themesJson.paper, "theme() is the theme showing");
+    make({ theme: "graphite", appearance: "light" });
+    s = herdr.settings();
+    assert.equal(s.dark, false);
+    assert.equal(s.theme, "graphite");
+    assert.deepEqual(herdr.theme(), themesJson.graphite);
+    ctl.setAppearance(null);
+    assert.equal(herdr.settings().dark, true, "null: back in step with the theme");
+    ctl.setAppearance("light");
+    assert.equal(herdr.settings().dark, false);
+  });
+
+  test("r5-01: the shot rig can shoot a theme on the other appearance (runView extra.appearance)", async () => {
+    const { runView } = await import("../../tools/shots/shoot.mjs");
+    const { View, div } = await import("../../tools/mock/gpui-kit.js");
+    class Probe extends View {
+      render() {
+        const s = herdr.settings();
+        return div().id(`dark-${s.dark}-theme-${s.theme}-raised-${herdr.theme().raised}-window-${globalThis.window.appearance()}`);
+      }
+    }
+    const entry = { name: "probe", size: { width: 100, height: 40 }, scenario: {} };
+    const paperDark = await runView(Probe, entry, "paper", { appearance: "dark" });
+    assert.equal(paperDark.tree.id, `dark-true-theme-paper-raised-${themesJson.paper.raised}-window-dark`);
+    const graphiteLight = await runView(Probe, entry, "graphite", { appearance: "light" });
+    assert.equal(graphiteLight.tree.id, `dark-false-theme-graphite-raised-${themesJson.graphite.raised}-window-light`);
+    const inStep = await runView(Probe, entry, "paper");
+    assert.equal(inStep.tree.id, `dark-false-theme-paper-raised-${themesJson.paper.raised}-window-light`);
+  });
+
   test("themes() lists presets then shipped files with light flags", () => {
     make();
     const list = herdr.themes();

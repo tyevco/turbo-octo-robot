@@ -588,6 +588,72 @@ test("r4-07: level C never loses a helper: finished past the edge fold into '+N'
   assert.deepEqual(ctx.calls, [["showGroup", "needs"]]);
 });
 
+test("r5-17: at zoom-1.5 widths the narrow hint gives way before any helper's mark or count is pushed off the ribbon", () => {
+  // The defect: 1100x700 at zoom 1.5 (ribbon W 465, pip area 215) with 3
+  // needing you, 1 finished, 5 working and 4 resting. The compact hint left
+  // 68 px; level C (184 px of tallies) was returned anyway and the finished,
+  // working and resting counts were clipped past the overflow edge.
+  const base = F.scenario("ribbon-34", { window: 1100 }).vm;
+  const pickMarks = (idx) => idx.map((i) => base.ribbon.marks[i]);
+  const marks = pickMarks([0, 1, 2, 3, 5, 6, 7, 8, 9, 19, 20, 21, 22]);
+  assert.deepEqual(marks.map((m) => m.status[0]).join(""), "bbbdwwwwwiiii");
+  const W = 465;
+  for (const viewLevel of [null, "A", "B"]) {
+    for (const save of [null, "Save problem"]) {
+      const vm = { ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: viewLevel, save, pill: null } };
+      const ctx = makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true, panelShown: true });
+      const lay = ribbonLayout(vm, ctx, W);
+      const tag = `view ${viewLevel} save ${save}`;
+      assert.ok(lay.need <= lay.avail, `${tag}: ${lay.need} within ${lay.avail} (level ${lay.level})`);
+      assert.equal(lay.hintDropped, true, `${tag}: the hint gives way`);
+      assert.ok(!lay.specs.some((x) => x.key === "hint"), tag);
+      assert.equal(lay.specs.some((x) => x.key === "save"), Boolean(save), `${tag}: the save chip stays`);
+      const json = renderRibbon(vm, {}, ctx).toJSON();
+      assert.ok(!ids(json).includes("cw-rib-hint"), `${tag}: no hint drawn`);
+      if (save) assert.ok(ids(json).includes("cw-rib-save"), `${tag}: save chip drawn`);
+      const shown = ids(json).filter((id) => id.startsWith("cw-rib-m-")).length;
+      assert.equal(shown + lay.tallies.reduce((a, t) => a + t.count, 0), 13, `${tag}: every helper a mark or counted`);
+      for (const t of lay.tallies) assert.ok(ids(json).includes(`cw-rib-tally-${t.status}`), `${tag}: tally ${t.status}`);
+    }
+  }
+  // Without a save chip the bare middle (215 px) holds all 13 as pips (98 px).
+  const bare = ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: "A" } }, makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true, panelShown: true }), W);
+  assert.equal(bare.level, "B");
+  assert.equal(bare.need, 98);
+  // Where the hint fits it stays: W 691 holds the compact hint beside 13 chips.
+  const w691 = ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: "A" } }, makeCtx("graphite", { width: 691, height: 30 }, { narrowHint: true, panelShown: true }), 691);
+  assert.ok(w691.need <= w691.avail && w691.specs.some((x) => x.key === "hint") && !w691.hintDropped, JSON.stringify([w691.level, w691.need, w691.avail]));
+  // No hint, no change: hintDropped only reports a hint that was offered.
+  assert.equal(ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [] } }, makeCtx("graphite", { width: W, height: 30 }), W).hintDropped, false);
+
+  // Level C is never chosen when it is wider than level B: at W 300 (pip
+  // area 50) neither fits, and C's four tallies would need more than B's pips.
+  const tiny = ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: "A" } }, makeCtx("graphite", { width: 300, height: 30 }), 300);
+  assert.equal(tiny.level, "B", `need ${tiny.need} avail ${tiny.avail}`);
+  assert.equal(tiny.need, 98);
+
+  // Sweep the zoom-1.5 widths (1100 and 1440 windows) with the hint, every helper count.
+  const leads = [{ narrowHint: true }, { narrowHint: true, save: "Save problem" }, { narrowHint: true, pill: "Welcome back +12.4M" }];
+  for (const Wd of [465, 691]) {
+    for (let n = 1; n <= 34; n++) {
+      for (const l of leads) {
+        for (const panelShown of [true, false]) {
+          const v = ribbonOf(n, Wd, { save: l.save ?? null, pill: l.pill ?? null });
+          const c = makeCtx("graphite", { width: Wd, height: 30 }, { narrowHint: true, panelShown });
+          const ly = ribbonLayout(v, c, Wd);
+          const tag = `n ${n} W ${Wd} ${JSON.stringify(l)} shown ${panelShown}`;
+          assert.ok(ly.lead + ly.need <= ly.w, `${tag}: ${ly.lead} + ${ly.need} > ${ly.w} (level ${ly.level})`);
+          if (l.save) assert.ok(ly.specs.some((x) => x.key === "save"), `${tag}: save chip kept`);
+          const j = renderRibbon(v, {}, c).toJSON();
+          const shown = ids(j).filter((id) => id.startsWith("cw-rib-m-")).length;
+          assert.equal(shown + ly.tallies.reduce((a, t) => a + t.count, 0), n, `${tag}: every helper has a mark or a tally`);
+          assert.equal(ids(j).includes("cw-rib-hint"), !ly.hintDropped, `${tag}: the hint is drawn unless dropped`);
+        }
+      }
+    }
+  }
+});
+
 test("r4-07: the engine's level C and the ribbon's fit agree (no lead), at every width and mix", async () => {
   const { engine, seeded, writer, agent, observeAction, T0 } = await import("../engine/_util.mjs");
   const mixes = [[10, 90, 20, 10], [120, 4, 4, 2], [3, 60, 100, 37], [0, 140, 0, 0], [7, 5, 64, 54]];

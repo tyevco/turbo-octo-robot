@@ -215,3 +215,95 @@ test("r2-24: perks wrap instead of losing their ends (§3.5 lists them in full)"
   assert.ok(shown.includes("Keep Crisp Corners and Mail Sorter between runs"));
   assert.ok(shown.includes("Start each run with 10 Paper Stacks and 5 Bone Folders"));
 });
+
+// ---------------------------------------------------------------------------
+// r5-12, r5-13, r5-14, r5-15
+
+test("r5-15: the tray draws the vm's stack count (fractional units), not a floored one; none below 2", async () => {
+  const s = seeded(11);
+  const ids = ["aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004", "aaaa0005"];
+  const units = [1.5, 1.97, 2, 2.75, 8.98];
+  ids.forEach((id, i) => { s.envelopes[id] = { type: i % 2 ? "rush" : "bundle", units: units[i], landedAt: T0 - 60000 + i, lastAt: T0 - 60000 + i }; });
+  const vm = engine.view(s, T0, { role: "panel", width: 420 });
+  const json = renderMat(vm, { tab: "flock" }, makeCtx({ width: 420 })).toJSON();
+  const shown = ids.map((id) => texts(findById(json, `cw-env-${id}-art`)));
+  assert.deepEqual(shown, [[], [], ["×2"], ["×2.8"], ["×9"]]);
+  assert.deepEqual(vm.tray.envelopes.map((e) => e.label), [null, null, "×2", "×2.8", "×9"]);
+  // a longer count sits under a smaller seal, inside the 28 px envelope, at 11 px
+  const art = findById(json, `cw-env-${ids[3]}-art`);
+  const holder = holderOf(art, "×2.8");
+  assert.equal(styleVal(holder, "w"), 28);
+  assert.equal(styleVal(holder, "text_size"), 11);
+  assert.equal(styleVal(holderOf(findById(json, `cw-env-${ids[2]}-art`), "×2"), "text_size"), 11);
+  // a vm without labels (older fixtures) still counts from units, unfloored
+  const { stackLabel } = await import("../../mods/creaseworks/ui/mat.js");
+  assert.equal(stackLabel({ units: 2.5 }), "×2.5");
+  assert.equal(stackLabel({ units: 12.4 }), "×12");
+  assert.equal(stackLabel({ units: 1.99 }), null);
+});
+
+test("r5-14: banked afterglow shows as a static footer chip and in the streak tooltip; In step replaces it", async () => {
+  const { renderPanel } = await import("../../mods/creaseworks/ui/panel.js");
+  const s = seeded(11);
+  s.hand.afterglowMs = 12 * 60000;
+  for (const calm of [false, true]) {
+    s.settings.calm = calm;
+    const vm = engine.view(s, T0, { role: "panel", width: 320 });
+    const json = renderPanel(vm, { tab: "flock" }, makeCtx({ calm })).toJSON();
+    const chip = findById(json, "cw-foot-glow");
+    assert.ok(chip, `calm ${calm}`);
+    assert.deepEqual(texts(chip), ["Afterglow ×1.25 · 12m"]);
+    assert.ok(!(chip.styles || []).some((st) => st[0] === "loop" || st[0] === "transition"), "static");
+    assert.match(styleVal(findById(json, "cw-streak"), "tooltip"), / · Afterglow ×1\.25 · 12m$/);
+  }
+  s.settings.calm = false;
+  s.hand.r = 40;
+  s.hand.lastHitAt = T0 - 100;
+  const vm = engine.view(s, T0, { role: "panel", width: 320 });
+  assert.equal(vm.streak.inStep, true);
+  const json = renderPanel(vm, { tab: "flock" }, makeCtx()).toJSON();
+  assert.equal(findById(json, "cw-foot-glow"), null);
+  assert.ok(findById(json, "cw-foot-instep"));
+  s.hand.afterglowMs = 0;
+  s.hand.r = 0;
+  assert.equal(findById(renderPanel(engine.view(s, T0, { role: "panel", width: 320 }), { tab: "flock" }, makeCtx()).toJSON(), "cw-foot-glow"), null);
+});
+
+test("r5-12: a gate inside the String is marked in the gap before its strand; a full-String gate draws no mark", () => {
+  const s = seeded(11);
+  s.wishes = 10;
+  s.wishCount = 1;
+  s.lifetime = engine.lifetimeFor(1300);
+  const vm = engine.view(s, T0, { role: "panel", width: 320, tab: "string" });
+  const json = renderString(vm, { tab: "string" }, makeCtx()).toJSON();
+  const gate = findById(json, "cw-string-gate");
+  assert.ok(gate);
+  assert.equal(styleVal(gate, "tooltip"), "The wish opens at 500 cranes");
+  // 304 px card, 20 × 12 px strands, gap 3: the row starts at 3.5; gap before strand 10 is centred at 3.5 + 150 − 1.5
+  const line = gate.children.find((c) => c && typeof c === "object" && c.kind !== "text");
+  close1(styleVal(gate, "left") + styleVal(line, "left") + styleVal(line, "w") / 2, 3.5 + 10 * 15 - 1.5);
+  assert.ok(texts(json).includes("At 500: +5 Wishes · at 1,000: +10"));
+  const btn = findById(json, "cw-string-wish");
+  assert.equal(styleVal(btn, "tooltip"), "Reach 500 cranes to make the wish");
+  s.wishes = 0;
+  s.wishCount = 0;
+  s.lifetime = engine.lifetimeFor(800);
+  assert.equal(findById(renderString(engine.view(s, T0, { role: "panel", width: 320, tab: "string" }), { tab: "string" }, makeCtx()).toJSON(), "cw-string-gate"), null);
+});
+
+test("r5-13: the confirm card says an uncollected away pot is collected first", () => {
+  const s = seeded(11);
+  s.lifetime = engine.lifetimeFor(1000);
+  s.away.pot = { folds: 28036.8, seconds: 28800, liveMs: 0, needs: [], rested: 0, tasks0: [] };
+  const vm = engine.view(s, T0, { role: "panel", width: 320, tab: "string" });
+  const json = renderString(vm, { tab: "string", confirm: "wish", armedAt: 0, now: 2000 }, makeCtx()).toJSON();
+  const card = findById(json, "cw-string-confirm");
+  assert.ok(texts(card).some((x) => /^First collects your \+28\.0K folds from while you were away\.$/.test(x)), texts(card).join(" | "));
+  s.away.pot = null;
+  const none = renderString(engine.view(s, T0, { role: "panel", width: 320, tab: "string" }), { tab: "string", confirm: "wish", armedAt: 0, now: 2000 }, makeCtx()).toJSON();
+  assert.ok(!texts(findById(none, "cw-string-confirm")).some((x) => /while you were away/.test(x)));
+});
+
+function close1(a, b) {
+  assert.ok(Math.abs(a - b) < 0.11, `${a} ≈ ${b}`);
+}

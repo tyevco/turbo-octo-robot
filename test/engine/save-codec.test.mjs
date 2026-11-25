@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "./_util.mjs";
 import { SAVE_VERSION, saveCheck } from "../../mods/creaseworks/engine/save-codec.js";
+import { jsonBytes, saveBytes } from "../../mods/creaseworks/engine/helpers.js";
 
 function played() {
   const s = seeded(21);
@@ -591,4 +592,45 @@ test("parseSaveSteps gives parseSave's result for every kind of input, in steps 
   assert.equal(engine.parseSave(cases.shape).reason, "shape");
   assert.equal(engine.parseSave(cases.badPacked).reason, "shape");
   assert.equal(engine.parseSave(cases.old1).ok, true);
+});
+
+// Review r5-07: the whole save is held under K.saveBudget by an estimate
+// (helpers.js saveBytes); it must count strings as herdr counts the write
+// (UTF-8 bytes of the JSON text) and never fall short of the real size.
+test("r5-07: jsonBytes is the UTF-8 size of a string as JSON writes it", () => {
+  const cases = [
+    "", "plain ascii", 'quote " and \\ backslash', "tab\tand\nnewline\u0001", "claude · refactor",
+    "支払い照合サービスをリファクタリング", "emoji 👩🏽‍💻 and 🧪🔥", "lone \ud83d surrogate", "\udc00", "é".repeat(80),
+  ];
+  for (const s of cases) assert.equal(jsonBytes(s), Buffer.byteLength(JSON.stringify(s), "utf8"), JSON.stringify(s));
+  assert.equal(jsonBytes(null), 4);
+  assert.equal(jsonBytes(undefined), 4);
+});
+
+test("r5-07: the save estimate is never below the real save, and close to it", () => {
+  const s = seeded(57);
+  const me = writer(s, "w-7f3a9c2e41");
+  const real = (i, status, turn, extra) => agent(i, status, turn, { addr: `w${i % 9}:t${i}`, created: T0 - 86400000 + i * 997, ...extra });
+  let t = T0;
+  const check = (what) => {
+    const bytes = Buffer.byteLength(engine.serialize(s), "utf8");
+    const est = saveBytes(s);
+    assert.ok(est >= bytes, `${what}: estimate ${est} < ${bytes} bytes`);
+    assert.ok(est <= bytes * 1.6 + 32768, `${what}: estimate ${est} far above ${bytes} bytes`);
+  };
+  check("a new game");
+  // helpers that come and go with long titles, sub-agents and finished tasks
+  for (let batch = 0; batch < 12; batch++) {
+    const list = Array.from({ length: 30 }, (_, i) => real(10000 + batch * 30 + i, "working", 0, {
+      title: batch % 2 ? "codex · 支払い照合サービスの不安定な統合テストを直す 🧪🔥" : 'claude · fix "quoted" \\ paths in the billing service',
+      space: batch % 3 ? "payments" : "支払い", tab: "integration",
+    }));
+    const kids = list.slice(0, 10).map((o, k) => real(50000 + batch * 30 + k, "working", 0, { kind: "kid", pane: null, parent: o.addr, title: o.title }));
+    me.act(observeAction((t += 1000), [...list, ...kids]));
+    me.act(observeAction((t += 61000), [...list, ...kids].map((o) => ({ ...o, turn: 1, status: "idle" }))));
+    check(`batch ${batch} present`);
+    me.act(observeAction((t += 1000), []));
+    check(`batch ${batch} gone`);
+  }
+  assert.ok(Object.values(s.helpers).some((h) => h.compact), "some records compacted");
 });

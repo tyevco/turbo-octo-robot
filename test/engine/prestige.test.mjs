@@ -135,3 +135,88 @@ test("r1-18: a wish records the wish moment; the vm draws it (rise, then settle,
   delete s.ui.lastWish;
   assert.equal(engine.parseSave(engine.serialize(s)).state.ui.lastWish, null);
 });
+
+// Review r5-12: for W 10–39 the gate opens at 100·needed shown cranes while
+// the String holds 100·max(10, needed): the String is half full when the
+// wish opens. Every line must name the gain it really gives.
+test("r5-12: the String's gate, lines and notification name the real gains (W = 10, 1 wish made)", async () => {
+  const { wanted } = await import("../../mods/creaseworks/glue/notify.js");
+  const s = seeded(8);
+  s.wishes = 10;
+  s.wishCount = 1;
+  const at = (c) => {
+    s.lifetime = engine.lifetimeFor(c);
+    return { info: engine.stringInfo(s), vm: engine.view(s, T0, { role: "panel", width: 320, tab: "string" }).string };
+  };
+  let { info, vm } = at(1499);
+  assert.equal(info.of, 1000);
+  assert.equal(info.gate, 500);
+  assert.equal(info.can, false);
+  assert.equal(vm.gate, 500);
+  assert.equal(vm.gateStrand, 10);
+  assert.equal(vm.title, "499 / 1,000 cranes");
+  assert.equal(vm.at, "At 500: +5 Wishes · at 1,000: +10");
+  ({ info, vm } = at(1500));
+  assert.equal(info.can, true);
+  assert.equal(info.full, false);
+  assert.equal(vm.at, "Ready: +5 Wishes · at 1,000: +10");
+  assert.equal(vm.button, "Make the wish (+5 Wishes)");
+  // the "at 1,000" gain is what the String gives when it is full
+  s.lifetime = engine.lifetimeFor(100 * s.wishes + info.of);
+  assert.equal(engine.wishInfo(s).gain, info.atOf);
+  // notification: ready but not full is not "full"
+  s.lifetime = engine.lifetimeFor(1500);
+  s.settings.notify.master = true;
+  const slot = { state: s };
+  let n = wanted(slot, T0, { day: s.day, quiet: false });
+  assert.equal(n.event, "full");
+  assert.equal(n.title, "A wish is ready");
+  ({ info, vm } = at(2000));
+  assert.equal(info.full, true);
+  assert.equal(vm.gateStrand, 10, "the gate mark stays where the wish opened");
+  assert.equal(vm.at, "Ready: +10 Wishes (+5 % to everything each, forever)");
+  assert.ok(vm.strands.every((x) => x === 1));
+  n = wanted(slot, T0, { day: s.day, quiet: false });
+  assert.equal(n.title, "Your string is full");
+});
+
+test("r5-12: for every W the 'at' line's gain at the String's size is the real one; no gate mark when the gate is the end", () => {
+  for (const W of [0, 5, 10, 15, 20, 24, 39, 40, 41, 100, 400]) {
+    const s = seeded(8);
+    s.wishes = W;
+    s.wishCount = W > 0 ? 1 : 0;
+    s.lifetime = engine.lifetimeFor(100 * W + 1);
+    const info = engine.stringInfo(s);
+    const vm = engine.view(s, T0, { role: "panel", width: 320, tab: "string" }).string;
+    assert.ok(info.gate <= info.of, `W ${W}`);
+    assert.equal(vm.gateStrand === null, info.gate === info.of, `W ${W}`);
+    s.lifetime = engine.lifetimeFor(100 * W + info.gate - 1);
+    assert.equal(engine.wishInfo(s).can, false, `W ${W}: closed below the gate`);
+    s.lifetime = engine.lifetimeFor(100 * W + info.gate);
+    assert.equal(engine.wishInfo(s).can, true, `W ${W}: open at the gate`);
+    s.lifetime = engine.lifetimeFor(100 * W + info.of);
+    assert.equal(engine.wishInfo(s).gain, info.atOf, `W ${W}: gain at the String's size`);
+    assert.match(vm.at, new RegExp(`(^A|a)t ${engine.formatInt(info.of)}: \\+${engine.formatInt(info.atOf)}( |$)`), `W ${W}: ${vm.at}`);
+  }
+});
+
+// Review r5-13: the away pot is earned; a wish made while it waits credits it.
+test("r5-13: a wish credits an uncollected away pot first (lifetime, the gain), and the confirm says so", () => {
+  const { s, me } = ready(0);
+  engine.advance(s, T0 + 50000 + 8 * 3600000);
+  const pot = s.away.pot;
+  assert.ok(pot && pot.folds > 0, "an away pot waits");
+  const vm = engine.view(s, T0 + 50000 + 8 * 3600000, { role: "panel", width: 320, tab: "string" }).string;
+  assert.match(vm.potNote, /^First collects your \+\S+ folds from while you were away\.$/);
+  const L = s.lifetime;
+  const before = engine.wishInfo(s).gain;
+  const ev = me.act({ t: T0 + 50000 + 8 * 3600000, type: "wish" });
+  const earn = ev.find((e) => e.kind === "earn" && e.source === "away");
+  assert.ok(earn, "the pot is credited");
+  close(earn.amount, pot.folds);
+  assert.ok(s.lifetime >= L + pot.folds - 1e-6, "the pot reaches lifetime");
+  assert.equal(s.away.pot, null);
+  assert.ok(ev.some((e) => e.kind === "wish" && e.gain >= before));
+  assert.ok(s.notices.some((n) => n.kind === "away"), "never silent: the footer notice says what was credited");
+  assert.equal(engine.view(s, T0 + 50000 + 8 * 3600000, { role: "panel", width: 320, tab: "string" }).string.potNote, null);
+});

@@ -5,7 +5,7 @@
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { buildObservation, signature, kidStatus, paneStatus } from "../../mods/creaseworks/glue/observe.js";
+import { buildObservation, observeFromAgents, signature, kidStatus, paneStatus } from "../../mods/creaseworks/glue/observe.js";
 import { normalizeAgent, normalizeTerminal, bridgeOut } from "../../tools/mock/controller.js";
 import { win, agent, term, flockScenario, engine, SAVE } from "./_util.mjs";
 import { READ_FAIL_TEXT, READ_FAIL_MS } from "../../mods/creaseworks/glue/session.js";
@@ -184,31 +184,32 @@ for (const key of ["constructor", "toString", "valueOf"]) {
     assert.equal(w.ctl.errors.length, 0, "no script task error");
     assert.ok(w.ctl.writes.filter((x) => x.path === SAVE && x.ok !== false).length > 0, "the save cadence ran");
     assert.ok(w.ctl.readFile(SAVE) !== null, "save.json is there");
-    assert.ok(w.slot.readFail.agents, "the failure spell is recorded");
-    assert.ok(w.slot.readFail.agents.count >= 60, "one per tick");
-    assert.equal(Object.keys(w.slot.state.helpers).length, 0, "no good reading yet: no helpers");
+    assert.ok(w.slot.readFail.terminals, "the failure spell is recorded");
+    assert.ok(w.slot.readFail.terminals.count >= 60, "one per tick");
+    assert.equal(w.slot.readFail.agents, undefined, "agents() itself reads");
+    assert.equal(Object.keys(w.slot.state.helpers).length, 0, "no terminals() reading yet: no helper ids to give (created_ms)");
     // The one-time notice: shown at the first throw for READ_FAIL_MS, not re-flashed every tick.
     assert.equal(w.slot.flash, null, "the notice has run its time");
     w.dispose();
     w = win({ agents: [agent(1)], terminals: [term(1, "working", { labels: { [key]: "x" } })] });
     const v2 = await w.copy("panel");
     await w.advance(2000);
-    assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.agents, "said once, at once");
+    assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.terminals, "said once, at once");
     const until = w.slot.flash.until;
     await w.advance(5000);
     assert.equal(w.slot.flash.until, until, "not flashed again each tick");
     const tree = JSON.stringify(w.render(v2).tree);
-    assert.ok(tree.includes("Agent list unreadable"), "the panel shows it");
+    assert.ok(tree.includes("Agent details unreadable"), "the panel shows it");
     // The label goes: observing resumes, the spell ends.
     w.ctl.setTerminals([term(1, "working", { labels: { where: "main / 1" } })]);
     await w.advance(2000);
     assert.equal(Object.keys(w.slot.state.helpers).length, 1, "observed again");
-    assert.equal(w.slot.readFail.agents, undefined, "the spell is over");
+    assert.equal(w.slot.readFail.terminals, undefined, "the spell is over");
     assert.ok(v);
   });
 }
 
-test("r4-01: a label appearing mid-run keeps the last good observation: helpers stay, folds keep coming, saves land", async () => {
+test("r4-01/r5-11: a label appearing mid-run: pane agents still observed from agents(); folds keep coming, saves land", async () => {
   w = win({ agents: [agent(1), agent(2, "blocked")], terminals: [term(1, "working"), term(2, "blocked")] });
   await w.copy("panel");
   await w.copy("ribbon");
@@ -216,23 +217,112 @@ test("r4-01: a label appearing mid-run keeps the last good observation: helpers 
   const st = w.slot.state;
   const before = Object.values(st.helpers).map((h) => `${h.addr}:${h.status}`).sort();
   assert.deepEqual(before, ["t1:working", "t2:blocked"]);
-  const live = w.slot.live;
-  const panes = w.slot.panes;
+  const ids = Object.keys(st.helpers).sort();
   w.ctl.setTerminals([term(1, "working", { labels: { toString: "y" } }), term(2, "blocked")]);
   const writes = w.ctl.writes.length;
   const bank = st.lifetime;
   await w.advance(1000);
-  assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.agents);
+  assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.terminals);
   assert.ok(READ_FAIL_MS >= 5000, "long enough to read");
   await w.advance(60000);
   assert.equal(w.ctl.runErrors().length, 0);
   assert.equal(w.ctl.errors.length, 0);
-  assert.deepEqual(Object.values(w.slot.state.helpers).map((h) => `${h.addr}:${h.status}`).sort(), before, "last good observation stands");
-  assert.equal(w.slot.live, live, "liveness as last read");
-  assert.equal(w.slot.panes, panes, "pane ids as last read");
+  assert.deepEqual(Object.values(w.slot.state.helpers).map((h) => `${h.addr}:${h.status}`).sort(), before, "nothing changed: same helpers");
+  assert.deepEqual(Object.keys(w.slot.state.helpers).sort(), ids, "same helper ids (created_ms carried over)");
+  assert.deepEqual(Object.keys(w.slot.live).sort(), ["t1", "t2"], "liveness from agents()");
+  assert.deepEqual({ ...w.slot.panes }, { t1: "p1", t2: "p2" }, "pane ids from agents()");
   assert.ok(w.slot.state.lifetime > bank, "advance still runs: the working helper earns");
   assert.ok(w.ctl.writes.length > writes, "the save cadence still runs");
   assert.ok(w.ctl.readFile(SAVE) !== null);
+});
+
+// r5-11: while terminals() keeps throwing, agents() still gives every pane
+// agent's status. Observing used to freeze: a waiting agent kept earning and
+// never showed needs-you, and the notice ran out after READ_FAIL_MS.
+test("r5-11: terminals() throwing: an agent that becomes blocked stops earning and shows needs-you; a finish pays once it reads", async () => {
+  w = win({
+    agents: [agent(1), agent(2)],
+    terminals: [term(1), term(2), { address: "k9", status: "working", parent: "t2", created_ms: 9 }],
+  });
+  const panel = await w.copy("panel");
+  await w.advance(5000);
+  const st = w.slot.state;
+  const h = (addr) => Object.values(st.helpers).find((x) => x.addr === addr && !x.gone);
+  assert.equal(h("t2").status, "working");
+  assert.equal(h("k9").kind, "kid");
+  const ids = Object.keys(st.helpers).sort();
+  // A prototype-named label makes every terminals() throw; t2 then waits for input (agents() says so).
+  w.ctl.setTerminals([term(1, "working", { labels: { toString: "y" } }), term(2, "blocked"), { address: "k9", status: "idle", parent: "t2", created_ms: 9 }]);
+  w.ctl.setAgents([agent(1), agent(2, "blocked")]);
+  await w.advance(2000);
+  assert.equal(w.slot.readFail.terminals && w.slot.readFail.terminals.count > 0, true, "terminals() throws");
+  assert.equal(h("t2").status, "blocked", "needs-you from agents()");
+  assert.equal(h("t1").status, "working");
+  assert.equal(h("k9").status, "working", "fledglings keep their last state");
+  assert.deepEqual(Object.keys(st.helpers).sort(), ids, "same helpers, same ids");
+  // Earning follows: one working pane agent (t1) plus the frozen fledgling, not two.
+  await w.advance(READ_FAIL_MS + 1000);
+  assert.equal(w.slot.flash, null, "the notice has run its time");
+  assert.equal(h("t2").status, "blocked", "still shown as needing you after the notice");
+  await w.advance(1000);
+  assert.equal(panel.session.vm().header.counts.needs, 1, "the Needs you count shows it");
+  assert.equal(panel.session.vm().header.counts.working, 1, "only t1 works (plus its frozen fledgling on t2)");
+  const l0 = st.lifetime;
+  await w.advance(10000);
+  assert.ok(st.lifetime > l0, "t1 still earns");
+  // t2 is answered and t1 finishes a turn (agents() done): the turn counter is terminals()' own,
+  // so the reward waits for it and is paid exactly once when it reads again.
+  w.ctl.setAgents([agent(1, "done"), agent(2)]);
+  w.ctl.setTerminals([term(1, "idle", { turn: 1, labels: { toString: "y" } }), term(2, "working"), { address: "k9", status: "idle", parent: "t2", created_ms: 9 }]);
+  await w.advance(2000);
+  assert.equal(h("t1").status, "done", "done from agents()");
+  assert.equal(h("t2").status, "working");
+  assert.equal(h("t1").lastTurn, 0, "no turn read yet: no finish paid");
+  const tasks = h("t1").stats.tasks;
+  // A new agent appears while terminals() throws: it waits (no created_ms, so no id of its own yet).
+  w.ctl.setAgents([agent(1, "done"), agent(2), agent(3)]);
+  await w.advance(2000);
+  assert.equal(h("t3"), undefined, "a new agent waits for terminals()");
+  assert.ok("t3" in w.slot.live, "but it is live (agents())");
+  // The label goes: the finish is paid once, the new agent joins, the fledgling updates.
+  w.ctl.setTerminals([term(1, "idle", { turn: 1 }), term(2, "working"), term(3), { address: "k9", status: "idle", parent: "t2", created_ms: 9 }]);
+  await w.advance(2000);
+  assert.equal(w.slot.readFail.terminals, undefined, "the spell is over");
+  assert.equal(h("t1").lastTurn, 1);
+  assert.equal(h("t1").stats.tasks, tasks + 1, "paid once");
+  await w.advance(3000);
+  assert.equal(h("t1").stats.tasks, tasks + 1, "never twice");
+  assert.ok(h("t3"), "the new agent joined");
+  assert.equal(h("k9").status, "idle");
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r5-11: observeFromAgents: agents()' statuses, carried terminal fields, frozen fledglings, waiting newcomers", () => {
+  const [a, t] = host(
+    [agent(1, "working"), agent(2, "blocked"), agent(4)],
+    [term(1, "error", { turn: 3, created_ms: 11 }), term(2, "working", { turn: 5, created_ms: 22 }), term(3, "working", { created_ms: 33 }),
+      { address: "k9", status: "working", parent: "t2", created_ms: 9 }, { address: "k8", status: "working", parent: "t3", created_ms: 8 }],
+  );
+  assert.equal(observeFromAgents(a, null), null, "nothing to carry over");
+  const obs = observeFromAgents(a, t);
+  const m = by(obs.list);
+  assert.equal(m.get("t1").status, "working", "a stale error word does not hold it blocked");
+  assert.equal(m.get("t1").created, 11);
+  assert.equal(m.get("t1").turn, 3, "turn as last read");
+  assert.equal(m.get("t2").status, "blocked", "agents()' status");
+  assert.equal(m.get("t2").created, 22);
+  assert.equal(m.get("k9").status, "working", "fledgling frozen");
+  assert.equal(m.get("k9").parent, "t2");
+  assert.equal(m.has("t3"), false, "a pane agent gone from agents() leaves");
+  assert.equal(m.has("k8"), false, "and so does its fledgling");
+  assert.equal(m.has("t4"), false, "a newcomer without created_ms waits");
+  assert.deepEqual([...obs.live.keys()].sort(), ["k9", "t1", "t2", "t4"]);
+  assert.equal(obs.panes.get("t4"), "p4");
+  // Hostile addresses stay data.
+  const [a2, t2] = host([agent(1, "blocked", { address: "__proto__" })], [{ address: "__proto__", status: "working", created_ms: 1 }]);
+  const o2 = observeFromAgents(a2, t2);
+  assert.equal(o2.list[0].addr, "__proto__");
+  assert.equal(o2.list[0].status, "blocked");
 });
 
 test("r4-01: a layout() that throws keeps the last good layout; the tick and keys still act", async () => {
@@ -272,5 +362,6 @@ test("r4-01: a layout() that throws keeps the last good layout; the tick and key
 test("r4-01: the read-failure notices keep their key words on a narrow rail", () => {
   assert.equal(railFlash(READ_FAIL_TEXT.agents, 64), "Agent list unreadable");
   assert.equal(railFlash(READ_FAIL_TEXT.layout, 64), "Layout unreadable");
+  assert.equal(railFlash(READ_FAIL_TEXT.terminals, 64), "Agent details unreadable");
   for (const t of Object.values(READ_FAIL_TEXT)) assert.equal(railFlash(t, 200), t, "whole on a wide rail");
 });

@@ -9,7 +9,10 @@
 // 40 sprites, never 1,000. The sprite is drawn at its own aspect ratio
 // (`strandSize`) so its crane rows sit exactly on the fill's row grid and the
 // clip edge always falls in the gap between two cranes (review r3-20); the
-// partial crane stays in the "Next crane in …" line. Then the next-crane
+// partial crane stays in the "Next crane in …" line. When the wish opens
+// before the String is full (`vm.string.gateStrand`, W 10–39: at 500 of
+// 1,000), a static S.node gate mark stands in the gap before that strand
+// (review r5-12). Then the next-crane
 // and gate lines, the wish button (disabled below the gate), the two-step
 // confirm card whose "Make the wish" arms 1.5 s after the card appeared
 // (`ui.armedAt` / `ui.now`, never a clock read here), what a wish clears and
@@ -186,7 +189,23 @@ function strands(s, ctx, calm) {
         .child(lift),
     );
   });
-  return div().id("cw-string-card").relative().flex_none().w(cw).h(STRAND.card).rounded(8).bg(S.mat).overflow_hidden().child(row);
+  const gi = gateStrand(s);
+  const card = div().id("cw-string-card").relative().flex_none().w(cw).h(STRAND.card).rounded(8).bg(S.mat).overflow_hidden().child(row);
+  if (gi !== null) {
+    // The 20 strands are centred: the gap before strand `gi` is at a fixed x.
+    const rowW = STRAND.count * sw + (STRAND.count - 1) * STRAND.gap;
+    const x = Math.round(((cw - rowW) / 2 + gi * (sw + STRAND.gap) - STRAND.gap / 2 - 1) * 10) / 10;
+    const tip = clip(`The wish opens at ${int(num(s.gate))} cranes`, STRING_CLIP.line);
+    card.child(div().id("cw-string-gate").absolute().top(2).left(x - 3).w(8).h(sh + 4).tooltip(tip)
+      .child(div().absolute().top(0).left(3).w(2).h(sh + 4).rounded(1).bg(S.node)));
+  }
+  return card;
+}
+
+/** The strand (1..19) the wish opens before when the gate is inside the String, else null. */
+export function gateStrand(s) {
+  const g = s && s.gateStrand;
+  return typeof g === "number" && Number.isInteger(g) && g >= 1 && g < STRAND.count ? g : null;
 }
 
 function confirmCard(s, L, ui, ctx) {
@@ -209,7 +228,7 @@ function confirmCard(s, L, ui, ctx) {
       tooltip: armed ? "Reset this run for the Wishes" : `Ready in ${Math.max(1, Math.ceil(wait / 1000))} s`,
       onClick: (e, cx) => wish(cx),
     }, T));
-  return v_flex()
+  const card = v_flex()
     .id("cw-string-confirm")
     .w(cardWidth(ctx))
     .p(12)
@@ -222,7 +241,10 @@ function confirmCard(s, L, ui, ctx) {
     // at 784 px the card's end is below the fold (§3.5, review r1-26).
     .child(text("Make the wish?", { size: 13, weight: 600, color: T.foreground }, T))
     .child(text(clip(`+${int(L.gain)} Wishes: +5 % to everything each, forever`, STRING_CLIP.line), { size: 12, weight: 600, color: T.foreground }, T))
-    .child(actions)
+    .child(actions);
+  // An uncollected away pot is credited first (review r5-13): said on the card.
+  if (typeof s.potNote === "string" && s.potNote) card.child(text(clip(s.potNote, STRING_CLIP.note), { size: 11, weight: 600, color: T.foreground }, T).whitespace_normal().pt(4));
+  return card
     .child(text(CLEARS, { size: 11, color: T.foreground }, T).whitespace_normal().pt(4))
     .child(text(KEEPS, { size: 11, color: T.muted }, T).whitespace_normal());
 }
@@ -344,7 +366,7 @@ export function renderString(vm, ui, ctx) {
         h: 36,
         size: 12,
         disabled: !can,
-        tooltip: can ? "Opens a card to confirm" : `Reach ${int(Math.max(1, num(s.of, 1000)))} cranes to make the wish`,
+        tooltip: can ? "Opens a card to confirm" : `Reach ${int(Math.max(1, num(s.gate, num(s.of, 1000))))} cranes to make the wish`,
         onClick: (e, cx) => confirm("wish", cx),
       }, T),
     );

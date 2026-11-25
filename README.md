@@ -38,7 +38,7 @@ Ask your herdr agent:
 
 > Add the layout at https://github.com/tyevco/turbo-octo-robot
 
-This adds `layouts/Creaseworks.json` and `mods/creaseworks/` to your herdr home and merges `keys.json` into your keys. Your agent asks before it replaces a key you already use. Then switch to it with `layout.switch {name:"Creaseworks"}`, or pick **Creaseworks** in Settings → Look. `ctrl-shift-l` switches back to your own layout, which stays as it was.
+This adds `layouts/Creaseworks.json` and `mods/creaseworks/` to your herdr home and merges `keys.json` into your keys. Your agent asks before it replaces a key you already use. Then switch to it with `layout.switch {name:"Creaseworks"}`, or pick **Creaseworks** in Settings → Look. Your own layout stays as it was. To go back to it, run `layout.switch {name:"main"}` (or your layout's name) or pick it in Settings → Look. `ctrl-shift-l` does not go back: it cycles to the next layout in herdr's list (`main` first, then the rest by name), so from Creaseworks it usually opens `terminals`.
 
 The mod needs no network access and runs no programs. It reads and writes only its own data folder, plus a shared save path if you choose to set one.
 

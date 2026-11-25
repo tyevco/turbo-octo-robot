@@ -586,6 +586,7 @@ export async function load(slot, opts) {
   S.recoveryText = null;
   S.recOwn = 0; // applied[writerId] in this window's last recovery write (mergeRecovery)
   S.overwrite = null;
+  S.overwriteRec = false;
   S.logLost = false;
   let state = null;
   let notice = null;
@@ -1108,7 +1109,9 @@ async function mergeRecovery(slot, env, stale, text) {
   }
   // Nothing this game lacks (this window's own last write, or a game it took in): written over.
   if (!fresh) return over;
-  if (S.logLost) return keepOther(slot, env, stale, text);
+  // Reset / Restore not yet in the file, or a log given up: replaced, never merged into
+  // (a merge would bring the replaced game back); the other game is kept aside.
+  if (S.logLost || (S.overwrite && !S.overwriteRec)) return keepOther(slot, env, stale, text);
   const had = ownApplied(live, slot.writerId);
   let replaced = false;
   let kept = null;
@@ -1262,6 +1265,7 @@ async function recoveryWrite(slot, env, stale) {
     const done = env.now();
     S.recoveryText = text;
     S.recOwn = own; // applied[writerId] in the text just written (mergeRecovery)
+    if (S.overwrite) S.overwriteRec = true; // a Reset / Restore is in the recovery file now: merged with from here on
     S.confirmed = upto;
     confirmLog(slot, upto);
     // A log given up while this write was out holds actions the text lacks: kept lost (r4-09).
@@ -1463,6 +1467,7 @@ export async function cycle(slot, env) {
       S.retryAt = 0;
       S.writtenRev = rev;
       S.overwrite = null;
+      S.overwriteRec = false;
       // A log given up while this write was out (live.js record) holds actions
       // this text lacks: the next conflict must still replace, not merge (r4-09).
       if ((slot.logEpoch || 0) === epoch) S.logLost = false;
@@ -1661,8 +1666,11 @@ async function replaceGame(slot, env, make, reason) {
     const r = await readOrError(slot.paths.save);
     if (stale()) return "stale";
     let kept = null;
-    if (r.text !== null) {
-      kept = await keepAsideListed(slot, slot.paths, r.text, reason);
+    // save.json unreadable: the game being replaced is the one in save.recovery.json (kept as well).
+    const old = r.error === null ? r : await readOrError(recoveryPath(slot.paths));
+    if (stale()) return "stale";
+    if (old.text !== null) {
+      kept = await keepAsideListed(slot, slot.paths, old.text, reason);
       if (stale()) return "stale";
     }
     slot.baseText = r.error === null ? r.text : slot.baseText;
@@ -1676,13 +1684,14 @@ async function replaceGame(slot, env, make, reason) {
     if (S.status === "readonly") S.status = "ok";
     // The next write replaces the file: another window's save landing first is not merged back in.
     S.overwrite = reason;
+    S.overwriteRec = false; // (set once the replacing write lands in save.recovery.json)
     S.logLost = false;
     slot.notices.load = null;
     refreshNotice(slot);
     retryNow(slot, env.now());
     const what = reason === "reset" ? "Started a new game." : "Restored the backup.";
-    const old = r.text === null ? "" : kept ? ` The old save was kept as ${kept}.` : " The old save could not be kept aside.";
-    if (typeof env.flash === "function") env.flash(`${what}${old}`);
+    const said = old.text === null ? "" : kept ? ` The old save was kept as ${kept}.` : " The old save could not be kept aside.";
+    if (typeof env.flash === "function") env.flash(`${what}${said}`);
     return "ok";
   } finally {
     release(S, gen);

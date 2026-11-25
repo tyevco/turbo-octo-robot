@@ -125,13 +125,30 @@ fledgling help, a different profile.
 | M10 | first Washi Vat (`buy:washi-vat`) | 6:40 | 5:20 – 8:00 | 4:40 – 8:40 | day 1 15:40 | 6:40 |
 | M11 | 100 M folds this run (`run:1e8`) | 9:20 | 8:00 – 11:20 | 7:20 – 12:00 | day 2 10:20 | 9:22 |
 | M12 | first Flower Press (`buy:flower-press`) | 10:00 | 8:40 – 12:00 | 8:00 – 12:40 | day 2 11:00 | 10:01 |
-| M13 | 1 B folds this run (`run:1e9`) | 15:30 | 13:20 – 17:20 | 12:40 – 18:00 | day 2 16:30 | 15:29 |
+| M13 | 1 B folds of live income this run, away credit left out (`live:1e9`) | 16:30 | 14:30 – 18:30 | 13:50 – 19:10 | day 3 09:30 | (sim 16:26) |
 | M14 | first Crane Loft (`buy:crane-loft`) | 16:00 | 14:40 – 18:40 | 14:00 – 19:20 | day 3 09:00 | 16:00 |
 | **M15** | **first wish available: 1,000 cranes, L ≥ 6e9, gain exactly 10 Wishes (`wish:available`)** | **20:30** | **18:30 – 22:30** | **16:00 – 24:00 (always day 3)** | **day 3 13:30 (window 11:30–15:30)** | **20:19** |
 | M16 | Wishes at M15 | 10 | exactly 10 | exactly 10 | | 10 |
 | M17 | second wish available, P1 continuing after making the first wish at M15 (`wish2:available`) — **provisional** | M15 + 14:00 | M15 + 9:00 – M15 + 22:00 | M15 + 7:00 – M15 + 26:00 | day 5 | (not prototyped) |
 
 M17 is provisional: if it fails, retune the later-wish gate `max(5, ceil(0.25·W))`, never `Lw`.
+
+M13 counts **live income** (the run's folds without away credit, `runFolds − runBySource.away`).
+It used to be 1 B folds of the run total (`run:1e9`, target 15:30, day 2 16:30), and the
+real-engine sim passed it only through the second night's pot: P1 seed 1 closes day 2 at
+8.07e8 folds, the night credits 5.29e8, and that pot is collected at the day-3 open, so the run
+total passes 1 B at exactly 16:00 on all 20 seeds, a 16 h wall-clock gap the play-clock window
+13:20 – 17:20 did not show (review r5-21). Live income passes 1 B on day 3 itself (sim median
+16:26, min 16:01, max 16:36). `npm run sim` notes any §4 row first reached by an away segment's
+credit ("reached by a night pot on N of 20 seeds"); `run:1e9` is still recorded and is reached
+that way on every seed.
+
+**Lag behind the written targets (recorded, not retuned).** From M11 on, the real-engine P1
+curve runs 40–70 min of play-clock behind the targets above, which were written from the
+prototype: M11 median 10:02 (target 9:20), M12 10:40 (10:00), M13 16:26 (16:30; the old run-total
+target was 15:30), M14 16:00 (16:00, bought at the day-3 open from the night pot), M15 21:39 (min
+21:21, max 22:07; target 20:30). Every row passes its windows and the first wish stays on day 3,
+which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retuned for the lag.
 
 ## 5. First wish across profiles
 
@@ -224,7 +241,13 @@ neither has a row.
    compacted helper packed. With Album archives (DESIGN R13, review r3-04), a heavy user with
    **100 new agents a day for 300 days** (30,000 lifetime pane helpers) still has every one of
    them counted in the Album and a save **< 640 KiB** that stops growing, far under herdr's 1 MiB
-   write limit (before archives: 1,124 KiB by day 300, and saving failed for good).
+   write limit (before archives: 1,124 KiB by day 300, and saving failed for good). The bound is
+   on the largest save of any day (measured daily, review r5-07: ≈ 475 KiB on day 255). The
+   whole save is bounded too, not only the Album: with a peak Album (11,000 packed records with
+   fledgling totals, ≈ 730 KiB) and 130 agents present each running 4 sub-agents with long CJK
+   titles, the save stays under 1 MiB and its estimate under the 896 KiB budget (DESIGN R13;
+   ≈ 760–800 KiB; before: 1.2 MB, and every save cycle failed), with every helper still
+   counted.
 8. **Drops are idempotent**: replaying the same `observe` twice, or from two writers, creates each
    envelope unit once; `turn < lastTurn` and first sighting give no reward.
 9. **No envelope is lost**: units created = units opened + units converted + units waiting (old

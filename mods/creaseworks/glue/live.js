@@ -21,7 +21,8 @@ export const CADENCE_MS = 15000;
 const URGENT = { buy: 1, wish: 1, setting: 1, switch: 1, open: 1, collect: 1, notified: 1 };
 /**
  * The unconfirmed-action log stays bounded while saves cannot land (A5).
- * Past COALESCE_AT entries a roster observation that changed nothing the
+ * Past COALESCE_AT entries (or COALESCE_HELPERS logged helper entries, r5-09)
+ * a roster observation that changed nothing the
  * engine keeps (same agents, turn counters, statuses, parents and presence as
  * the observation before it: only titles or pane names moved) is dropped when
  * the next observation is the same again; an observation that changes a turn
@@ -41,6 +42,16 @@ export const PENDING_MAX = 20000;
  * measured cost) the log is given up like PENDING_MAX.
  */
 export const LOG_HELPERS_MAX = 64000;
+/**
+ * Coalescing starts by size as well as by count (r5-09): at 130 agents and 4
+ * sub-agents each (650 entries an observation) LOG_HELPERS_MAX is reached after
+ * about 98 observations, long before COALESCE_AT actions, so title-only
+ * observations (one a second while titles move) gave the log up in about
+ * 100 s of failed saves. Past this many logged helper entries an unchanged
+ * roster observation is dropped as past COALESCE_AT; only observations that
+ * change the roster, a status or a turn counter still grow the log.
+ */
+export const COALESCE_HELPERS = LOG_HELPERS_MAX / 2;
 
 const map = () => Object.create(null);
 
@@ -115,6 +126,7 @@ export function newSlot(home, paths) {
     notice: null, // the save notice on show: { kind, text?, message?, retryMs?, at }
     inflight: null, // { text, upto } while a save write is under way
     copies: map(), // copyId → last heartbeat ms
+    lastTerms: null, // the last terminals() that read (session tickerWork; observeFromAgents carries it over, r5-11)
     ticker: null,
     rev: 0, // glue change counter (state, notices, flashes, requests)
     timeRev: 0, // the state.rev bumps time alone made (tickerWork's advance): left out of the vm key
@@ -218,8 +230,8 @@ export function rosterKey(action) {
 }
 
 /**
- * Adds `action` to the unconfirmed log, keeping it bounded (COALESCE_AT,
- * PENDING_MAX). `slot.logObs` = { s, key, same } describes the latest roster
+ * Adds `action` to the unconfirmed log, keeping it bounded (COALESCE_AT or
+ * COALESCE_HELPERS, PENDING_MAX, LOG_HELPERS_MAX). `slot.logObs` = { s, key, same } describes the latest roster
  * observation recorded: `same` when its key equals the one before it. That
  * one is dropped only when it is `same` and the new observation has its key
  * too, so the new one does exactly what it did (no finish, status change or
@@ -233,7 +245,7 @@ export function record(slot, action) {
     const key = rosterKey(action);
     const last = slot.logObs || null;
     const same = !!last && last.key === key;
-    if (same && last.same && P.length >= COALESCE_AT) {
+    if (same && last.same && (P.length >= COALESCE_AT || slot.logHelpers >= COALESCE_HELPERS)) {
       for (let i = P.length - 1; i >= 0 && P[i].s >= last.s; i--) {
         if (P[i].s === last.s && P[i].type === "observe" && Array.isArray(P[i].helpers)) {
           slot.logHelpers -= P[i].helpers.length;

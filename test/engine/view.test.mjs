@@ -405,7 +405,7 @@ test("envelope bob: the newest drawn envelope for 10 s after it lands", () => {
   s.envelopes[id(1)] = { type: "rush", units: 2.25, landedAt: T0 - 4000, lastAt: T0 - 4000 };
   const vm = v(s);
   assert.deepEqual(vm.tray.envelopes.map((e) => [e.helperId, e.bob]), [[id(0), false], [id(1), true]]);
-  assert.equal(vm.tray.envelopes[1].label, "×2.25");
+  assert.equal(vm.tray.envelopes[1].label, "×2.3"); // one decimal below 10 (r5-15: fits the envelope at 11 px)
   assert.match(vm.tray.envelopes[1].tooltip, /^Rush ×3 for .* open when you're ready to click$/);
   assert.equal(v(s, T0 + 7000).tray.envelopes[1].bob, false);
   assert.equal(v(s, T0, { matShown: false }).tray.envelopes[1].bob, false);
@@ -487,6 +487,11 @@ test("header, streak and boost bar are pre-formatted", () => {
   assert.equal(vm.streak.label, "×1.2");
   assert.equal(vm.streak.fill, 0.4);
   assert.equal(vm.streak.afterglow, "12m");
+  // r5-14: what the bank does, for the footer chip
+  assert.equal(vm.streak.afterglowText, "Afterglow ×1.25 · 12m");
+  s.bought["shared-rhythm"] = true;
+  assert.equal(v(s).streak.afterglowText, "Afterglow ×1.5 · 12m");
+  delete s.bought["shared-rhythm"];
   // A lapsed rhythm reads as 0 (the stored r is kept, B9).
   assert.equal(v(s, T0 + 5000).streak.label, "×1.0");
   assert.deepEqual(vm.boosts.map((b) => [b.type, b.label, b.msLeft, b.msTotal]), [
@@ -994,4 +999,53 @@ test("r2-01: the Album memo is one non-enumerable entry per key across code gene
   assert.equal(keys.filter((k) => k === "creaseworks/album-memo").length, 1);
   assert.ok(keys.filter((k) => k === "creaseworks/album-count").length <= 1);
   for (const k of Object.getOwnPropertySymbols(s)) assert.equal(Object.getOwnPropertyDescriptor(s, k).enumerable, false);
+});
+
+// Review r5-16: gone fledglings are in the Album for their 30 days (DESIGN
+// §5.1), then counted in the record they fold into; the header counts every
+// helper and a folded record's row carries its fledglings' folds.
+test("r5-16: gone fledglings are Album rows and counted; folded into a gone parent they stay counted, folds included", () => {
+  const s = seeded();
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working", 0), kid(2, 1, "working", 0), kid(3, 1, "working", 0)]));
+  const pid = engine.helperId("t1", 1001);
+  const k2 = engine.helperId("t2", 1002);
+  const k3 = engine.helperId("t3", 1003);
+  s.helpers[k2].stats.folds = 100;
+  s.helpers[k3].stats.folds = 20;
+  me.act(observeAction(T0 + 1000, [agent(1, "working", 0)]));
+  let t = T0 + 2000;
+  const check = (where) => {
+    const vm = v(s, t);
+    assert.deepEqual(vm.helpers.album, v(engine.cloneState(s), t).helpers.album, `${where}: memo equals a fresh build`);
+    assert.equal(v(s, t, { album: false }).helpers.albumCount, vm.helpers.albumCount, `${where}: folded count`);
+    return vm.helpers;
+  };
+  let h = check("kids gone");
+  assert.equal(h.albumCount, 2);
+  assert.deepEqual(h.album.map((r) => r.helperId).sort(), [k2, k3].sort());
+  assert.equal(h.album.find((r) => r.helperId === k2).folds, "100");
+  // the parent leaves too
+  s.helpers[pid].stats.folds = 1000;
+  me.act(observeAction((t = T0 + 3000), []));
+  h = check("parent gone");
+  assert.equal(h.albumCount, 3);
+  assert.equal(h.album.length, 3);
+  // 31 days on, the fledglings fold into their parent's record: still 3 helpers
+  me.act(observeAction((t = T0 + 31 * 86400000), [], { day: "2026-12-26" }));
+  assert.equal(s.helpers[k2], undefined);
+  assert.equal(s.helpers[pid].stats.kidsPast, 2);
+  h = check("folded");
+  assert.equal(h.albumCount, 3);
+  assert.deepEqual(h.album.map((r) => [r.helperId, r.folds]), [[pid, "1,120"]]);
+});
+
+test("r5-16: fledglings that fold into a present parent are part of it, not Album helpers", () => {
+  const s = seeded();
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working", 0), kid(2, 1, "working", 0)]));
+  me.act(observeAction(T0 + 1000, [agent(1, "working", 0)]));
+  assert.equal(v(s, T0 + 1000).helpers.albumCount, 1);
+  me.act(observeAction(T0 + 31 * 86400000, [agent(1, "working", 0)], { day: "2026-12-26" }));
+  assert.equal(v(s, T0 + 31 * 86400000).helpers.albumCount, 0);
 });

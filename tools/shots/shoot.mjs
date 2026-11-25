@@ -32,6 +32,9 @@
 // on_size_change with the content box herdr gives it (render/window.mjs
 // layoutBoxes: herdr's own geometry, zoomed px). A view
 // or window that throws becomes a red error tile and the run exits 1.
+// The roster, ribbon and rail are also shot with a single-name theme on the
+// other window appearance (r5-01): <view>-paper-on-dark.png and
+// <view>-graphite-on-light.png (settings().dark disagrees with the theme showing).
 // Contact sheets: contact-sheet.png (graphite and paper, views and windows) and
 // contact-sheet-<theme>.png for every other theme shot.
 //
@@ -68,6 +71,15 @@ import { RAIL_WEIGHT } from "../layout/build.mjs";
 export const THEME_LIST = Object.freeze(
   THEME_NAMES.map((name) => Object.freeze({ name, appearance: isLight(PALETTES[name].background) ? "light" : "dark" })),
 );
+/**
+ * r5-01: a single-name theme on the other appearance (settings().dark disagrees
+ * with the theme showing; herdr's ThemeChoice::pick gives the one name for both).
+ * Shot for the VISION_VIEWS as <view>-<theme>-on-<appearance>.png.
+ */
+export const MISMATCHES = Object.freeze([
+  Object.freeze({ theme: "paper", appearance: "dark" }),
+  Object.freeze({ theme: "graphite", appearance: "light" }),
+]);
 /** The two themes the main contact sheet shows (the rest get a sheet each). */
 export const PRIMARY_THEMES = Object.freeze(["graphite", "paper"]);
 /**
@@ -310,9 +322,12 @@ export async function loadTarget(root = REPO_ROOT) {
  */
 export async function runView(Class, entry, themeName, extra = {}) {
   const palette = THEMES[themeName];
-  const appearance = THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
+  // extra.appearance: the window appearance apart from the theme (r5-01);
+  // gpui's window theme follows settings().dark (mods.rs), as here.
+  const appearance = extra.appearance ?? THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
   const size = extra.size ?? entry.size;
   const scenario = { ...(entry.scenario ?? {}), theme: themeName };
+  if (extra.appearance) scenario.appearance = extra.appearance;
   if (extra.props !== undefined) scenario.props = extra.props;
   if (extra.mod) scenario.mod ??= extra.mod;
   if (extra.zoom !== undefined) scenario.zoom = extra.zoom;
@@ -387,13 +402,14 @@ function gameBlocks(layout, mod) {
  * herdr window (shared handover slot, as in herdr), sizes each copy through
  * its root's on_size_change, and renders them. Returns {blockId: {tree, ...}}.
  */
-export async function runWindowCopies(Class, target, themeName, size, layout, zoom = 1) {
+export async function runWindowCopies(Class, target, themeName, size, layout, zoom = 1, windowAppearance = null) {
   const palette = THEMES[themeName];
-  const appearance = THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
+  const appearance = windowAppearance ?? THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
   const blocks = contentNodes(layout).filter((b) => !b.hidden && b.content?.mod === target.mod && !b.float);
   const geometry = blockSizes(layout, size, zoom);
   const entry = entryForBlock(target.views, blocks.find((b) => b.content.props?.role !== "ribbon")?.id ?? null);
   const scenario = { ...(entry.scenario ?? {}), theme: themeName, layout: JSON.parse(JSON.stringify(layout)) };
+  if (windowAppearance) scenario.appearance = windowAppearance;
   scenario.mod ??= target.mod;
   scenario.zoom = zoom;
   const ctl = createController(scenario);
@@ -578,6 +594,15 @@ export async function shoot(options = {}) {
           const suffix = zoom === 1 ? "" : `-z${zoom}`;
           await shot(`${entry.name}-${themeName}${suffix}`, entry.size.width * zoom, entry.size.height * zoom, async (warnings) => {
             const result = await runView(target.Class, entry, themeName, { mod: target.mod, zoom });
+            for (const e of result.errors) warnings.push(`logged by the view: ${e.message ?? JSON.stringify(e)}`);
+            return viewDocument(result, entry, warnings);
+          });
+        }
+      }
+      if (!target.demo && VISION_VIEWS.includes(entry.name)) {
+        for (const m of MISMATCHES.filter((x) => themes.some((t) => t.name === x.theme))) {
+          await shot(`${entry.name}-${m.theme}-on-${m.appearance}`, entry.size.width, entry.size.height, async (warnings) => {
+            const result = await runView(target.Class, entry, m.theme, { mod: target.mod, appearance: m.appearance });
             for (const e of result.errors) warnings.push(`logged by the view: ${e.message ?? JSON.stringify(e)}`);
             return viewDocument(result, entry, warnings);
           });

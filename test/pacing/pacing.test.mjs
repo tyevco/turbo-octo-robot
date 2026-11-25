@@ -40,6 +40,20 @@ test("every BALANCE row is evaluated", () => {
   for (const k of ["inv1", "inv9", "inv13", "inv14"]) assert.ok(ids.has(`§7 ${k}`), k);
 });
 
+// Review r5-21: a "folds this run" milestone the night pot alone carries over its target says
+// nothing about the live curve. M13 counts live income (BALANCE §4), so no P1 seed reaches it
+// at the moment an away segment is credited; the run total still is (recorded, never asserted).
+test("§4 M13 is reached on live income, never by a night pot", () => {
+  for (const r of runs.P1) {
+    assert.ok(Number.isFinite(r.milestones["live:1e9"]), `seed ${r.seed}`);
+    assert.notEqual(r.byAway["live:1e9"], true, `seed ${r.seed}`);
+    assert.ok(r.milestones["live:1e9"] >= r.milestones["run:1e9"], `seed ${r.seed}: live before the run total`);
+  }
+  const m13 = ev.rows.find((x) => x.section === "§4" && x.id === "M13");
+  assert.equal(m13.key, "live:1e9");
+  assert.equal(m13.byAway, 0);
+});
+
 const show = (r) => {
   if (r.unit === "text") return r.note;
   const f = r.unit === "pct" ? (x) => `${(x * 100).toFixed(1)} %` : r.unit === "clock" || r.unit === "M15+" ? fmtClock : String;

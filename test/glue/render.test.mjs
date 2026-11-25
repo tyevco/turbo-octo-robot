@@ -9,6 +9,11 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { findById, walk } from "../../tools/mock/gpui-kit.js";
 import { win, flockScenario, median } from "./_util.mjs";
+import { HUE_LIGHT, HUE_DARK, S_LIGHT, S_DARK, artDark } from "../../mods/creaseworks/ui/palette.js";
+import { contrast } from "../../mods/creaseworks/ui/color.js";
+import { readFileSync } from "node:fs";
+
+const THEMES = JSON.parse(readFileSync(new URL("../../tools/mock/themes.json", import.meta.url), "utf8"));
 
 let w;
 afterEach(() => w && w.dispose());
@@ -96,6 +101,62 @@ test("ctx follows B11: theme, scene, hues, zoom, calm, width, save, handlers", a
   assert.ok(panel.session.ui.pops.length <= 5 && panel.session.ui.pops.length > 0);
   await w.advance(2000);
   assert.equal(panel.session.ui.pops.length, 0);
+});
+
+// r5-01: herdr's settings().dark is the window appearance only; a single-name
+// theme shows the same theme in both appearances. The art (scene, helper hues)
+// must follow the theme SHOWING, or the hues drop to about 1.7-2.5:1 on raised.
+test("r5-01: art follows the theme showing, not settings().dark (paper on dark, graphite on light)", async () => {
+  const colours = (tree) => JSON.stringify(tree).toLowerCase();
+  for (const [themeName, appearance, wantDark] of [["paper", "dark", false], ["graphite", "light", true], ["win98", "dark", false], ["ink", "light", true]]) {
+    w = win({ ...flockScenario(8, 2), theme: themeName, appearance });
+    assert.equal(w.ctl._settings().dark, appearance === "dark", "the mock reports the window appearance apart from the theme");
+    assert.equal(w.ctl._settings().theme, themeName);
+    const panel = await w.copy("panel");
+    await w.advance(3000);
+    const ctx = panel.session.ctx();
+    assert.equal(ctx.appearanceDark, appearance === "dark", `${themeName}: appearance kept`);
+    assert.equal(ctx.dark, wantDark, `${themeName} on ${appearance}: art follows the theme`);
+    const want = wantDark ? HUE_DARK : HUE_LIGHT;
+    const wrong = wantDark ? HUE_LIGHT : HUE_DARK;
+    for (const h of want) assert.ok(contrast(h, THEMES[themeName].raised) >= 4, `${themeName}: ${h} readable on raised`);
+    const text = colours(w.render(panel).tree);
+    assert.ok(want.some((h) => text.includes(h)), `${themeName} on ${appearance}: draws the right hues`);
+    assert.ok(!wrong.some((h) => text.includes(h)), `${themeName} on ${appearance}: never the other appearance's hues`);
+    const scene = wantDark ? S_DARK : S_LIGHT;
+    assert.ok(text.includes(scene.sheet), `${themeName}: scene for the theme`);
+    w.dispose();
+    w = null;
+  }
+});
+
+test("r5-01: artDark judges the theme's raised surface; settings().dark only as a fallback", () => {
+  for (const [n, t] of Object.entries(THEMES)) {
+    const light = n === "paper" || n === "win98";
+    assert.equal(artDark(t, true), !light, `${n} on a dark appearance`);
+    assert.equal(artDark(t, false), !light, `${n} on a light appearance`);
+  }
+  // A translucent or missing raised falls through to chrome, then surface, then the fallback.
+  assert.equal(artDark({ raised: "#ffffff10", chrome: THEMES.paper.chrome }, true), false);
+  assert.equal(artDark({ surface: THEMES.graphite.surface }, false), true);
+  assert.equal(artDark({}, false), false);
+  assert.equal(artDark({}, true), true);
+  assert.equal(artDark(null, false), false);
+  assert.equal(artDark({ raised: 12, chrome: "not a colour" }, true), true);
+});
+
+test("r5-01: switching the appearance alone keeps the art; switching the theme changes it", async () => {
+  w = win({ ...flockScenario(4), theme: "paper" });
+  const panel = await w.copy("panel");
+  await w.advance(2000);
+  assert.equal(panel.session.ctx().dark, false);
+  w.ctl.setAppearance("dark");
+  await w.advance(1000);
+  assert.equal(panel.session.ctx().appearanceDark, true);
+  assert.equal(panel.session.ctx().dark, false, "paper still shows: light art");
+  w.ctl.setTheme("graphite");
+  await w.advance(1000);
+  assert.equal(panel.session.ctx().dark, true);
 });
 
 test("render at 64 helpers: ≤ 8 ms median in Node (panel, rail, ribbon)", async () => {

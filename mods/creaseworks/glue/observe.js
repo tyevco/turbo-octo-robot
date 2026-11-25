@@ -9,7 +9,8 @@
 // may be anything (`__proto__`, `constructor`, `peer/t7`): every index here
 // is a `Map` or a null-prototype object. (A label or report key named like
 // an Object.prototype member makes herdr's own terminals() call throw before
-// any of this runs: glue/session.js keeps the last good observation, r4-01.)
+// any of this runs, r4-01: glue/session.js then observes the pane agents from
+// agents() alone with `observeFromAgents`, r5-11.)
 
 const HOPS = 32;
 const PANE_STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
@@ -170,6 +171,56 @@ export function buildObservation(agentList, terminalList) {
     o.parent = parent || null;
   }
   return { list, live, panes };
+}
+
+/**
+ * r5-11: the observation while terminals() throws but agents() reads.
+ * agents() still gives every pane agent's status (working, blocked, done,
+ * idle) and place, so a waiting agent stops earning and shows needs-you; the
+ * fields only terminals() has (created_ms, turn, parent, a fledgling's word)
+ * come from `lastTerms`, the last terminals() that read. So:
+ *   - a pane agent's status is agents()' (the old terminal word is dropped:
+ *     a stale `error` must not hold it blocked);
+ *   - turn counters stay as last read, so a finished task is paid once
+ *     terminals() reads again (the engine pays on a turn increase), never twice;
+ *   - fledglings keep their last state (frozen); one whose parent left goes;
+ *   - a pane agent absent from `lastTerms` waits for terminals(): without its
+ *     created_ms its helper id would not be its own (engine R6);
+ *   - `live` is every agents() address plus the fledglings kept.
+ * Returns null without a last terminals() reading (nothing to carry over).
+ */
+export function observeFromAgents(agentList, lastTerms) {
+  if (!Array.isArray(lastTerms)) return null;
+  const agentsIn = Array.isArray(agentList) ? agentList : [];
+  const agentAddr = new Map();
+  for (const a of agentsIn) if (a && typeof a === "object" && typeof a.address === "string") agentAddr.set(a.address, true);
+  const known = new Map();
+  const terms = [];
+  for (const t of lastTerms) {
+    if (!t || typeof t !== "object" || typeof t.address !== "string") continue;
+    known.set(t.address, true);
+    if (!agentAddr.has(t.address)) {
+      terms.push(t);
+      continue;
+    }
+    // A pane agent: everything but its old status word.
+    terms.push({
+      address: t.address, state: t.state, created_ms: t.created_ms, turn: t.turn, parent: t.parent,
+      title: t.title, name: t.name, template: t.template, program: t.program, labels: t.labels,
+    });
+  }
+  const agentsKnown = [];
+  for (const a of agentsIn) if (a && typeof a === "object" && typeof a.address === "string" && known.has(a.address)) agentsKnown.push(a);
+  const obs = buildObservation(agentsKnown, terms);
+  const live = new Map();
+  for (const addr of agentAddr.keys()) live.set(addr, true);
+  for (const o of obs.list) if (o.kind === "kid" && obs.live.has(o.addr)) live.set(o.addr, true);
+  for (const a of agentsIn) {
+    if (a && typeof a === "object" && typeof a.address === "string" && typeof a.pane === "string" && a.pane && !obs.panes.has(a.address)) {
+      obs.panes.set(a.address, a.pane);
+    }
+  }
+  return { list: obs.list, live, panes: obs.panes };
 }
 
 /** A compact signature of an observation list: an `observe` action is sent only when it changes (§5.1). */

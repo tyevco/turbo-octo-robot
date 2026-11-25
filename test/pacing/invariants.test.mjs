@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import * as engine from "../../mods/creaseworks/engine/index.js";
 import { runProfile, agentObservation } from "../../tools/sim/pacing.mjs";
 import { parseBalance } from "../../tools/sim/profiles.mjs";
+import { unpackAlbum, rosterChanged, saveBytes } from "../../mods/creaseworks/engine/helpers.js";
 
 const I = parseBalance().invariants;
 const HOUR = 3600000;
@@ -346,7 +347,7 @@ test("inv. 13: the first wish gives exactly 10 Wishes and G becomes 1.5", () => 
   assert.ok(r.milestones["wish2:available"] > r.milestones["wish:available"]);
 });
 
-test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still counted, the save bounded far under 1 MiB", () => {
+test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still counted, the save bounded far under 1 MiB", (ctx) => {
   const s = engine.newGame({ seed: 11, now: day2.finalState.clock, day: day2.finalState.day });
   s.bought["mail-sorter"] = true;
   const T = s.clock;
@@ -358,6 +359,7 @@ test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still
   let n = 0;
   const per = I.heavyPerDay / 5;
   const sizes = [];
+  let maxBytes = 0;
   for (let d = 0; d < I.heavyDays; d++) {
     // five waves a day of per new agents: each works, finishes, and its terminal closes
     for (let w = 0; w < 5; w++) {
@@ -369,8 +371,13 @@ test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still
     }
     t = T + (d + 1) * 24 * HOUR;
     engine.advance(s, t);
-    if ((d + 1) % 50 === 0) sizes.push(engine.serialize(s).length);
+    // every day, not every 50 (review r5-07): the bound is on the largest save
+    const bytes = Buffer.byteLength(engine.serialize(s), "utf8");
+    sizes.push(bytes);
+    if (bytes > maxBytes) maxBytes = bytes;
   }
+  assert.ok(maxBytes < I.heavyKiB * 1024, `largest save ${(maxBytes / 1024).toFixed(0)} KiB`);
+  ctx.diagnostic(`largest save on any day: ${(maxBytes / 1024).toFixed(1)} KiB (day ${sizes.indexOf(maxBytes) + 1})`);
   assert.equal(n, I.heavyPerDay * I.heavyDays);
   // every pane agent is a saved helper: one record each, or counted in an archive entry
   const recs = Object.values(s.helpers).filter((h) => h.kind === "pane" && h.gone);
@@ -400,11 +407,87 @@ test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still
   const text = engine.serialize(s);
   assert.ok(text.length < I.heavyKiB * 1024, `${(text.length / 1024).toFixed(0)} KiB`);
   // it stops growing: the last 150 days add at most a few archive entries
-  assert.ok(sizes.at(-1) - sizes[2] < 16 * 1024, sizes.map((x) => (x / 1024).toFixed(0)).join(" → "));
+  assert.ok(sizes.at(-1) - sizes[149] < 16 * 1024, sizes.filter((x, i) => (i + 1) % 50 === 0).map((x) => (x / 1024).toFixed(0)).join(" → "));
+  assert.ok(saveBytes(s) >= Buffer.byteLength(text, "utf8"), "the save estimate (r5-07) is an upper bound here");
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
   assert.equal(engine.serialize(back.state), text);
   const v = s.stats.units;
   const waiting = Object.values(s.envelopes).reduce((a, e) => a + e.units, 0);
   assert.ok(Math.abs(v.created - (v.opened + v.converted + waiting)) < 1e-9, "inv. 9 holds");
+});
+
+test("inv. 7 (R13, r5-07): 130 agents with 4 sub-agents each over a full Album: the whole save stays under its budget, far under 1 MiB", (ctx) => {
+  // Before: only the Album was bounded, so a large roster (≈ 600 B a present
+  // helper) over a full Album passed herdr's 1 MiB write limit (1.1 MB here)
+  // and every save cycle failed.
+  const MiB = 1024 * 1024;
+  const s = engine.newGame({ seed: 13, now: day2.finalState.clock, day: day2.finalState.day });
+  const T = s.clock;
+  const sig4 = (x) => Number(x.toPrecision(4));
+  // a peak Album: K.albumCompactKeep + K.albumArchiveBatch packed records with fledgling
+  // totals and terminal keys (one short of an archive pass by count), left over the last year
+  const nCompact = K.albumCompactKeep + K.albumArchiveBatch;
+  for (let i = 0; i < nCompact; i++) {
+    const id = engine.helperId(`w2:t${i}`, 1700000000000 + i * 997);
+    const m = Math.floor((T - 2 * 86400000 - (nCompact - i) * 2860000) / 60000);
+    const rec = unpackAlbum(id, [0, sig4(1.2345e7 + i * 98765.4321), 30 + (i % 70), m, 3 + (i % 3), sig4(3.21e6 + i * 4321.123), (i * 7919) & 0xffff]);
+    assert.ok(rec, id);
+    s.helpers[id] = rec;
+  }
+  rosterChanged(s);
+  // and a full Album of whole records: agents with a fledgling each that finished a task and left
+  const ag = (i, extra = {}) => ({
+    addr: `w1:t${i}`, created: T + i * 997, status: "working", raw: "working", turn: 0, parent: null,
+    pane: `p${i}`, title: "claude · refactor the payment reconciliation service and fix flaky tests", paneName: "",
+    space: "payments", tab: "integration", kind: "pane", ...extra,
+  });
+  let t = T;
+  for (let b = 0; b < K.albumKeep / 50; b++) {
+    const list = [];
+    for (let k = 0; k < 50; k++) {
+      const i = b * 50 + k;
+      list.push(ag(i), ag(1e6 + i, { kind: "kid", pane: null, parent: `w1:t${i}` }));
+    }
+    act(s, observeAt((t += 1000), list, s.day));
+    act(s, observeAt((t += 15 * 60000), list.map((o) => ({ ...o, turn: 1, status: "idle", raw: "idle" })), s.day));
+    act(s, observeAt((t += 1000), [], s.day));
+  }
+  const counted = () => Object.values(s.helpers).reduce((a, h) => a + (h.archive > 0 ? h.archive : 1) + (h.stats.kidsPast || 0), 0);
+  const before = counted();
+  const peak = Buffer.byteLength(engine.serialize(s), "utf8");
+  assert.ok(peak > 640 * 1024, `a peak Album save: ${(peak / 1024).toFixed(0)} KiB`);
+  // 130 agents open at once, each running 4 sub-agents, with long CJK titles and places
+  const title = "codex · 支払い照合サービスをリファクタリングして不安定な統合テストを修正する作業を続けています";
+  const roster = [];
+  for (let i = 0; i < 130; i++) {
+    const p = ag(5e6 + i, { title, space: "支払いチーム", tab: "統合テスト" });
+    roster.push(p);
+    for (let k = 0; k < 4; k++) roster.push(ag(6e6 + i * 10 + k, { kind: "kid", pane: null, parent: p.addr, title, space: "支払いチーム", tab: "統合テスト" }));
+  }
+  const sizes = [];
+  for (let k = 0; k < 4; k++) {
+    act(s, observeAt((t += 2000), roster.map((o) => ({ ...o, turn: k, status: k % 2 ? "idle" : "working", raw: k % 2 ? "idle" : "working" })), s.day));
+    const text = engine.serialize(s);
+    const bytes = Buffer.byteLength(text, "utf8");
+    sizes.push(bytes);
+    assert.ok(bytes < MiB, `${bytes} bytes with 650 agents present`);
+    assert.ok(bytes <= saveBytes(s), "the estimate is an upper bound");
+    assert.ok(saveBytes(s) <= K.saveBudget, `estimate ${saveBytes(s)} over the budget`);
+  }
+  ctx.diagnostic(`peak Album ${(peak / 1024).toFixed(0)} KiB; with 650 present: ${sizes.map((x) => (x / 1024).toFixed(0)).join(", ")} KiB`);
+  // nobody was dropped: the archives hold the older Album helpers, still counted
+  assert.equal(counted(), before + roster.length);
+  assert.equal(Object.values(s.helpers).filter((h) => !h.gone).length, roster.length);
+  assert.ok(Object.values(s.helpers).some((h) => h.archive > 0));
+  // the roster leaves (whole Album records, then compacted): still bounded and counted
+  act(s, observeAt((t += 2000), [], s.day));
+  engine.advance(s, (t += 60000));
+  const text = engine.serialize(s);
+  assert.ok(Buffer.byteLength(text, "utf8") < MiB);
+  assert.ok(saveBytes(s) <= K.saveBudget);
+  assert.equal(counted(), before + roster.length);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
 });

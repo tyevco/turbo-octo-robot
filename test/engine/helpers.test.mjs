@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, close, T0 } from "./_util.mjs";
-import { saltedId, rosterChanged, albumKey, archiveId } from "../../mods/creaseworks/engine/helpers.js";
+import { saltedId, rosterChanged, albumKey, archiveId, albumKeepFor } from "../../mods/creaseworks/engine/helpers.js";
 const K = engine.CONTENT.K;
 
 test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
@@ -897,4 +897,24 @@ test("r4-11: a fledgling folded into its parent carries the fledglings already f
   assert.equal(s.helpers[xid], undefined, "X folded into its parent");
   assert.equal(s.helpers[pid].stats.kidsPast, pPast + 1 + 3, "X and the 3 fledglings it held");
   close(s.helpers[pid].stats.kidsFolds, pFolds + xFolds + xKidFolds);
+});
+
+test("r5-07: albumKeepFor keeps the count rule while the save fits its budget, and fewer compact records when it would not", () => {
+  const keep = K.albumCompactKeep;
+  const batch = K.albumArchiveBatch;
+  const B = K.saveBudget;
+  // small save, few records: all kept; past keep + batch: the count rule (keep)
+  assert.equal(albumKeepFor(5000, 5000 * 50, 100000), 5000);
+  assert.equal(albumKeepFor(keep + batch, (keep + batch) * 50, 100000), keep + batch);
+  assert.equal(albumKeepFor(keep + batch + 1, (keep + batch + 1) * 50, 100000), keep);
+  // a large roster leaves less room: the kept records plus a batch of new ones fit the budget
+  const other = B - 4000 * 50;
+  const k = albumKeepFor(keep + batch, (keep + batch) * 50, other);
+  assert.equal(k, 4000 - batch);
+  assert.ok(other + (k + batch) * 50 <= B);
+  // nothing left for the Album: every compact record goes to an archive entry; none: nothing to do
+  assert.equal(albumKeepFor(3000, 3000 * 50, B + 1), 0);
+  assert.equal(albumKeepFor(0, 0, B + 1), 0);
+  // deterministic: the same inputs give the same answer
+  assert.equal(albumKeepFor(9000, 9000 * 55, B - 300000), albumKeepFor(9000, 9000 * 55, B - 300000));
 });

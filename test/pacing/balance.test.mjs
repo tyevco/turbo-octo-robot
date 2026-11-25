@@ -46,7 +46,7 @@ test("§3 profiles: every profile in the tables is defined in code and vice vers
 test("§4 milestones: every row has a known sim key and the median window lies inside the every-seed window", () => {
   const ids = new Set([...C.WORKSHOPS.map((w) => w.id), ...C.UPGRADES.map((u) => u.id), ...C.AUTOMATIONS.map((a) => a.id)]);
   for (const w of C.WORKSHOPS) for (const t of C.TIERS) ids.add(`${w.id}-t${t.n}`);
-  const special = new Set(["own:workshops>=10", "spawn:crane#1", "run:1e6", "run:1e8", "run:1e9", "wish:available", "wish2:available", "wish:gain"]);
+  const special = new Set(["own:workshops>=10", "spawn:crane#1", "run:1e6", "run:1e8", "live:1e9", "wish:available", "wish2:available", "wish:gain"]);
   assert.equal(bal.milestones.length, 17);
   bal.milestones.forEach((m, i) => {
     assert.equal(m.id, `M${i + 1}`);
@@ -57,6 +57,9 @@ test("§4 milestones: every row has a known sim key and the median window lies i
   });
   assert.equal(bal.milestones.find((m) => m.id === "M15").key, "wish:available");
   assert.equal(bal.milestones.find((m) => m.id === "M17").provisional, true);
+  // review r5-21: 1 B folds is counted on live income; the run total passed it only through the
+  // night pot collected at the day-3 open, which a play-clock window cannot tell apart
+  assert.equal(bal.milestones.find((m) => m.id === "M13").key, "live:1e9");
 });
 
 test("§5 first wish: one row per profile, every extra assertion understood, monotonic chain listed", () => {

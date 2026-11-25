@@ -15,7 +15,7 @@ import { view, advance, apply, newGame, formatCount } from "../engine/index.js";
 import { now as clockNow, localDay, bucket } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, codeGeneration, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
-import { buildObservation, signature } from "./observe.js";
+import { buildObservation, observeFromAgents, signature } from "./observe.js";
 import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, recallWeight, syncStore, panelState, RAIL_PX, FULL_BELOW } from "./commands.js";
 import * as notifier from "./notify.js";
 
@@ -50,6 +50,8 @@ export const READ_FAIL_MS = 12000;
 export const READ_FAIL_TEXT = Object.freeze({
   // The words before the colon are what a narrow rail shows (ui/rail.js railFlash, 32 graphemes).
   agents: "Agent list unreadable: herdr's list failed, so helpers keep their last state.",
+  // r5-11: agents() still reads, so pane agents' statuses keep updating.
+  terminals: "Agent details unreadable: herdr's list failed; statuses still update.",
   layout: "Layout unreadable: herdr's layout failed, so the panel keeps its last place.",
 });
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
@@ -102,7 +104,8 @@ export class Session {
   /**
    * role: "panel" | "ribbon" | null (null: read props().role in init).
    * opts: { isFolded(vm, ui, key), sectionIndex(vm, ui, key),
-   * virtualGroups(vm, ui, prev) } (from ui/flock.js) and `scroll`, a
+   * virtualGroups(vm, ui, prev) } (from ui/flock.js), `artDark(T, fallback)`
+   * (from ui/palette.js: which art the theme showing needs, r5-01) and `scroll`, a
    * ScrollHandle created in init (all passed by main.js). With `sectionIndex`
    * and `scroll`, a counts-chip ● / ◗ or a ribbon tally scrolls the Flock to
    * its group (DESIGN §3.1). With `virtualGroups`, the panel keeps the last
@@ -113,6 +116,9 @@ export class Session {
     this.isFolded = typeof opts.isFolded === "function" ? opts.isFolded : null;
     this.sectionIndex = typeof opts.sectionIndex === "function" ? opts.sectionIndex : null;
     this.virtualGroups = typeof opts.virtualGroups === "function" ? opts.virtualGroups : null;
+    this.artDark = typeof opts.artDark === "function" ? opts.artDark : null;
+    this.artKey = null;
+    this.artIsDark = true;
     // The Flock lists the last panel render drew (handed to the next one as ui.flockLists).
     this.flockDrawn = null;
     this.scroll = opts.scroll && typeof opts.scroll.scroll_to_item === "function" ? opts.scroll : null;
@@ -327,20 +333,32 @@ export class Session {
     slot.narrow.filesWas = L.filesShown;
 
     // Observe: agents() once + terminals() once, never panes() (§5.1). When
-    // either read throws, the last good observation stands (no observe of
-    // helpers; liveness and pane ids as last read) and the tick goes on.
+    // agents() throws, the last good observation stands (no observe of
+    // helpers; liveness and pane ids as last read) and the tick goes on. When
+    // only terminals() throws (r5-11: a label or report key named like an
+    // Object.prototype member), the pane agents are still observed from
+    // agents(), with the rest carried over from the last terminals() that
+    // read (observeFromAgents): a waiting agent still stops and shows needs-you.
     const ag = readHost(slot, "agents", agents, t);
-    const tm = ag.ok ? readHost(slot, "agents", terminals, t) : ag;
+    const tm = ag.ok ? readHost(slot, "terminals", terminals, t) : ag;
     let obs = null;
     if (ag.ok && tm.ok) {
       try {
         obs = buildObservation(ag.value, tm.value);
+        slot.lastTerms = Array.isArray(tm.value) ? tm.value : null;
+      } catch (e) {
+        readFailed(slot, "agents", t, e);
+      }
+    } else if (ag.ok) {
+      try {
+        obs = observeFromAgents(ag.value, slot.lastTerms);
       } catch (e) {
         readFailed(slot, "agents", t, e);
       }
     }
     if (obs) {
       readOk(slot, "agents");
+      if (tm.ok) readOk(slot, "terminals");
       const live = map();
       for (const a of obs.live.keys()) live[a] = true;
       const panes = map();
@@ -665,13 +683,28 @@ export class Session {
     }
   }
 
-  /** The glue part of the B11 ctx (main.js adds T, S, hues). */
+  /** artDark(T, fallback), remembered per theme surface (one theme() per render). */
+  artDarkFor(T, fallback) {
+    if (!this.artDark) return fallback;
+    const key = (T && T.raised) + "|" + (T && T.chrome) + "|" + (T && T.surface) + "|" + fallback;
+    if (this.artKey !== key) {
+      this.artKey = key;
+      try {
+        this.artIsDark = this.artDark(T, fallback) !== false;
+      } catch {
+        this.artIsDark = fallback;
+      }
+    }
+    return this.artIsDark;
+  }
+
+  /** The glue part of the B11 ctx (main.js adds S, hues from ctx.dark). */
   ctx() {
     const s = this.state();
     const slot = this.slot;
     const t = this.demo ? this.demo.t : clockNow();
     let T = {};
-    let dark = true;
+    let appearanceDark = true;
     let zoom = 1;
     try {
       T = theme() || {};
@@ -680,14 +713,19 @@ export class Session {
     }
     try {
       const st = settings() || {};
-      dark = st.dark !== false;
+      appearanceDark = st.dark !== false;
       zoom = typeof st.zoom === "number" && st.zoom > 0 ? st.zoom : 1;
     } catch {
       // defaults
     }
+    // r5-01: the art (scene, hues) follows the theme SHOWING, not the window
+    // appearance: settings().dark is only the appearance, and a single-name
+    // theme ("theme": "paper") shows the same theme on a dark OS. artDark
+    // judges the theme's own raised surface; `appearanceDark` is its fallback.
+    const dark = this.artDarkFor(T, appearanceDark);
     const width = this.width ?? (this.role === "ribbon" ? null : 320);
     const ctx = {
-      T, dark, zoom,
+      T, dark, appearanceDark, zoom,
       calm: !!(s && s.settings.calm),
       width,
       height: this.role === "ribbon" ? 30 : this.height,

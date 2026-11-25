@@ -892,7 +892,7 @@ export function jsonBytes(v) {
   for (let i = 0; i < len; i++) {
     const c = v.charCodeAt(i);
     if (c === 0x22 || c === 0x5c) n += 2;
-    else if (c < 0x20) n += 6;
+    else if (c < 0x20) n += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 2 : 6; // \b \t \n \f \r, else \u00XX
     else if (c < 0x80) n += 1;
     else if (c < 0x800) n += 2;
     else if (c >= 0xd800 && c <= 0xdbff && i + 1 < len && (v.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {

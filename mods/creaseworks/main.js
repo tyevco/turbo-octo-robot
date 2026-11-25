@@ -9,12 +9,12 @@ import { Session } from "./glue/session.js";
 import { renderPanel } from "./ui/panel.js";
 import { renderRibbon } from "./ui/ribbon.js";
 import { isFolded, sectionIndex, virtualGroups, newFlockScroll } from "./ui/flock.js";
-import { pickScene, pickHues } from "./ui/palette.js";
+import { pickScene, pickHues, artDark } from "./ui/palette.js";
 
 export default class Creaseworks extends View {
   init(_props, cx) {
     // The session reads props().role (never init's argument, A2 rule 10).
-    this.session = new Session(null, { isFolded, sectionIndex, virtualGroups, scroll: newFlockScroll() });
+    this.session = new Session(null, { isFolded, sectionIndex, virtualGroups, artDark, scroll: newFlockScroll() });
     this.session.init(cx);
   }
 
@@ -27,6 +27,7 @@ export default class Creaseworks extends View {
       .min_h(0)
       .on_size_change((size, cx) => s.onSize(size, cx));
     const ctx = s.ctx();
+    // ctx.dark: the art for the theme showing (r5-01), not settings().dark.
     ctx.S = pickScene(ctx.dark);
     ctx.hues = pickHues(ctx.dark);
     const vm = s.vm();

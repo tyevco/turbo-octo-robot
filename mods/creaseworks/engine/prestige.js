@@ -3,6 +3,7 @@
 import { PRESTIGE, K, WORKSHOPS, AUTOMATIONS } from "./content.js";
 import { CLICK_SOURCES } from "./economy.js";
 import { openEnvelope } from "./envelopes.js";
+import { collect } from "./away.js";
 import { makeMap, newSpawn } from "./state.js";
 
 /**
@@ -36,14 +37,27 @@ export function wishInfo(state) {
   return { cranes: c, total, gain, needed, can };
 }
 
-/** The String tab's numbers (§3.5, §9). */
+/**
+ * The String tab's numbers (§3.5, §9). The String holds `of` =
+ * 100·max(10, needed) cranes; `gate` is the shown count at which the wish
+ * opens (100·needed, or the first wish's 1,000), which is inside the String
+ * (below `of`) for W 10–39 (review r5-12): the String is not full then, so
+ * the tab marks the gate and words its lines from the real gains. `atOf` is
+ * the gain once the String is full (of / 100 Wishes, or the gain now when it
+ * is already past full).
+ */
 export function stringInfo(state) {
   const w = wishInfo(state);
   const of = 100 * Math.max(10, w.needed);
-  const shown = w.cranes - 100 * state.wishes;
+  const first = state.wishes === 0 && state.wishCount === 0;
+  const gate = Math.min(of, first ? PRESTIGE.firstCranes : 100 * w.needed);
+  const shown = Math.max(0, w.cranes - 100 * state.wishes);
   return {
-    cranes: Math.max(0, shown),
+    cranes: shown,
     of,
+    gate,
+    full: shown >= of,
+    atOf: Math.max(w.gain, of / 100),
     nextIn: Math.max(0, lifetimeFor(w.cranes + 1) - state.lifetime),
     lifetime: state.lifetime,
     gain: w.gain,
@@ -79,15 +93,24 @@ function round4(x) {
 }
 
 /**
- * Make the wish (§9): open every Bundle at current value, record a garland,
- * reset the run, keep helpers, Album, Wishes, perks, timed boost envelopes,
- * settings, switches, notification counters, lifetime totals and garlands.
+ * Make the wish (§9): credit an uncollected away pot, open every Bundle at
+ * current value, record a garland, reset the run, keep helpers, Album,
+ * Wishes, perks, timed boost envelopes, settings, switches, notification
+ * counters, lifetime totals and garlands.
  */
 export function wish(state, ctx, t, ev) {
-  const info = wishInfo(state);
+  let info = wishInfo(state);
   if (!info.can || info.gain <= 0) {
     ev.push({ kind: "ignored", reason: "wish" });
     return ev;
+  }
+  // The while-you-were-away folds are earned: a wish made with the away card
+  // still up (it never blocks the tabs, §3.7) credits them first, so they
+  // reach lifetime (and so the Wishes) instead of being reset uncounted
+  // (review r5-13). The gain can only grow by it.
+  if (state.away.pot) {
+    collect(state, t, ev, true);
+    info = wishInfo(state);
   }
   // How full the String is as it is wished away: the §3.5 wish moment draws
   // these strands rising and fading (vm string.wishMoment).
