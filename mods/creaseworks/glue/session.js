@@ -12,10 +12,10 @@
 import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings, pickFiles } from "herdr";
 import { view, advance, apply, newGame, formatCount } from "../engine/index.js";
 import { now as clockNow, localDay, bucket } from "./clock.js";
-import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, TICKER_STALE_MS } from "./live.js";
+import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, codeGeneration, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, signature } from "./observe.js";
-import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, panelState, RAIL_PX, FULL_BELOW } from "./commands.js";
+import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, recallWeight, syncStore, panelState, RAIL_PX, FULL_BELOW } from "./commands.js";
 import * as notifier from "./notify.js";
 
 export const VISIBLE_MS = 1000;
@@ -30,6 +30,14 @@ export const POP_DONE_MS = POP_RISE_MS + 700;
 /** At most this many pops alive (DESIGN §13.5; ui/mat.js draws the last 5). */
 export const POP_CAP = 5;
 export const SHORT_BELOW = 640;
+/**
+ * A load that has made no progress for this long has stopped (its task cut
+ * off: herdr's budget, a view closed): it is started again, and the
+ * placeholder says so (r3-01). A load step yields every ≈ 60 ms.
+ */
+export const LOAD_STALL_MS = 15000;
+export const LOADING_TEXT = "Opening the workshop…";
+export const LOAD_RETRY_TEXT = "Opening the save stopped partway; trying again…";
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
 const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };
 
@@ -105,6 +113,8 @@ export class Session {
     this.popSeq = 0;
     this.popCarry = null;
     this.handledRequest = 0;
+    // What this copy's own localStorage holds of the slot's widths (commands.js syncStore).
+    this.stored = { weight: undefined, width: undefined };
     this.handlers = this.makeHandlers();
   }
 
@@ -133,12 +143,21 @@ export class Session {
     this.slot = slot;
     this.copyId = `${this.role}:${randomId()}`;
     takeOver(slot, this.copyId);
+    // Each copy has its own localStorage (keyed by its props): the first copy
+    // to start brings back what it remembers; syncStore copies it to the others (r3-05).
     if (slot.widths.lastPanel === null) {
       const w = recallWidth();
       if (w !== null) slot.widths.lastPanel = w;
     }
+    if (slot.widths.lastWeight === null || slot.widths.lastWeight === undefined) {
+      const w = recallWeight();
+      if (w !== null) slot.widths.lastWeight = w;
+    }
     beat(slot, this.copyId, t);
-    if (slot.state === null) this.startLoad(cx);
+    if (slot.state === null) {
+      // (one load at a time: another copy of this code generation may be loading already)
+      if (!this.loadUnderWay(t)) this.startLoad(cx);
+    }
     // A hot reload: release the older generation's save claim (its task never
     // settles), then settle a main write that may have landed.
     else if (store.adopt(slot, t)) cx.spawn(() => store.resolveInflight(slot, { now: clockNow, owner: this.copyId }), { owner: null });
@@ -147,18 +166,71 @@ export class Session {
     startCommandLoop(cx, (name, tcx) => this.onCommand(name, tcx));
   }
 
-  startLoad(cx) {
+  /**
+   * Loads the save in a task (A4 load order). The task's cx.sleep goes to the
+   * store, so every parse step of a large save (and each of the two parses of
+   * a recovery) runs in a task step of its own, never in one 500 ms step
+   * (r3-01). Once loaded, the ViewModel is built here, so render only reads
+   * the cache (r3-03; §5.5 item 7). `retry`: a load that stopped is started
+   * again (tick); the placeholder and, once loaded, a notice say so.
+   */
+  startLoad(cx, retry = false) {
     const slot = this.slot;
     const gen = (slot.loading || 0) + 1;
+    const t = clockNow();
     slot.loading = gen;
-    const env = { now: clockNow, seed: randomSeed, gen, writer: slot.writerId };
+    slot.loadAt = t;
+    slot.loadBy = this.copyId;
+    slot.loadGen = codeGeneration();
+    if (retry) slot.loadTries = (slot.loadTries || 0) + 1;
+    else if (typeof slot.loadTries !== "number") slot.loadTries = 0;
+    const owner = this.copyId;
     cx.spawn(async (tcx) => {
+      const sleep = sleeper(tcx);
+      const env = { now: clockNow, seed: randomSeed, gen, writer: slot.writerId, sleep, owner };
       const ok = await store.load(slot, env);
       if (!ok || slot.loading !== gen) return;
       slot.loading = 0;
+      slot.loadAt = null;
+      store.noteLoadRetried(slot, clockNow(), slot.loadTries || 0);
+      slot.loadTries = 0;
       touch(slot);
-      notifyCx(tcx);
+      // The ViewModel in a task step of its own (the last parse step was in this one).
+      if (sleep) await sleep(0);
+      if (getSlot() !== slot) return;
+      this.changed(tcx, clockNow());
     }, { owner: null });
+    if (retry) touch(slot);
+  }
+
+  /** True when a load of this code generation is under way and still moving (a copy that started it is open). */
+  loadUnderWay(t) {
+    const slot = this.slot;
+    if (!slot.loading || slot.loadGen !== codeGeneration()) return false;
+    if (typeof slot.loadBy !== "string" || !(slot.loadBy in slot.copies)) return false;
+    return !(typeof slot.loadAt === "number" && t - slot.loadAt > LOAD_STALL_MS);
+  }
+
+  /**
+   * The load watchdog (r3-01): a load whose task stopped (herdr's budget
+   * interrupt cannot be caught, and a closed view's tasks are cancelled)
+   * never settles, so nothing would ever show but the placeholder. One that
+   * has made no progress for LOAD_STALL_MS, or whose copy has gone, is
+   * started again by this copy.
+   */
+  watchLoad(cx, t) {
+    const slot = this.slot;
+    if (!slot.loading || slot.state !== null) return;
+    if (typeof slot.loadAt === "number" && slot.loadAt > t) slot.loadAt = t; // the clock moved back
+    if (this.loadUnderWay(t)) return;
+    this.startLoad(cx, true);
+  }
+
+  /** The placeholder's text while there is no game to show (main.js). */
+  loadingText() {
+    const slot = this.slot;
+    if (!slot || this.demo || !(slot.loadTries > 0)) return LOADING_TEXT;
+    return slot.loadTries > 1 ? `${LOAD_RETRY_TEXT} (try ${slot.loadTries + 1})` : LOAD_RETRY_TEXT;
   }
 
   /** (Re)registers this copy's one data timer at 1000 ms (visible) or 5000 ms (hidden). */
@@ -187,6 +259,8 @@ export class Session {
     this.retime(cx, visible);
     if (getSlot() !== slot) return; // a newer slot replaced this one (another app home in tests)
     const ticker = beat(slot, this.copyId, t, staleFor(this.interval));
+    syncStore(slot, this.stored);
+    if (slot.state === null && slot.loading) this.watchLoad(cx, t);
     if (slot.state && !slot.loading && ticker) this.tickerWork(cx, t, visible, active);
     // (a flash dated far ahead is from before the wall clock moved back)
     if (slot.flash && (t >= slot.flash.until || slot.flash.until - t > 60000)) {
@@ -235,12 +309,12 @@ export class Session {
     }
 
     // Advance (closed form; this window's writerId so stale helpers fall back to the away rate).
+    // Time alone moving the counters is no glue change: every copy re-renders
+    // on its clock bucket (1 s, 5 s in calm mode: r3-12), so the slot is not
+    // touched for it. A player action or a roster change touches it at once.
     const before = slot.state.rev;
     advance(slot.state, t, slot.writerId);
-    if (slot.state.rev !== before) {
-      markDirty(slot, t, false);
-      touch(slot);
-    }
+    if (slot.state.rev !== before) markDirty(slot, t, false);
 
     // Notifications (opt-in, ≤ 3 a day) and the save-problem ribbon rescue.
     notifier.check(slot, t, { day, quiet: panelShown && active, layout: L }, () => {

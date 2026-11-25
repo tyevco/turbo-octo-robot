@@ -27,9 +27,19 @@ export function stackFactor(units) {
 }
 
 /**
+ * What one envelope unit is worth before its multipliers (§6.1, r3-11):
+ * 45 s of passive output, but never less than K.envV hand hits (the floor
+ * Scraps and the Fresh Ream have), so a Bundle that lands while nobody works
+ * and no workshop is built still pays.
+ */
+export function envUnit(r) {
+  return Math.max(K.envRp * r.Rp, K.envV * r.V);
+}
+
+/**
  * Add `units` to `to`'s envelope (one per helper; type rolled on creation,
  * keyed by the finish `key` = "<helperId>:<turn>").
- * Units above the cap convert at once into 45·Rp·crowd(N)·units folds (§6.1).
+ * Units above the cap convert at once into envUnit·crowd(N)·units folds (§6.1).
  */
 export function addUnits(state, ctx, to, units, t, ev, key) {
   const E = ctx.E;
@@ -48,7 +58,7 @@ export function addUnits(state, ctx, to, units, t, ev, key) {
   ev.push({ kind: "envelope", helperId: to.id, units: add });
   if (over > 0) {
     const r = ctx.rates(t);
-    const amount = K.envRp * r.Rp * crowd(ctx.idx.panes.length) * over;
+    const amount = envUnit(r) * crowd(ctx.idx.panes.length) * over;
     state.stats.units.converted += over;
     credit(state, "overflow", amount);
     to.stats.folds += amount;
@@ -61,8 +71,8 @@ export function addUnits(state, ctx, to, units, t, ev, key) {
 /**
  * Cash in `helperId`'s envelope without the player (§6.1, R13): its helper left
  * long ago (its Album record is compact or gone from the save). A Bundle pays
- * what opening it would (`45 · Rp · u · envMult · crowd(N)`, no Tailwind); a
- * timed boost converts like units above the cap (`45 · Rp · crowd(N) · u`).
+ * what opening it would (`envUnit · u · envMult · crowd(N)`, no Tailwind); a
+ * timed boost converts like units above the cap (`envUnit · crowd(N) · u`).
  * The folds go to the record's Album total only (a compact record keeps its
  * packed form). Returns the folds paid (0 when there is no envelope).
  */
@@ -75,12 +85,12 @@ export function settleEnvelope(state, ctx, helperId, t, ev) {
   const c = crowd(ctx.idx.panes.length);
   let amount;
   if (env.type === "bundle") {
-    amount = K.envRp * r.Rp * u * ctx.E.envMult * c;
+    amount = envUnit(r) * u * ctx.E.envMult * c;
     state.stats.units.opened += u;
     credit(state, "env", amount);
     ev.push({ kind: "earn", source: "env", amount });
   } else {
-    amount = K.envRp * r.Rp * c * u;
+    amount = envUnit(r) * c * u;
     state.stats.units.converted += u;
     credit(state, "overflow", amount);
     ev.push({ kind: "earn", source: "overflow", amount });
@@ -152,7 +162,7 @@ export function openEnvelope(state, ctx, helperId, t, ev) {
   const def = envelopeDef(env.type);
   if (env.type === "bundle") {
     const r = ctx.rates(t);
-    const amount = K.envRp * r.Rp * u * E.envMult * crowd(ctx.idx.panes.length) * tw;
+    const amount = envUnit(r) * u * E.envMult * crowd(ctx.idx.panes.length) * tw;
     credit(state, "env", amount);
     if (h) { h.stats.folds += amount; h.stats.run += amount; }
     ev.push({ kind: "earn", source: "env", amount });

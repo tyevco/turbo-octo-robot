@@ -34,7 +34,7 @@ export default class Creaseworks extends View {
       const T = ctx.T || {};
       const bg = typeof T.chrome === "string" ? T.chrome : "#1c1d21";
       const fg = typeof T.muted === "string" ? T.muted : "#9a9aa2";
-      return root.bg(bg).flex().items_center().justify_center().text_size(11).text_color(fg).child("Opening the workshop…");
+      return root.bg(bg).flex().items_center().justify_center().text_size(11).text_color(fg).child(s.loadingText());
     }
     const ui = s.uiForRender();
     const content = s.role === "ribbon" ? renderRibbon(vm, ui, ctx) : renderPanel(vm, ui, ctx);

@@ -22,7 +22,7 @@ import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRE
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
 import { indexHelpers, flock } from "./helpers.js";
 import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicking.js";
-import { stackFactor } from "./envelopes.js";
+import { stackFactor, envUnit } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
 import { rates } from "./engine.js";
 import { bestSince } from "./away.js";
@@ -46,6 +46,8 @@ export const LOOP_BUDGET = Object.freeze({
 export const RIBBON = Object.freeze({ left: 118, right: 100, pad: 16, chip: 22, pip: 14, defaultWidth: 1172 });
 /** Rail below this panel width (DESIGN §2.4: folded below 140, too narrow for the full panel below 200). */
 const RAIL_BELOW = 200;
+/** The narrow panel below this width (DESIGN §2.4: icon-only shop, dense Flock tiles; ui/shop.js NARROW). */
+const NARROW_BELOW = 280;
 /** Boost bar totals: the remaining-time caps (DESIGN §6.2; Flock Song 120 s; Tailwind 10 min). */
 const BOOST_CAP = { rush: 90000, storm: 30000, chorus: 240000, song: 120000, tailwind: 600000 };
 const SAVE_TEXT = {
@@ -352,7 +354,9 @@ function budget(state, E, t, c) {
 function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
   const nTiles = roster.ordered.length + roster.elsewhere.length;
   const density = state.settings.density;
-  const dense = typeof o.dense === "boolean" ? o.dense : density === "always" ? true : density === "never" ? false : nTiles >= 21;
+  // Auto: dense from 21 tiles, or in the narrow panel (140-279 px, DESIGN §2.4, r3-19).
+  const narrow = num(o.width, 0) > 0 && num(o.width, 0) < NARROW_BELOW;
+  const dense = typeof o.dense === "boolean" ? o.dense : density === "always" ? true : density === "never" ? false : nTiles >= 21 || narrow;
   const groups = [];
   if (roster.workspace) {
     if (roster.ordered.length) {
@@ -485,18 +489,22 @@ function detail(state, t, h, status, title, where, nKids) {
   };
 }
 
-// The Album grows without limit (§11.1: pane helpers are never dropped), so
-// its rows are memoised: the sorted list per roster (the helper index object)
-// and each row per helper until its "left … ago" text would change. The index
-// is rebuilt on every observe with a helper list (any agent status change), so
-// a new index first checks the last Album of the same save: same count and
-// the same leaving times and folds in hs order (a 64-bit fingerprint; no
-// per-record copy) carry the sorted list and rows over, so an observe costs
-// one O(n) pass, not the sort and format. Any Album change moves a leaving
-// time: a record that leaves gets the observe's time, one that rejoins takes
-// its own out, compaction rounds them; name, species and hue do not change
-// while a record stays gone. A view of an unchanged Album returns the very
-// same frozen array; the output is always what a fresh build would give.
+// The Album grows without limit (§11.1: pane helpers are never dropped;
+// 20,000 records and more on a multi-year save), so its rows are memoised:
+// the rows in Album order per roster (the helper index object) and each row
+// per helper until its "left … ago" text would change. The index is rebuilt
+// on every observe with a helper list (any agent status change), so a new
+// index first checks the last Album of the same save: same count and the same
+// leaving times and folds in hs order (a 64-bit fingerprint; no per-record
+// copy) carry the rows over, so an observe costs one O(n) pass, not the sort
+// and format. Any Album change moves a leaving time: a record that leaves
+// gets the observe's time, one that rejoins takes its own out, compaction
+// rounds them. A changed Album is rebuilt from the last built rows (r3-02):
+// unmoved records keep their row and place, only the records that moved are
+// sorted and formatted and merged in, so an agent leaving or rejoining with
+// the Album open costs O(n) cheap steps, not a sort and 20,000 formats inside
+// the tick. A view of an unchanged Album returns the very same frozen array;
+// the output is always what a fresh build would give.
 // The memo rides on the state under a symbol, as the helper index does
 // (helpers.js): JSON skips it, so it never reaches the save, and it dies with
 // its state. Per-record memory stays as before (the wasm QuickJS harness
@@ -544,11 +552,13 @@ function albumScan(state) {
   let a = 0x811c9dc5 | 0;
   let b = 0x01000193 | 0;
   const gone = [];
+  let helpers = 0;
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
     if (!(h.gone && h.kind === "pane")) continue;
     gone.push(h);
+    helpers += helpersIn(h);
     fb[0] = typeof h.missingSince === "number" ? h.missingSince : NaN;
     a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
     b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
@@ -556,10 +566,10 @@ function albumScan(state) {
     a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
     b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
   }
-  return { gone, a: a >>> 0, b: b >>> 0 };
+  return { gone, helpers, a: a >>> 0, b: b >>> 0 };
 }
 
-/** The roster's Album: its gone pane helpers (sorted, most recently left first, when rows are first built). */
+/** The roster's Album: its gone pane helpers (hs order; rows, once built, are kept in Album order). */
 function albumEntry(state, idx) {
   const prev = memoGet(state, ALBUM);
   if (prev && prev.idx === idx) return prev;
@@ -568,24 +578,33 @@ function albumEntry(state, idx) {
   if (prev && prev.count === scan.gone.length && prev.a === scan.a && prev.b === scan.b) {
     c = prev;
   } else {
-    c = { gen: GEN, idx: null, a: scan.a, b: scan.b, gone: scan.gone, sorted: false, count: scan.gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
+    // A changed Album keeps the last built rows to rebuild from (r3-02): rows
+    // of records that did not move are reused in their order, only new or
+    // changed records are sorted and formatted, and the two are merged.
+    const from = prev ? (prev.items ? prev : prev.from) : null;
+    c = { gen: GEN, idx: null, a: scan.a, b: scan.b, gone: scan.gone, count: scan.gone.length, helpers: scan.helpers, from, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
   }
   c.idx = idx;
   memoSet(state, ALBUM, c);
   return c;
 }
 
-/** How many records the Album holds (no rows, no fingerprint: every view asks). */
+/** How many helpers an Album record stands for: an archive entry (R13, r3-04) holds many. */
+function helpersIn(h) {
+  return typeof h.archive === "number" && h.archive > 0 ? h.archive : 1;
+}
+
+/** How many helpers the Album holds (no rows, no fingerprint: every view asks). */
 function albumCount(state, idx) {
   const rows = memoGet(state, ALBUM);
-  if (rows && rows.idx === idx) return rows.count;
+  if (rows && rows.idx === idx) return rows.helpers;
   const memo = memoGet(state, ALBUM_N);
   if (memo && memo.idx === idx) return memo.n;
   let n = 0;
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (h.gone && h.kind === "pane") n++;
+    if (h.gone && h.kind === "pane") n += helpersIn(h);
   }
   memoSet(state, ALBUM_N, { gen: GEN, idx, n });
   return n;
@@ -599,39 +618,143 @@ function agoSpan(ms) {
   return [k * u, (k + 1) * u];
 }
 
-function albumRow(h, t, style, texts) {
+/** Album order: most recently left first, then join order. */
+const byLeftDesc = (a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b);
+
+/**
+ * `list` sorted in Album order, in place. A comparator sort of 20,000 records
+ * costs about 150 ms in QuickJS (r3-02), so a long list is bucketed by its
+ * leaving time instead (a native Float64Array sort of the distinct times and
+ * a counting pass); only records that left at the same moment are compared.
+ */
+function sortAlbum(list) {
+  const n = list.length;
+  if (n < 64) return list.sort(byLeftDesc);
+  const keys = new Float64Array(n);
+  for (let i = 0; i < n; i++) keys[i] = -num(list[i].missingSince);
+  const uniq = keys.slice().sort();
+  let u = 0;
+  for (let i = 0; i < n; i++) if (u === 0 || uniq[i] !== uniq[u - 1]) uniq[u++] = uniq[i];
+  const rankOf = new Map();
+  for (let r = 0; r < u; r++) rankOf.set(uniq[r], r);
+  const start = new Int32Array(u + 1);
+  const rank = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = rankOf.get(keys[i]);
+    rank[i] = r;
+    start[r + 1]++;
+  }
+  for (let r = 0; r < u; r++) start[r + 1] += start[r];
+  const pos = start.slice(0, u);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[pos[rank[i]]++] = list[i];
+  for (let r = 0; r < u; r++) {
+    const lo = start[r];
+    const hi = start[r + 1];
+    if (hi - lo > 1) {
+      const run = out.slice(lo, hi).sort(byJoin);
+      for (let i = lo; i < hi; i++) out[i] = run[i - lo];
+    }
+  }
+  for (let i = 0; i < n; i++) list[i] = out[i];
+  return list;
+}
+
+/** One Album row and what it was built from (a record whose fields still match keeps it). */
+function albumRow(h, t, style, cache) {
   const m = h.missingSince;
   const known = typeof m === "number" && Number.isFinite(m);
   const span = known ? agoSpan(t - m) : [-Infinity, Infinity];
-  // Rows that left in the same unit step share one "left … ago" text.
+  // Rows that left in the same unit step share one "left … ago" text, and
+  // namesakes one clipped name (the base names are a small set).
+  const texts = cache.texts;
   let left = texts[span[0]];
   if (left === undefined) left = texts[span[0]] = ago(known ? t - m : 0);
+  // an archive entry (R13, r3-04) is named by how many helpers it holds
+  const nm = h.archive > 0 ? `${formatInt(h.archive)} ${h.archive === 1 ? "helper" : "helpers"}` : String(h.name ?? "");
+  let name = cache.names[nm];
+  if (name === undefined) name = cache.names[nm] = clip(nm, CLIP.long);
+  const folds = num(h.stats && h.stats.folds);
   const row = Object.freeze({
     helperId: h.id,
-    name: nameOfHelper(h, CLIP.long),
+    name,
     species: h.species,
     hue: h.hue,
     leftAgo: left,
-    folds: cnt(num(h.stats && h.stats.folds), style),
+    folds: cnt(folds, style),
   });
-  return { h, row, lo: known ? m + span[0] : -Infinity, hi: known ? m + span[1] : Infinity };
+  return { h, row, lo: known ? m + span[0] : -Infinity, hi: known ? m + span[1] : Infinity, m, j: h.joined, f: folds, nm, n: h.archive, sp: h.species, hu: h.hue, seen: null };
+}
+
+/** True when `it` still shows `h` as it is now at time `t` in `style`. */
+function rowCurrent(it, h, t) {
+  return it.m === h.missingSince && it.j === h.joined && t >= it.lo && t < it.hi &&
+    it.f === num(h.stats && h.stats.folds) && it.n === h.archive && (h.archive > 0 || it.nm === String(h.name ?? "")) && it.sp === h.species && it.hu === h.hue;
+}
+
+/**
+ * Builds the rows of a changed Album from the last built ones (r3-02): a
+ * record still gone with the same leaving and join time keeps its place (and
+ * its row, unless its folds, name or "left … ago" text changed); records new
+ * to the Album (or moved) are sorted alone and merged in. An Album opened for
+ * the first time is one bucketed sort and one row per record.
+ */
+function albumBuild(c, t, style, cache) {
+  const from = c.from;
+  c.from = null;
+  const gone = c.gone;
+  let kept = [];
+  let fresh = gone;
+  if (from && from.items && from.style === style) {
+    const old = new Map();
+    const its = from.items;
+    for (let i = 0; i < its.length; i++) old.set(its[i].h, its[i]);
+    fresh = [];
+    for (let i = 0; i < gone.length; i++) {
+      const h = gone[i];
+      const it = old.get(h);
+      if (it !== undefined && it.m === h.missingSince && it.j === h.joined) it.seen = c;
+      else fresh.push(h);
+    }
+    for (let i = 0; i < its.length; i++) {
+      const it = its[i];
+      if (it.seen !== c) continue;
+      it.seen = null;
+      kept.push(rowCurrent(it, it.h, t) ? it : albumRow(it.h, t, style, cache));
+    }
+  } else {
+    fresh = gone.slice();
+  }
+  sortAlbum(fresh);
+  const add = new Array(fresh.length);
+  for (let i = 0; i < fresh.length; i++) add[i] = albumRow(fresh[i], t, style, cache);
+  if (!kept.length) return add;
+  if (!add.length) return kept;
+  const out = new Array(kept.length + add.length);
+  let i = 0;
+  let j = 0;
+  let k = 0;
+  while (i < kept.length && j < add.length) out[k++] = byLeftDesc(kept[i].h, add[j].h) <= 0 ? kept[i++] : add[j++];
+  while (i < kept.length) out[k++] = kept[i++];
+  while (j < add.length) out[k++] = add[j++];
+  return out;
 }
 
 function albumOf(state, t, style, idx) {
   const c = albumEntry(state, idx);
   if (c.items && c.style === style && t >= c.lo && t < c.hi) return c.out;
-  const texts = Object.create(null);
-  if (!c.sorted) {
-    c.gone.sort((a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b));
-    c.sorted = true;
-  }
-  if (!c.items || c.style !== style) {
-    c.style = style;
-    c.items = c.gone.map((h) => albumRow(h, t, style, texts));
+  const cache = { texts: Object.create(null), names: Object.create(null) };
+  if (!c.items) {
+    if (c.from && c.from.style !== style) c.from = null;
+    c.items = albumBuild(c, t, style, cache);
+  } else if (c.style !== style) {
+    const items = c.items;
+    for (let i = 0; i < items.length; i++) items[i] = albumRow(items[i].h, t, style, cache);
   } else {
     const items = c.items;
-    for (let i = 0; i < items.length; i++) if (!(t >= items[i].lo && t < items[i].hi)) items[i] = albumRow(items[i].h, t, style, texts);
+    for (let i = 0; i < items.length; i++) if (!(t >= items[i].lo && t < items[i].hi)) items[i] = albumRow(items[i].h, t, style, cache);
   }
+  c.style = style;
   let lo = -Infinity;
   let hi = Infinity;
   const out = new Array(c.items.length);
@@ -843,7 +966,7 @@ function trayVm(state, t, E, r, idx, loops, style) {
     const u = num(env.units);
     let tooltip;
     if (env.type === "bundle") {
-      tooltip = `Bundle: +${cnt(K.envRp * r.Rp * u * E.envMult * crowd(N) * tw, style)} folds`;
+      tooltip = `Bundle: +${cnt(envUnit(r) * u * E.envMult * crowd(N) * tw, style)} folds`;
     } else {
       const ms = def.baseMs * stackFactor(u) * E.durMult * tw;
       const mult = env.type === "rush" ? E.rushMult : env.type === "storm" ? E.stormMult : K.chorusMult;
@@ -852,7 +975,9 @@ function trayVm(state, t, E, r, idx, loops, style) {
         const add = Math.max(0, Math.min(def.capMs, cur + ms * K.extendShare) - cur);
         tooltip = `${def.name} is running: opening now adds only ${formatDuration(add)}`;
       } else {
-        tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · open when you're ready to click`;
+        // Chorus multiplies working helpers, Rush and Storm hand hits (§6.3, r3-15).
+        const when = env.type === "chorus" ? "open while your helpers are working" : "open when you're ready to click";
+        tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · ${when}`;
       }
     }
     envelopes.push({ helperId: id, type: env.type, units: u, bob: loops.envelope === id, label: u >= 2 ? `×${dec2(u)}` : null, tooltip: clip(tooltip, CLIP.notice) });

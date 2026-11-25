@@ -66,6 +66,10 @@ export const ORPHAN_MS = 15000;
  */
 const STALLED = "A save step stopped before finishing; saving again. A Settings save tool used just then may not have taken effect.";
 const ORPHANED = "A save step was cut off when a Creaseworks view closed; saving again. A Settings save tool used just then may not have taken effect.";
+/** save.json went missing under a running game (deleted, moved): it is written again (r3-09). */
+export const MISSING_TEXT = "The save file was missing (deleted or moved); this window's game was saved to it again.";
+/** A Settings save tool's claim cut off by a hot reload (adopt, r3-07). */
+const RELOADED = "A save step was cut off when Creaseworks reloaded; saving again. A Settings save tool used just then may not have taken effect.";
 /** A plain save cycle that stalled (no progress for WRITE_STALL_MS): a short flash, nothing lost. */
 const STALLED_FLASH = "A save step stalled; saving again.";
 /** Claims whose release is said quietly (A4: the save they held is simply made again). */
@@ -165,7 +169,10 @@ const pause = (env) => (env && typeof env.sleep === "function" ? env.sleep(0) : 
 
 /** Records progress on the save claim (WRITE_STALL_MS counts from the last one). */
 function progress(slot, env) {
-  if (slot.save.writing !== null && env && typeof env.now === "function") slot.save.writingAt = env.now();
+  if (!env || typeof env.now !== "function") return;
+  if (slot.save.writing !== null) slot.save.writingAt = env.now();
+  // The load's own progress (session.js watches for a load that stopped: r3-01).
+  if (slot.loading && env.gen === slot.loading) slot.loadAt = env.now();
 }
 
 /** Saves shorter than this parse in one go (well under 100 ms); longer ones in steps. */
@@ -321,7 +328,15 @@ function orphaned(slot, t) {
  */
 export function adopt(slot, t) {
   const S = slot.save;
-  if (S.writing !== null && S.writingGen !== codeGeneration()) dropClaim(slot, t); // (a cut-off share: the save made due settles it)
+  if (S.writing !== null && S.writingGen !== codeGeneration()) {
+    // A Settings save tool (Check, Reset, Restore, a share cut off before its
+    // pointer write) may not have taken effect: said, never silent (r3-07). A
+    // share cut off after it (`sharing`) is settled and said by the next cycle
+    // (settleShare); a plain save cycle is simply made again.
+    const what = S.writingFor;
+    const plain = PLAIN_CLAIMS.includes(what) || (what === "share" && !!S.sharing);
+    dropClaim(slot, t, false, plain ? null : RELOADED);
+  }
   return !!slot.inflight && S.writing === null;
 }
 
@@ -372,66 +387,105 @@ async function findKept(paths, text) {
 }
 
 /**
- * Keeps damaged text aside as save.damaged-<n>.json: the first free n of 1..5;
- * when all five exist the oldest is replaced (the files shift down one and the
- * newest becomes 5, so 1 is always the oldest). Returns the file name, or null
- * when it could not be written.
+ * Keeps damaged text aside as save.damaged-<n>.json, the newest always at the
+ * highest n: after the highest n in use; when 5 is in use the kept files move
+ * down to close any gap (one removed by hand) and, only when all five hold a
+ * copy, the oldest (1) is replaced (r3-08: a gap was filled first, so the next
+ * shift dropped a newer copy instead of the oldest). Text that is already kept
+ * is not kept twice (r3-01: a damaged save.json read again on every reload
+ * filled all five). Returns the file name, or null when it could not be
+ * written.
  */
 export async function keepAside(paths, text) {
   return (await keepAsideShifting(paths, text)).name;
 }
 
-/** keepAside, also saying whether the kept files moved down one (`shifted`; then 1 was replaced). */
+/**
+ * keepAside, also saying where the kept files went: `moves[n]` is the n a
+ * listed save.damaged-<n>.json holds its text at now (0: replaced), for every
+ * n that moved; empty when nothing moved.
+ */
 async function keepAsideShifting(paths, text) {
   const have = [];
+  const bad = [];
   for (let n = 1; n <= DAMAGED_MAX; n++) {
     const r = await readOrError(damagedPath(paths, n));
     have.push(r.text);
-    if (r.text === null && r.error === null) {
-      try {
-        await writeTextFile(damagedPath(paths, n), text, null);
-        return { name: baseName(damagedPath(paths, n)), shifted: false };
-      } catch {
-        return { name: null, shifted: false };
-      }
+    bad.push(r.error !== null);
+  }
+  const moves = Object.create(null);
+  for (let n = DAMAGED_MAX; n >= 1; n--) {
+    if (have[n - 1] === text) return { name: baseName(damagedPath(paths, n)), moves, already: true };
+  }
+  let top = 0;
+  for (let n = 1; n <= DAMAGED_MAX; n++) if (have[n - 1] !== null || bad[n - 1]) top = n;
+  if (top < DAMAGED_MAX) {
+    try {
+      await writeTextFile(damagedPath(paths, top + 1), text, null);
+      return { name: baseName(damagedPath(paths, top + 1)), moves };
+    } catch {
+      return { name: null, moves };
     }
   }
-  let moved = 0;
+  // 5 is in use. An unreadable kept file cannot be moved (herdr's write reads
+  // it first): the copy goes to a free n if there is one, else it is not kept.
+  if (bad.some((x) => x)) {
+    const free = have.findIndex((x, i) => x === null && !bad[i]);
+    if (free < 0) return { name: null, moves };
+    try {
+      await writeTextFile(damagedPath(paths, free + 1), text, null);
+      return { name: baseName(damagedPath(paths, free + 1)), moves };
+    } catch {
+      return { name: null, moves };
+    }
+  }
+  // Close the gaps, oldest first; the oldest leaves only when all five are full.
+  const kept = [];
+  for (let n = 1; n <= DAMAGED_MAX; n++) if (have[n - 1] !== null) kept.push(n);
+  const keep = kept.slice(kept.length - (DAMAGED_MAX - 1));
+  const dest = Object.create(null); // old n → new n
+  for (const n of kept) dest[n] = 0;
+  keep.forEach((n, i) => (dest[n] = i + 1));
+  const want = keep.map((n) => have[n - 1]).concat([text]);
+  let done = 0; // files 1..done hold what they should
   try {
-    for (let n = 1; n < DAMAGED_MAX; n++) {
-      await writeTextFile(damagedPath(paths, n), have[n], have[n - 1]);
-      moved = n;
+    for (let i = 1; i <= want.length; i++) {
+      if (have[i - 1] !== want[i - 1]) await writeTextFile(damagedPath(paths, i), want[i - 1], have[i - 1]);
+      done = i;
     }
-    await writeTextFile(damagedPath(paths, DAMAGED_MAX), text, have[DAMAGED_MAX - 1]);
-    return { name: baseName(damagedPath(paths, DAMAGED_MAX)), shifted: true };
   } catch {
-    return { name: null, shifted: moved > 0, moved };
+    // (a move cut short: a file not yet written still holds its own text)
   }
+  for (const n of kept) {
+    const to = dest[n];
+    // A copy is where it went once that file was written; else still at n unless n was overwritten.
+    const at = to > 0 && to <= done ? to : n > done ? n : 0;
+    if (at !== n) moves[n] = at;
+  }
+  return done === want.length ? { name: baseName(damagedPath(paths, want.length)), moves } : { name: null, moves };
 }
 
 /**
  * Keeps `text` aside (keepAside) and lists it in Details (`save.damaged`,
- * with `reason` when given). When the five kept files moved down one, the
- * names already listed move with them (the oldest, replaced, leaves the list),
- * so every name listed is the file that holds what it was listed for.
- * Returns the kept file's name, or null.
+ * with `reason` when given). When kept files moved, the names already listed
+ * move with them (one replaced leaves the list), so every name listed is the
+ * file that holds what it was listed for. Returns the kept file's name, or null.
  */
 async function keepAsideListed(slot, paths, text, reason = null) {
   const r = await keepAsideShifting(paths, text);
   const S = slot.save;
-  if (r.shifted) {
-    const upto = typeof r.moved === "number" ? r.moved : DAMAGED_MAX - 1; // files 2..upto+1 moved to 1..upto
+  if (Object.keys(r.moves).length) {
     const stem = baseName(paths.save).replace(/\.json$/, "");
     const next = [];
     for (const d of S.damaged) {
       const m = String(d).match(/^(.*)\.damaged-(\d+)\.json(.*)$/);
-      if (!m || m[1] !== stem) {
-        next.push(d);
+      const n = m && m[1] === stem ? Number(m[2]) : NaN;
+      if (!(n in r.moves)) {
+        if (next.indexOf(d) < 0) next.push(d);
         continue;
       }
-      const n = Number(m[2]);
-      if (n === 1) continue; // replaced
-      const moved = n <= upto + 1 ? `${stem}.damaged-${n - 1}.json${m[3]}` : d; // (a move cut short leaves the rest)
+      if (r.moves[n] === 0) continue; // replaced
+      const moved = `${stem}.damaged-${r.moves[n]}.json${m[3]}`;
       if (next.indexOf(moved) < 0) next.push(moved);
     }
     S.damaged = next;
@@ -478,8 +532,12 @@ export function problemEpisode(slot) {
 /**
  * Loads the game (A4 load order) into `slot`: location.json → save.json → if
  * damaged, keep it aside and try save.bak.json → if damaged too, keep it aside
- * and start fresh. `opts`: { now, seed, writer, gen } (gen guards a load that a
- * reload superseded). Sets slot.state, baseText, bakText and the load notice.
+ * and start fresh. `opts`: { now, seed, writer, gen, sleep } (gen guards a
+ * load that a reload superseded; `sleep` is the task's cx.sleep: every parse
+ * step of a large save, and each parse, runs in a task step of its own, never
+ * in one 500 ms step: r3-01). Sets slot.state, baseText, bakText and the load
+ * notice; `slot.loadAt` records its progress (session.js restarts a load that
+ * stopped).
  */
 export async function load(slot, opts) {
   const stale = () => slot.loading !== opts.gen;
@@ -539,6 +597,9 @@ export async function load(slot, opts) {
     if (stale()) return false;
     const r = rec.text !== null ? await parseIn(slot, rec.text, opts, stale) : null;
     if (stale()) return false;
+    // Each parse in task steps of its own (r3-01: both in one step went past 500 ms).
+    if (r !== null) await pause(opts);
+    if (stale()) return false;
     const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
     if (stale()) return false;
     if (b) slot.bakState = b.ok ? "ok" : "damaged";
@@ -576,6 +637,8 @@ export async function load(slot, opts) {
         kept = await keepAsideListed(slot, P, main.text);
         if (stale()) return false;
       }
+      await pause(opts); // the backup parses in task steps of its own (r3-01)
+      if (stale()) return false;
       slot.baseText = main.text;
       S.baseOk = false;
       const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
@@ -593,6 +656,8 @@ export async function load(slot, opts) {
           keptBak = await keepAsideListed(slot, P, bak.text);
           if (stale()) return false;
         }
+        await pause(opts);
+        if (stale()) return false;
         state = fresh();
         notice = { kind: "fresh", text: freshText(main.text !== null, kept, bak.text !== null, keptBak), at: t0 };
       }
@@ -647,6 +712,19 @@ export async function load(slot, opts) {
   touch(slot);
   return true;
 }
+
+/**
+ * The load stopped (a load task cut off: herdr's budget, a closed view) and
+ * was started again `tries` times before this one finished: said in a load
+ * notice unless the load gave one of its own (r3-01: never silent).
+ */
+export function noteLoadRetried(slot, t, tries) {
+  if (!(tries > 0) || slot.notices.load) return;
+  setNotice(slot, "load", { kind: "recovered", text: LOAD_RETRIED_TEXT, at: t });
+}
+
+/** The load notice after a load that had to be started again (noteLoadRetried). */
+export const LOAD_RETRIED_TEXT = "Opening the save stopped partway and was started again; it opened fine.";
 
 /**
  * A missing shared save said in front of another load notice: the short form,
@@ -735,9 +813,10 @@ async function mergeFromDisk(slot, env, stale) {
   if (r.error !== null) return { ok: false, error: r.error };
   const t = env.now();
   if (r.text === null) {
-    slot.baseText = null; // deleted under us: create it again
+    slot.baseText = null; // deleted under us: create it again, and say so (r3-09)
     slot.save.baseOk = false;
-    return { ok: true, refunds: [] };
+    setNotice(slot, "load", { kind: "recovered", text: MISSING_TEXT, at: t });
+    return { ok: true, refunds: [], foreign: false };
   }
   // A year-old save takes a large share of the 500 ms task budget to take in
   // (the read), to parse, and as much again to serialise: each in a task step
@@ -804,7 +883,7 @@ async function mergeFromDisk(slot, env, stale) {
     text: `The save file was damaged by another writer. ${kept ? "It was kept aside; " : ""}your progress is being saved over it.`,
     at: t,
   });
-  return { ok: true, refunds: [] };
+  return { ok: true, refunds: [], foreign: false }; // nobody's progress merged in (r3-09)
 }
 
 /**
@@ -1049,7 +1128,7 @@ export async function cycle(slot, env) {
           fail(slot, m.error, env.now());
           return false;
         }
-        if (m.foreign !== false) merged = true;
+        if (m.foreign === true) merged = true; // (a missing or damaged file is no other window's progress)
         for (const x of m.refunds) refunds.push(x);
         continue;
       }

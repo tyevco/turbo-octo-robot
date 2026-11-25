@@ -95,15 +95,19 @@ test("damaged inputs are reported, never thrown (A4, A12)", () => {
   assert.equal(engine.parseSave(JSON.stringify(doc2)).reason, "check");
 });
 
-test("the file format is 3 (chunked check); formats 1 and 2 still load; a newer one is read-only, never damaged (R13)", () => {
+test("the file format is 4 (chunked check, keyed Album entries, archives); formats 1-3 still load; a newer one is read-only, never damaged (R13)", () => {
   // Builds before Album compaction compare the envelope version with their own
   // VERSION (1): "newer" means read-only and never written, where "shape" would
   // restore the backup and write it over this save (a rollback).
-  assert.equal(SAVE_VERSION, 3);
+  assert.equal(SAVE_VERSION, 4);
   assert.ok(SAVE_VERSION > engine.VERSION);
   const s = played();
   const text = engine.serialize(s);
-  assert.equal(JSON.parse(text).version, 3);
+  assert.equal(JSON.parse(text).version, 4);
+  // a format-3 file (chunked check, the same rule) still loads, to the same game
+  const v3 = text.replace(`"version":4,`, `"version":3,`);
+  assert.equal(engine.parseSave(v3).ok, true);
+  assert.equal(engine.serialize(engine.parseSave(v3).state), text);
   // format-1 and format-2 files (whole-text check) still load, to the same game
   for (const v of [1, 2]) {
     const back = engine.parseSave(oldFormat(text, v));
@@ -263,7 +267,8 @@ test("Album compaction: old gone helpers are packed, never dropped, and a round 
   const doc = JSON.parse(text);
   const packed = Object.values(doc.state.helpers).filter(Array.isArray);
   assert.equal(packed.length, compact.length);
-  assert.ok(packed.every((a) => a.length === 4 || a.length === 6));
+  // name, folds, tasks, minute, kidsPast, kidsFolds, then the terminal key (r3-18)
+  assert.ok(packed.every((a) => a.length === 7 && Number.isInteger(a[6]) && a[6] >= 0 && a[6] <= 0xffff));
   assert.equal(doc.check, checkByHand(doc.state));
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);

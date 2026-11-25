@@ -110,21 +110,24 @@ test("turn deltas: first sighting and turn < lastTurn rebaseline; d > 0 is one f
   me.act(observeAction(T0 + 3000, [agent(1, "working", 0)]));
   assert.equal(s.helpers[id].lastTurn, 0);
   assert.equal(s.envelopes[id].units, 1);
-  // Within 60 s of the previous credited finish: 0.25.
+  // Units follow the time since the previous credited finish (r3-24): 3 s
+  // later is the 1/8 minimum, 6 min later half a unit, 12 min or more a whole one.
   me.act(observeAction(T0 + 4000, [agent(1, "idle", 1)]));
-  assert.equal(s.envelopes[id].units, 1.25);
-  me.act(observeAction(T0 + 70000, [agent(1, "idle", 3)]));
-  assert.equal(s.envelopes[id].units, 2.25);
-  assert.equal(s.helpers[id].stats.tasks, 3);
+  assert.equal(s.envelopes[id].units, 1.125);
+  me.act(observeAction(T0 + 4000 + 360000, [agent(1, "idle", 3)]));
+  assert.equal(s.envelopes[id].units, 1.625);
+  me.act(observeAction(T0 + 4000 + 360000 + 3600000, [agent(1, "idle", 4)]));
+  assert.equal(s.envelopes[id].units, 2.625);
+  assert.equal(s.helpers[id].stats.tasks, 4);
   // A new created_ms is a new helper (rebaselined), and the old one goes to the Album.
-  me.act(observeAction(T0 + 80000, [agent(1, "idle", 9, { created: 5000 })]));
+  me.act(observeAction(T0 + 8000000, [agent(1, "idle", 9, { created: 5000 })]));
   assert.equal(s.helpers[id].gone, true);
   assert.equal(engine.groupFor(s.helpers[id], "wA"), "album");
   assert.equal(s.helpers[engine.helperId("t1", 5000)].lastTurn, 9);
-  assert.equal(s.envelopes[id].units, 2.25); // the envelope stays on the tray
+  assert.equal(s.envelopes[id].units, 2.625); // the envelope stays on the tray
 });
 
-test("fledglings add 0.5 unit to the parent (0.125 within 60 s) and multiply it (§5.3, §6.1)", () => {
+test("fledglings add 0.5 unit to the parent from one budget, and multiply it (§5.3, §6.1, r3-24)", () => {
   const s = seeded();
   const me = writer(s);
   me.act(observeAction(T0, [agent(1, "working", 0), kid(2, 1, "working", 0), kid(3, 1, "working", 0)]));
@@ -136,12 +139,81 @@ test("fledglings add 0.5 unit to the parent (0.125 within 60 s) and multiply it 
   me.act(observeAction(T0 + 1000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "working", 0)]));
   assert.equal(s.envelopes[p].units, 0.5);
   assert.equal(s.envelopes[k], undefined);
-  me.act(observeAction(T0 + 2000, [agent(1, "working", 0), kid(2, 1, "idle", 2), kid(3, 1, "working", 0)]));
-  assert.equal(s.envelopes[p].units, 0.625);
-  close(engine.rates(s).Hs0, 0.3 * 1.25);
+  // the other fledgling 1 s later draws on the same parent budget: 0.5 · 1/8
+  me.act(observeAction(T0 + 2000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "idle", 1)]));
+  assert.equal(s.envelopes[p].units, 0.5625);
+  close(engine.rates(s).Hs0, 0.3);
   // a fledgling of a fledgling counts for the pane helper at the root
-  me.act(observeAction(T0 + 3000, [agent(1, "working", 0), kid(2, 1, "idle", 2), kid(3, 1, "working", 0), kid(4, 3, "working", 0)]));
+  me.act(observeAction(T0 + 3000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "working", 1), kid(4, 3, "working", 0)]));
   assert.equal(s.helpers[engine.helperId("t4", 1004)].parent, p);
+});
+
+test("r3-24: a burst of new short-lived fledglings earns what one fledgling does, not 0.5 unit each", () => {
+  const s = seeded();
+  const me = writer(s);
+  const p = engine.helperId("t1", 1001);
+  let t = T0;
+  me.act(observeAction(t, [agent(1, "working", 0)]));
+  // 50 sub-agents over 15 min, each a new address that works 10 s and finishes
+  for (let i = 0; i < 50; i++) {
+    const a = 100 + i;
+    me.act(observeAction((t += 1000), [agent(1, "working", 0), kid(a, 1, "working", 0)]));
+    me.act(observeAction((t += 10000), [agent(1, "working", 0), kid(a, 1, "idle", 1)]));
+    me.act(observeAction((t += 7000), [agent(1, "working", 0)]));
+  }
+  assert.ok(t - T0 <= 15 * 60000);
+  const u = s.envelopes[p].units;
+  // the first full 0.5, then 49 finishes 18 s apart at the 1/8 minimum: 0.5 + 49 · 0.0625
+  assert.equal(u, 0.5 + 49 * 0.0625);
+  assert.ok(u < 4, `${u} units (0.5 each would be 25)`);
+});
+
+test("r3-24: short turns earn units by time, so an agent answered every minute earns about what a 12-minute one does", () => {
+  const unitsOver = (workMin, needsMin) => {
+    const s = seeded();
+    const me = writer(s);
+    const id = engine.helperId("t1", 1001);
+    let t = T0;
+    let turn = 0;
+    me.act(observeAction(t, [agent(1, "working", 0)]));
+    while (t < T0 + 3600000) {
+      me.act(observeAction((t += workMin * 60000), [agent(1, "blocked", ++turn)]));
+      me.act(observeAction((t += needsMin * 60000), [agent(1, "working", turn)]));
+    }
+    return s.stats.units.created;
+  };
+  const long = unitsOver(12, 2); // P1's blocks: 4-5 finishes, each a whole unit
+  const short = unitsOver(1, 1); // 30 finishes an hour
+  assert.ok(long >= 4 && long <= 5, `${long}`);
+  assert.ok(short <= 6, `${short} units in an hour of 1-minute turns`);
+  assert.ok(short < 30 / 4, "30 finishes an hour earn far less than 30 units");
+});
+
+test("r3-10: working fledglings gather for their parent while the parent is idle, finished or waiting", () => {
+  for (const ps of ["idle", "done", "blocked"]) {
+    const s = seeded();
+    const me = writer(s);
+    me.act(observeAction(T0, [agent(1, ps, 0), kid(2, 1, "working", 0), kid(3, 1, "working", 0)]));
+    const p = engine.helperId("t1", 1001);
+    const r = engine.rates(s);
+    // base · kidBonus · 2: the share two working fledglings add to a working parent
+    close(r.Hs0, 0.3 * 0.25 * 2, 1e-9, ps);
+    assert.equal(r.nWorking, 0, "the parent is not a working agent");
+    engine.advance(s, T0 + 30000);
+    assert.ok(s.bank > 0, `${ps}: ${s.bank}`);
+    close(s.helpers[p].stats.folds, s.bank, 1e-9, "credited to the parent's record");
+    // Fledgling Pockets (kidBonus) raise it too
+    const kb = engine.CONTENT.UPGRADES.find((u) => u.fx === "kids");
+    if (kb) {
+      s.bought[kb.id] = true;
+      close(engine.rates(s).Hs0, 0.3 * kb.v * 2, 1e-9, `${ps} kidBonus`);
+    }
+  }
+  // a working parent: the fledglings multiply it as before (no double count)
+  const s = seeded();
+  const me = writer(s);
+  me.act(observeAction(T0, [agent(1, "working", 0), kid(2, 1, "working", 0)]));
+  close(engine.rates(s).Hs0, 0.3 * 1.25);
 });
 
 test("warm, thanks and rest (§5.3, §5.4)", () => {
@@ -170,7 +242,7 @@ test("warm, thanks and rest (§5.3, §5.4)", () => {
   assert.equal(s.helpers[id].rest, 0);
 });
 
-test("stacking: one envelope per helper, cap 9, overflow converts at 45·Rp·crowd(N) (inv. 9)", () => {
+test("stacking: one envelope per helper, cap 9, overflow converts at max(45·Rp, 75·V)·crowd(N) (inv. 9, r3-11)", () => {
   const s = seeded(4);
   s.owned["paper-stack"] = 20;
   const me = writer(s);
@@ -180,29 +252,58 @@ test("stacking: one envelope per helper, cap 9, overflow converts at 45·Rp·cro
   const id = engine.helperId("t1", 1001);
   const converted = [];
   for (let i = 0; i < 12; i++) {
-    t += 61000;
+    t += 12 * 60000; // a whole unit per finish (r3-24)
     turn++;
     const ev = me.act(observeAction(t, [agent(1, "working", turn), agent(2, "working", 0)]));
     const o = ev.find((e) => e.kind === "earn" && e.source === "overflow");
-    if (o) converted.push(o.amount / engine.rates(s).Rp);
+    const r = engine.rates(s);
+    if (o) converted.push(o.amount / Math.max(45 * r.Rp, 75 * r.V));
   }
   assert.equal(s.envelopes[id].units, 9);
   assert.equal(converted.length, 3);
-  for (const c of converted) close(c, 45 * engine.crowd(2), 1e-6);
+  for (const c of converted) close(c, engine.crowd(2), 1e-6);
   const u = s.stats.units;
   assert.equal(u.created, 12);
   assert.equal(u.converted, 3);
   assert.equal(u.created, u.opened + u.converted + 9);
   assert.ok(s.notices.some((n) => n.kind === "overflow"));
-  // opening: bundle pays 45·Rp·u·envMult·crowd(N); boosts follow §6.1
+  // opening: bundle pays max(45·Rp, 75·V)·u·envMult·crowd(N); boosts follow §6.1
   const env = s.envelopes[id];
   env.type = "bundle";
-  const Rp = engine.rates(s).Rp;
+  const r = engine.rates(s);
   const ev = me.act({ t: t + 10, type: "open", helperId: id });
-  close(ev.find((e) => e.source === "env").amount, 45 * Rp * 9 * engine.crowd(2), 1e-9);
+  close(ev.find((e) => e.source === "env").amount, Math.max(45 * r.Rp, 75 * r.V) * 9 * engine.crowd(2), 1e-9);
   assert.equal(s.envelopes[id], undefined);
   assert.equal(u.created, u.opened + u.converted);
   assert.equal(me.act({ t: t + 20, type: "open", helperId: id }).at(-1).reason, "gone");
+});
+
+test("r3-11: a Bundle never pays 0: with nobody working and no workshop it pays the 75·V floor (open, tooltip, overflow, settle)", () => {
+  const s = seeded(1);
+  const me = writer(s);
+  me.act(observeAction(T0, [agent(1, "working", 0)]));
+  me.act(observeAction(T0 + 300000, [agent(1, "idle", 1)]));
+  const id = engine.helperId("t1", 1001);
+  const env = s.envelopes[id];
+  assert.ok(env);
+  env.type = "bundle";
+  const r = engine.rates(s);
+  assert.equal(r.Rp, 0, "the finished agent left the bench and there is no workshop");
+  assert.ok(r.V > 0);
+  const want = 75 * r.V * env.units * engine.crowd(1);
+  const tray = engine.view(s, T0 + 300000, { role: "panel", width: 320, writer: "wA" }).tray.envelopes[0];
+  assert.equal(tray.tooltip, `Bundle: +${engine.formatCount(want)} folds`);
+  assert.notEqual(tray.tooltip, "Bundle: +0 folds");
+  const bank = s.bank;
+  const ev = me.act({ t: T0 + 300010, type: "open", helperId: id });
+  close(ev.find((e) => e.source === "env").amount, want);
+  close(s.bank - bank, want);
+  // the same floor for units above the cap
+  s.envelopes[id] = { type: "rush", units: 9, landedAt: T0, lastAt: T0 };
+  const ev2 = me.act(observeAction(T0 + 300000 + 3600000, [agent(1, "idle", 2)]));
+  const o = ev2.find((e) => e.kind === "earn" && e.source === "overflow");
+  assert.ok(o && o.amount > 0, JSON.stringify(ev2));
+  close(o.amount, 75 * engine.rates(s).V * engine.crowd(1), 1e-9);
 });
 
 test("boost envelopes: durations, extension by 25 %, caps (§6.1, §6.2)", () => {

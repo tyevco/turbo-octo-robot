@@ -1,5 +1,5 @@
 // The pacing targets (ARCHITECTURE A11, B8; docs/BALANCE.md §2-§7): every
-// profile P1-P12 with seeds 1-20 through the real engine, then one test per
+// profile P1-P13 with seeds 1-20 through the real engine, then one test per
 // BALANCE row. A row passes when the median lies in its pass window and every
 // seed in its every-seed window (BALANCE §2); provisional rows (M17) report as
 // TODO when they miss. PACING_SEEDS=1-5 runs fewer seeds (a quicker look; the

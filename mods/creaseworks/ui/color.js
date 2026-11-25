@@ -186,6 +186,50 @@ export function statusColor(T, status, surface) {
   return out;
 }
 
+/** Opaque theme surfaces a status disc may take instead of T.popover, in order of preference. */
+const DISC_KEYS = Object.freeze(["popover", "input", "raised", "background", "chrome"]);
+const DISC_STATUS = Object.freeze(["blocked", "working", "done", "idle"]);
+const DISCS = new Map();
+
+/**
+ * The fill for a status badge disc (the Flock tile badge, list-row badge,
+ * away-card and ribbon status glyphs), as `#rrggbb` (DESIGN §5.2). T.popover
+ * whenever the needs-you colour reaches 3:1 there (every bundled theme but
+ * win98), so most themes keep their look. Otherwise the first opaque theme
+ * surface (`T.input`, `T.raised`, `T.background`, `T.chrome`) where the
+ * needs-you colour passes, taking the one where the most of the four status
+ * colours pass (win98: `T.input` #ffffff, all four; on #c0c0c0 working,
+ * needs-you and resting all fell back to the same #404040, r3-21). T.popover
+ * again when no surface lets the needs-you colour pass.
+ */
+export function statusDisc(T) {
+  const pop = surfaceColor(T, "popover");
+  const blocked = T && T.blocked;
+  if (!isHex(blocked)) return pop;
+  const memo = `${pop}|${blocked}|${T.working}|${T.done}|${T.idle}|${T.input}|${T.raised}|${T.background}|${T.chrome}`;
+  const hit = DISCS.get(memo);
+  if (hit !== undefined) return hit;
+  let out = pop;
+  if (contrast(blocked, pop) < GUARD_MIN) {
+    let best = -1;
+    for (const k of DISC_KEYS) {
+      const c = T[k];
+      // Only opaque fills: a translucent one would show the tile through it.
+      if (!isHex(c) || alphaOf(c) < 1) continue;
+      const bg = hex6(c);
+      if (contrast(blocked, bg) < GUARD_MIN) continue;
+      let pass = 0;
+      for (const st of DISC_STATUS) if (isHex(T[st]) && contrast(T[st], bg) >= GUARD_MIN) pass++;
+      if (pass > best) {
+        best = pass;
+        out = bg;
+      }
+    }
+  }
+  remember(DISCS, memo, out);
+  return out;
+}
+
 /** A surface given as a theme key or a colour, as `#rrggbb` (white when unusable). */
 export function surfaceColor(T, surface) {
   const c = isHex(surface) ? surface : T && typeof surface === "string" && Object.hasOwn(T, surface) ? T[surface] : null;

@@ -80,6 +80,18 @@ test("§5 first wish: one row per profile, every extra assertion understood, mon
   assert.equal(P2.check({ P1: 10, P2: 10 + 7199 }), false);
 });
 
+test("r3-24: P13 short turns: 12 short tasks an hour with a new sub-agent each block, held to P1's day-3 bound and click floors", () => {
+  const P13 = PROFILES.P13;
+  assert.deepEqual({ ...P13.cycle }, { work: 3, needs: 1, blocks: 12, rest: 12 });
+  assert.equal(P13.freshKids, true);
+  // the same 36 working minutes an hour as P1, four times the finished tasks
+  assert.equal(P13.cycle.work * P13.cycle.blocks, PROFILES.P1.cycle.work * PROFILES.P1.cycle.blocks);
+  const row = bal.firstWish.find((r) => r.id === "P13");
+  assert.ok(row.every.lo >= parseClock("16:00") && row.every.hi <= parseClock("24:00"), "first wish always on day 3");
+  assert.deepEqual(row.extra.map((e) => e.text), ["median ≥ P1 median − 1:30"]);
+  assert.deepEqual(bal.dayShares.find((r) => r.id === "P13").mins, bal.dayShares.find((r) => r.id === "P1").mins);
+});
+
 test("§6 shares: the four buckets cover every income source the engine credits, once", () => {
   assert.deepEqual(bal.shares.map((r) => r.keys.length > 0), [true, true, true, true]);
   const all = Object.values(SHARE_BUCKETS).flat();
@@ -96,7 +108,7 @@ test("§6 shares: the four buckets cover every income source the engine credits,
   assert.ok(bal.dayShares.length >= 9);
   // every profile that clicks has a §6.2 row (P2 never clicks; P12 equals P1): P9 has its own floor
   const rowed = new Set(bal.dayShares.map((r) => r.id));
-  for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
+  for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P13"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
   assert.deepEqual(bal.dayShares.find((r) => r.id === "P9").mins, [0.008, 0.008, 0.03]);
   assert.ok(bal.sessions.p1Min > bal.sessions.handsMin);
 });

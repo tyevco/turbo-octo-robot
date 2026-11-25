@@ -182,8 +182,8 @@ export const K = f({
   restFullMin: 30, restMax: 1, warmMs: 20 * 60000, kidBonus: 0.25, kidMax: 4,
   thanksMs: 5 * 60000, thanksWindowMs: 5 * 60000, thanksMult: 1.5,
   songMult: 3, chorusMult: 2,
-  unitGapMs: 60000, unitPane: 1, unitPaneQuick: 0.25, unitKid: 0.5, unitKidQuick: 0.125,
-  envCap: 9, envCapPerk: 15, envRp: 45, stackStep: 0.25, extendShare: 0.25,
+  unitRefillMs: 12 * 60000, unitMinShare: 0.125, unitPane: 1, unitKid: 0.5, // r3-24: units follow time between finishes
+  envCap: 9, envCapPerk: 15, envRp: 45, envV: 75, stackStep: 0.25, extendShare: 0.25,
   awayAfterMs: 60000, awayCapMs: 8 * 3600000, capShareLiveMs: 5 * 60000, awayF: 0.25, // awayF †
   awayCardMs: 5 * 60000, potAutoMs: 10 * 60000, clockBackMs: 5000,
   staleMs: 60000, staleCreditMs: 8 * 3600000,
@@ -191,6 +191,9 @@ export const K = f({
   mailSorterMs: 10000, foxEveryMs: 10000, foxBankMult: 4, keeperHandMs: 60000, creaseHelperAt: 0.8, creaseHelperValue: 0.5,
   kidAlbumMs: 30 * 86400000, writerPruneMs: 30 * 86400000,
   albumKeep: 200, kidAlbumKeep: 200, // R13: full Album records kept; older ones are compacted / folded
+  // R13, r3-04: compact Album records kept one by one; beyond keep + batch the
+  // oldest are merged into one archive entry per 30 days they left in
+  albumCompactKeep: 10000, albumArchiveBatch: 1000, albumArchiveMs: 30 * 86400000,
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,
   noticesMax: 12, noteLifeMs: 60000,

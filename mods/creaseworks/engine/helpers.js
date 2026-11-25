@@ -29,6 +29,23 @@ function hex8(n) {
   return ("0000000" + n.toString(16)).slice(-8);
 }
 
+/**
+ * A second, 16-bit hash of `address#created_ms` that an Album record keeps
+ * (`key`) when its address is dropped (R6, r3-18): a new terminal whose plain
+ * id clashes with a gone helper's record rejoins it only when the keys match;
+ * otherwise the record is another terminal's and the newcomer takes a salted id.
+ */
+export function albumKey(addr, created) {
+  return fnv1a32n(`key#${addr}#${created}`) >>> 16;
+}
+
+const validKey = (k) => Number.isInteger(k) && k >= 0 && k <= 0xffff;
+
+/** True when gone record `h` may be the Album record of terminal (addr, created): its key matches, or it has none (an older save). */
+function albumMatch(h, addr, created) {
+  return h.key === undefined || h.key === albumKey(addr, created);
+}
+
 /** Species index, hue index and base name from the identity hash (names: content.js NAMES, §5.1). */
 export function lookOf(id) {
   const h = parseInt(id, 16) >>> 0;
@@ -114,7 +131,8 @@ export function freshness(state, h, t, writer) {
 
 /**
  * The flock's production terms at time `t` (§5.3, §10.2 "helpers nobody can see").
- * Returns { n, crowd, Hs0, Hstale, working: [[h, b_i]...], stale: [h...], N, base }.
+ * Returns { n, crowd, Hs0, Hstale, working: [[h, b_i]...], kids: [[parent, b]...]
+ * (working fledglings of a parent that is not working), stale: [h...], N, base }.
  */
 export function flock(state, E, idx, t, writer) {
   const base = (K.helperFlat * E.G + K.helperRw * E.Rw) * E.folk;
@@ -140,6 +158,22 @@ export function flock(state, E, idx, t, writer) {
     bs.push(b);
     sum += b;
   }
+  // Working fledglings whose parent is present here but not working (idle,
+  // finished, or waiting on the player) still gather (r3-10, §5.3): each
+  // parent gets `base · kidBonus · min(kidMax, working fledglings)`, the share
+  // they add to a working parent, credited to the parent's record. They are
+  // seats on the bench like any b_i (marginal pace), but not working agents.
+  let orphans = null;
+  for (const pid in kidsW) {
+    const p = Object.hasOwn(state.helpers, pid) ? state.helpers[pid] : null;
+    if (!p || p.gone || p.kind !== "pane" || p.status === "working") continue;
+    if (freshness(state, p, t, writer) !== 1) continue;
+    const b = base * E.kidBonus * Math.min(K.kidMax, kidsW[pid]);
+    if (!(b > 0)) continue;
+    (orphans || (orphans = [])).push([p, b]);
+    bs.push(b);
+    sum += b;
+  }
   const n = working.length;
   const N = idx.panes.length;
   // Bench pace is marginal (§5.3): the k-th largest b_i counts eff(k) − eff(k−1),
@@ -151,7 +185,7 @@ export function flock(state, E, idx, t, writer) {
   return {
     n, crowd: c, Hs0,
     Hstale: E.awayF * crowd(N) * base * stale.length,
-    working, stale, N, base,
+    working, kids: orphans || [], stale, N, base,
   };
 }
 
@@ -194,7 +228,7 @@ export function chargeRest(idx, E, dtMs) {
 // is the hash of addr#created, so a returning agent finds its record).
 const LIVE_FIELDS = {
   addr: "", created: 0, lastSeen: 0, seenBy: null, group: "resting",
-  lastFinishAt: null, blockedAt: null, warm: 1, warmUntil: 0, thanksUntil: 0,
+  lastFinishAt: null, kidFinishAt: null, blockedAt: null, warm: 1, warmUntil: 0, thanksUntil: 0,
   title: null, pane: null, paneName: null, space: null, tab: null,
 };
 
@@ -207,6 +241,7 @@ function toAlbum(h, t) {
   const salt = saltOf(h);
   if (salt > 0) h.salt = salt;
   else delete h.salt;
+  if (typeof h.addr === "string" && h.addr !== "") h.key = albumKey(h.addr, Number(h.created) || 0);
   for (const k of Object.keys(LIVE_FIELDS)) delete h[k];
   h.gone = true;
   h.missingSince = t;
@@ -247,6 +282,10 @@ export function packAlbum(h) {
   } else if (s.kidsPast !== undefined && s.kidsPast !== 0) {
     return null;
   }
+  if (h.key !== undefined) {
+    if (!validKey(h.key)) return null;
+    a.push(h.key); // r3-18: an odd length carries the key last
+  }
   return a;
 }
 
@@ -260,23 +299,29 @@ export function unpackAlbum(id, a) {
   // allocation beyond the record itself (the look is computed inline).
   if (typeof id !== "string" || id.length !== 8 || !HEX8.test(id) || !Array.isArray(a)) return null;
   const len = a.length;
-  if (len !== 4 && len !== 6) return null;
+  if (len < 4 || len > 7) return null;
+  // 4: name, folds, tasks, minute; 6: + kidsPast, kidsFolds; 5 and 7: + key (r3-18)
+  const keyed = (len & 1) === 1;
+  const body = keyed ? len - 1 : len;
   const a0 = a[0];
   if (a0 !== 0 && (typeof a0 !== "string" || a0.length === 0)) return null;
   for (let i = 1; i < len; i++) if (!isFiniteNum(a[i])) return null;
+  if (keyed && !validKey(a[len - 1])) return null;
   const stats = { tasks: a[2], folds: a[1], run: 0, envelopes: 0, checkIns: 0 };
-  if (len === 6) {
+  if (body === 6) {
     if (!(a[4] > 0)) return null;
     stats.kidsPast = a[4];
     stats.kidsFolds = a[5];
   }
   const h = parseInt(id, 16) >>> 0;
-  return {
+  const rec = {
     id, kind: "pane", parent: null, species: SPECIES[h % 12], hue: (h >>> 4) % 8,
     name: a0 === 0 || skippedName(a0) ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : a0,
     joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0, stats,
     missingSince: a[3] * MINUTE, gone: true, compact: true,
   };
+  if (keyed) rec.key = a[len - 1];
+  return rec;
 }
 
 const round4 = (x) => (x === 0 || !Number.isFinite(x) ? 0 : Number(x.toPrecision(4)));
@@ -287,6 +332,7 @@ function compactRecord(h) {
   const m = typeof h.missingSince === "number" && Number.isFinite(h.missingSince) ? h.missingSince : 0;
   const a = [h.name, round4(s.folds), isFiniteNum(s.tasks) ? s.tasks : 0, Math.floor(m / MINUTE)];
   if (s.kidsPast > 0 && isFiniteNum(s.kidsPast)) a.push(s.kidsPast, isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
+  if (validKey(h.key)) a.push(h.key);
   const look = lookOf(h.id);
   if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0 || skippedName(a[0])) a[0] = 0;
   const c = unpackAlbum(h.id, a);
@@ -342,6 +388,7 @@ function rejoin(h, o, slots, t) {
   h.gone = false;
   h.missingSince = null;
   delete h.compact;
+  delete h.key; // present again: its address is known (toAlbum sets the key anew)
   for (const k of Object.keys(LIVE_FIELDS)) if (!(k in h)) h[k] = LIVE_FIELDS[k];
   h.addr = String(o.addr);
   h.created = Number(o.created) || 0;
@@ -376,7 +423,7 @@ function newRecord(o, id, t, w, slots) {
     kind: o.kind === "kid" ? "kid" : "pane", parent: null,
     species: look.species, hue: look.hue, name,
     joined: t, lastSeen: t, seenBy: w,
-    status, lastTurn: Number(o.turn) || 0, lastFinishAt: null,
+    status, lastTurn: Number(o.turn) || 0, lastFinishAt: null, kidFinishAt: null,
     blockedAt: status === "blocked" ? t : null,
     rest: 0, warm: 1, warmUntil: 0, thanksUntil: 0, env: 0,
     stats: { tasks: 0, folds: 0, run: 0, envelopes: 0, checkIns: 0 },
@@ -403,26 +450,47 @@ function transition(h, next, t, E) {
   h.status = next;
 }
 
+/**
+ * The share of a full unit a finish earns (§6.1, r3-24): the time since the
+ * last credited finish on the same budget over K.unitRefillMs (12 min), in
+ * 64ths, at least K.unitMinShare (1/8), a whole unit for the first one. Envelope units follow
+ * time, not the number of turns: an agent answering every minute earns about
+ * what one finishing every 12 minutes does.
+ */
+function unitShare(last, t) {
+  if (typeof last !== "number" || !Number.isFinite(last)) return 1;
+  // in 64ths, so unit counts stay exact binary fractions (inv. 9 sums them)
+  const x = Math.floor(((t - last) / K.unitRefillMs) * 64) / 64;
+  return Math.max(K.unitMinShare, Math.min(1, x));
+}
+
 function finish(state, ctx, h, t, ev) {
   state.stats.tasks++;
   h.stats.tasks++;
   if (state.away.busy) state.away.busy.tasks++;
   if (h.warmUntil > t) h.warmUntil = t; // warm ends at the next turn increment
-  const quick = h.lastFinishAt !== null && t - h.lastFinishAt < K.unitGapMs;
-  h.lastFinishAt = t;
   let to = h;
   let units;
   if (h.kind === "kid") {
-    units = quick ? K.unitKidQuick : K.unitKid;
     // A fledgling's units go to its parent while that parent is present; with
     // the parent gone (or unknown) they stay with the fledgling itself, so no
-    // envelope is ever filed under an Album record (R13, review r2-18).
+    // envelope is ever filed under an Album record (R13, review r2-18). Every
+    // fledgling of a parent draws on the parent's one fledgling budget
+    // (`kidFinishAt`), so a burst of short-lived sub-agents with new
+    // addresses earns what one does (r3-24).
     const p = h.parent ? state.helpers[h.parent] : null;
-    if (p && !p.gone) to = p;
+    if (p && !p.gone) {
+      to = p;
+      units = K.unitKid * unitShare(p.kidFinishAt, t);
+      p.kidFinishAt = t;
+    } else {
+      units = K.unitKid * unitShare(h.lastFinishAt, t);
+    }
   } else {
-    units = quick ? K.unitPaneQuick : K.unitPane;
+    units = K.unitPane * unitShare(h.lastFinishAt, t);
   }
-  addUnits(state, ctx, to, units, t, ev, `${h.id}:${h.lastTurn}`);
+  h.lastFinishAt = t;
+  if (units > 0) addUnits(state, ctx, to, units, t, ev, `${h.id}:${h.lastTurn}`);
 }
 
 /**
@@ -557,9 +625,10 @@ export function observe(state, ctx, action, t, ev) {
  * The id list entry `i` takes (R6). A terminal already present keeps the id it
  * holds, plain or salted, whatever else came or went. Otherwise it takes its
  * plain id, unless that id is held by a different terminal (an earlier entry of
- * this list, or a present helper with another address or created_ms), when it
- * takes the first free salted id. A returning terminal whose plain id belongs
- * to a gone record first looks for its own salted Album record (`salt`). The
+ * this list, a present helper with another address or created_ms, or an Album
+ * record whose `key` is another terminal's, r3-18), when it takes the first
+ * free salted id. A returning terminal whose plain id belongs to a gone record
+ * first looks for its own salted Album record (`salt`, `key`). The
  * same terminal always resolves to the same id. undefined = no id (a duplicate
  * of an earlier entry, or no free salt).
  */
@@ -584,7 +653,7 @@ function claimId(hs, claim, list, o, i, present) {
       const sid = saltedId(addr, created, k);
       const r = hs[sid];
       if (!r) break;
-      if (r.gone && r.salt === k && claim[sid] === undefined) {
+      if (r.gone && r.salt === k && claim[sid] === undefined && albumMatch(r, addr, created)) {
         claim[sid] = i;
         return sid;
       }
@@ -596,7 +665,8 @@ function claimId(hs, claim, list, o, i, present) {
       if (same(j)) return id; // the same terminal twice
     } else {
       const h = hs[id];
-      if (!h || h.gone || (h.addr === addr && h.created === created)) {
+      // a gone record is free unless its key says it was another terminal (r3-18)
+      if (!h || (h.gone ? albumMatch(h, addr, created) : h.addr === addr && h.created === created)) {
         claim[id] = i;
         return id;
       }
@@ -646,6 +716,68 @@ function foldKid(state, h) {
   rosterChanged(state);
 }
 
+/** The id of the archive entry for helpers that left at `m` (one per K.albumArchiveMs; never 8 hex digits). */
+export function archiveId(m) {
+  return `past-${Math.floor(m / K.albumArchiveMs)}`;
+}
+
+/**
+ * Merge the oldest compact Album records into archive entries (R13, r3-04).
+ * Compact records cost about 45 bytes each, and an agent's terminal never
+ * leaves the save, so without this a heavy user (100 new terminals a day)
+ * passed herdr's 1 MiB write limit in about nine months and could never save
+ * again. Every record that left at or before the K.albumCompactKeep-th newest
+ * compact one's leaving time is folded into the entry of its 30-day period
+ * (`archiveId`): a gone pane record whose `archive` counts the helpers in it,
+ * with their summed folds, tasks and fledgling totals, the latest leaving
+ * time as `missingSince`, the earliest as `from`, and the look (species, hue)
+ * of its latest helper. They stay saved helpers: the Album shows each entry
+ * as one row ("1,204 helpers"), counts every helper in it, and its fold total
+ * stays in the Album. A terminal of an archived helper that returns joins as
+ * a new helper. Batched (only past keep + batch), so the selection runs once
+ * per K.albumArchiveBatch departures; deterministic (leaving times and ids).
+ */
+function archiveOldest(state, compacts) {
+  const hs = state.helpers;
+  const n = compacts.length;
+  const keys = new Float64Array(n);
+  for (let i = 0; i < n; i++) keys[i] = compacts[i].missingSince;
+  keys.sort();
+  const cut = keys[n - K.albumCompactKeep - 1];
+  for (const h of compacts) {
+    const m = h.missingSince;
+    if (!(m <= cut)) continue;
+    const aid = archiveId(m);
+    let a = Object.hasOwn(hs, aid) ? hs[aid] : null;
+    if (!a || !(a.archive > 0) || !a.gone) {
+      a = {
+        id: aid, kind: "pane", parent: null, species: h.species, hue: h.hue, name: "",
+        joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0,
+        stats: { tasks: 0, folds: 0, run: 0, envelopes: 0, checkIns: 0 },
+        missingSince: m, gone: true, archive: 0, from: m,
+      };
+      hs[aid] = a;
+    }
+    const s = h.stats;
+    const st = a.stats;
+    a.archive += 1;
+    st.tasks += isFiniteNum(s.tasks) ? s.tasks : 0;
+    st.folds = round6(st.folds + (isFiniteNum(s.folds) ? s.folds : 0));
+    if (s.kidsPast > 0) {
+      st.kidsPast = (st.kidsPast || 0) + s.kidsPast;
+      st.kidsFolds = round6((st.kidsFolds || 0) + (isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0));
+    }
+    if (m >= a.missingSince) {
+      a.missingSince = m;
+      a.species = h.species;
+      a.hue = h.hue;
+    }
+    if (m < a.from) a.from = m;
+    delete hs[h.id];
+  }
+  rosterChanged(state);
+}
+
 /** A compact record changed after compaction (an envelope opened or a check-in for it): fields its packed form cannot hold. */
 function compactChanged(h) {
   const s = h.stats;
@@ -656,7 +788,9 @@ function compactChanged(h) {
  * Keep the save bounded (R13): fledglings gone for 30 days, or beyond the
  * K.kidAlbumKeep most recently gone, fold into their parent; gone pane helpers
  * beyond the K.albumKeep most recently gone are compacted, and a compact record
- * changed since is compacted again. With the step context, the envelope of a
+ * changed since is compacted again; once more than K.albumCompactKeep +
+ * K.albumArchiveBatch compact records are kept, the oldest beyond
+ * K.albumCompactKeep are merged into archive entries (archiveOldest). With the step context, the envelope of a
  * helper whose record is compact or no longer in the save is cashed in
  * (settleEnvelope), so envelopes of long-gone helpers cannot pile up. Writers
  * unseen for 30 days are pruned.
@@ -665,6 +799,7 @@ export function prune(state, t, ctx, ev) {
   const hs = state.helpers;
   const kids = [];
   const full = [];
+  const compacts = [];
   for (const id in hs) {
     const h = hs[id];
     if (!h.gone) continue;
@@ -673,8 +808,11 @@ export function prune(state, t, ctx, ev) {
       if (typeof h.missingSince !== "number") continue;
       if (t - h.missingSince > K.kidAlbumMs) foldKid(state, h);
       else kids.push(h);
+    } else if (h.archive > 0) {
+      continue; // an archive entry (r3-04): many helpers, never compacted again
     } else if (h.compact === true) {
       if (compactChanged(h)) compactRecord(h);
+      compacts.push(h);
     } else if (!(h.salt > 0)) {
       if (skippedName(h.name)) h.name = lookOf(h.id).name;
       full.push(h); // a salted record keeps its `salt` (R6), so it is never compacted
@@ -694,6 +832,7 @@ export function prune(state, t, ctx, ev) {
     for (let i = 0; i < full.length && excess > 0; i++) if (compactRecord(full[i])) excess--;
     if (excess !== n0) rosterChanged(state);
   }
+  if (compacts.length > K.albumCompactKeep + K.albumArchiveBatch) archiveOldest(state, compacts);
   if (ctx && ev) settleOld(state, ctx, t, ev);
   settledNotices(state);
   for (const w in state.writersSeen) {
@@ -752,6 +891,13 @@ export function creditHelpers(fl, mult, staleRate, sec) {
     const v = k * b;
     h.stats.folds += v;
     h.stats.run += v;
+  }
+  if (fl.kids) {
+    for (const [h, b] of fl.kids) {
+      const v = k * b;
+      h.stats.folds += v;
+      h.stats.run += v;
+    }
   }
   if (staleRate > 0 && fl.stale.length) {
     const v = staleRate * sec / fl.stale.length;

@@ -121,3 +121,56 @@ test("render at 64 helpers: ≤ 8 ms median in Node (panel, rail, ribbon)", asyn
   }
   console.log(`# render ms at 64 helpers + 24 fledglings (Node): ${JSON.stringify(out, (k, v) => (typeof v === "number" ? Number(v.toFixed(2)) : v))}`);
 });
+
+// r3-03: the load task builds the ViewModel (the first render after a load
+// used to run the whole view() inside render: 25-40 ms of 50 at two years).
+test("r3-03: the first render after the load reads a vm the load task built", async () => {
+  const { saveText, freshState, SAVE } = await import("./_util.mjs");
+  const s = freshState(4);
+  s.bank = 1234;
+  w = win({ ...flockScenario(12, 4), files: { [SAVE]: saveText(s) } });
+  const panel = await w.copy("panel");
+  assert.equal(panel.session.vm(), null, "loading: the placeholder");
+  await w.flush(); // the load task's steps (no tick: the clock has not moved)
+  assert.ok(w.slot.state, "loaded");
+  assert.ok(panel.session.cache, "the vm was built in the load task");
+  const built = panel.session.cache.vm;
+  let views = 0;
+  const vm = panel.session.vm.bind(panel.session);
+  panel.session.vm = (t) => {
+    const before = panel.session.cache;
+    const out = vm(t);
+    if (panel.session.cache !== before) views++;
+    return out;
+  };
+  w.render(panel);
+  assert.equal(views, 0, "render built no vm");
+  assert.equal(panel.session.cache.vm, built);
+});
+
+// r3-12: calm mode re-renders counters every 5 s (DESIGN §11.1 item 6): time
+// moving the counters does not touch the slot; a 5 s bucket or an act does.
+test("r3-12: calm mode re-renders every 5 s, not every second; an act still re-renders at once", async () => {
+  w = win(flockScenario(6, 0, () => "working"));
+  const panel = await w.copy("panel");
+  await w.advance(2000);
+  let changes = 0;
+  const changed = panel.session.changed.bind(panel.session);
+  panel.session.changed = (cx, t) => {
+    changes++;
+    return changed(cx, t);
+  };
+  await w.advance(10000);
+  assert.ok(changes >= 9, `every second normally (${changes} in 10 s)`);
+  await w.handler(panel, "setting", "calm", true);
+  assert.equal(w.slot.state.settings.calm, true);
+  await w.advance(1000);
+  changes = 0;
+  const notifies = w.ctl.notifies.length;
+  await w.advance(10000);
+  assert.ok(changes <= 3, `calm: at most one per 5 s bucket (${changes} in 10 s)`);
+  assert.ok(w.ctl.notifies.length - notifies <= 3, `calm: cx.notify() at most per bucket (${w.ctl.notifies.length - notifies})`);
+  changes = 0;
+  await w.handler(panel, "click", "sheet", null, null);
+  assert.ok(changes >= 1, "a click re-renders at once");
+});

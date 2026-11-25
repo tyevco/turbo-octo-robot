@@ -330,7 +330,8 @@ const SHELF = ["crane", "frog", "fox", "koi", "rabbit", "turtle", "butterfly", "
  * The ViewModel builder all views start from. `o`: `{ roster, bank, rate,
  * wishes, frame, ticks, firstRunHint, short, matChipPulse, tray, mat,
  * streak, boosts, string, settings, away, notices, ribbonWidth, dense,
- * folded, workspace }`.
+ * folded, workspace, width }`. `dense` defaults to the engine's Auto rule:
+ * 21 or more tiles, or a narrow panel (`width` under 280 px, r3-19).
  */
 function base(name, o = {}) {
   const spec = o.roster || {};
@@ -350,7 +351,7 @@ function base(name, o = {}) {
   }
 
   const n = present.length;
-  const dense = o.dense ?? n >= 21;
+  const dense = o.dense ?? (n >= 21 || (typeof o.width === "number" && o.width > 0 && o.width < 280));
   const groups = [];
   if (o.workspace) {
     groups.push({ key: "all", title: "Workspace order", count: n, folded: false, tiles: present.map(tileOf) });
@@ -603,7 +604,7 @@ const BUILDERS = {
   "rail-banner": () => [{ role: "panel", width: 64, height: 784 }, ui(), base("rail-banner", { roster: STD, notices: [notice("error")] })],
 
   narrow: () => [{ role: "panel", width: 240, height: 584 }, ui(), base("narrow", {
-    roster: { needs: 1, finished: 1, working: 6, resting: 4, envelopes: 0.25 }, short: true, dense: true,
+    roster: { needs: 1, finished: 1, working: 6, resting: 4, envelopes: 0.25 }, short: true, width: 240,
   })],
 
   wide: () => [{ role: "panel", width: 440, height: 784 }, ui(), base("wide", { roster: { needs: 1, finished: 1, working: 6, resting: 4, envelopes: 0.25 } })],

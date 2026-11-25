@@ -8,12 +8,19 @@
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { clip } from "../engine/index.js";
-import { statusColor } from "./color.js";
+import { statusColor, statusDisc, surfaceColor } from "./color.js";
 import { icon, spritePath, sprite, statusGlyphPath } from "./art.js";
 import { button, divider, iconButton, text } from "./widgets.js";
 
 /** Grapheme limits for every string this module draws (tested). */
 export const AWAY_CLIP = Object.freeze({ title: 24, line: 64, folds: 16, cap: 90 });
+
+/**
+ * The close ✕ tooltips (tested). Closing the away card collects its folds at
+ * once (the engine's `dismiss` of "away" credits the pot, ARCHITECTURE B9):
+ * the tooltip says so (r3-13; it used to claim the folds stayed to collect).
+ */
+export const AWAY_CLOSE = Object.freeze({ away: "Close and collect the folds", busy: "Close" });
 
 function handler(ctx, name) {
   const h = ctx && ctx.handlers;
@@ -30,6 +37,19 @@ function line(glyphEl, words, T, extra) {
   row.child(text(clip(words, AWAY_CLIP.line), { size: 11, color: T.foreground, truncate: true }, T).flex_1());
   if (extra) row.child(extra);
   return row;
+}
+
+/**
+ * A status glyph for a card line, guarded for the card (T.popover). Where
+ * the theme's needs-you colour fails 3:1 on T.popover (win98: red, olive and
+ * grey all fell back to one #404040, r3-21) the glyph sits on a 16 px disc
+ * of `statusDisc(T)` instead, so it keeps its own colour.
+ */
+function statusMark(T, status) {
+  const disc = statusDisc(T);
+  const g = sprite(statusGlyphPath(status), 12, statusColor(T, status, disc));
+  if (disc === surfaceColor(T, "popover")) return g;
+  return h_flex().w(16).h(16).flex_none().rounded(8).justify_center().bg(disc).border(1).border_color(T.border).child(g);
 }
 
 /** The ready lines of an away/busy vm (B10 strings first, then B6 fields). */
@@ -75,7 +95,7 @@ export function renderAway(vm, ui, ctx) {
         .child(text(clip(L.title, AWAY_CLIP.title), { size: 13, weight: 600, color: T.foreground }, T))
         .child(text(clip(L.cap ? `${a.duration ?? ""}  ${L.cap}` : String(a.duration ?? ""), AWAY_CLIP.cap), { size: 11, color: T.muted }, T).whitespace_normal()),
     )
-    .child(iconButton("cw-away-close", "close", busy ? "Close" : "Close (the folds stay until you collect)", {
+    .child(iconButton("cw-away-close", "close", busy ? AWAY_CLOSE.busy : AWAY_CLOSE.away, {
       size: 14, surface: T.popover, stop: true, onClick: (e, cx) => dismiss(kind, cx),
     }, T));
 
@@ -111,10 +131,10 @@ export function renderAway(vm, ui, ctx) {
     const go = first
       ? button("cw-away-open", "Open ›", { h: 28, size: 11, px: 8, stop: true, onClick: (e, cx) => openHelper(first, cx) }, T)
       : null;
-    card.child(line(sprite(statusGlyphPath("blocked"), 12, statusColor(T, "blocked", "popover")), L.needs, T, go));
+    card.child(line(statusMark(T, "blocked"), L.needs, T, go));
   }
-  if (!busy && L.rested) card.child(line(sprite(statusGlyphPath("idle"), 12, statusColor(T, "idle", "popover")), L.rested, T));
-  if (!busy && L.best) card.child(line(sprite(statusGlyphPath("done"), 12, statusColor(T, "done", "popover")), L.best, T));
+  if (!busy && L.rested) card.child(line(statusMark(T, "idle"), L.rested, T));
+  if (!busy && L.best) card.child(line(statusMark(T, "done"), L.best, T));
   if (!busy && L.affordable) card.child(line(icon("shop", 12, T.muted), L.affordable, T));
 
   if (!busy && a.collectable !== false) {

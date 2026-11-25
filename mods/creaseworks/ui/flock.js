@@ -11,12 +11,13 @@
 // envelope marker, fledgling pips, the rest bar and the dashed needs-you
 // border. A group with more than 80 tiles open draws as a v_virtual_list of
 // 28 px rows with one `on_item_click` on the list (no handlers in the rows) and
-// a definite height (§5.5 item 8).
+// a definite height (§5.5 item 8); so do the biggest groups while the open
+// tile grids together would hold more than TILE_BUDGET tiles (r3-16).
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, v_virtual_list, ScrollHandle } from "gpui-base";
 import { clip, clipCells, crowd } from "../engine/index.js";
-import { statusColor, contrast, hex6, isHex } from "./color.js";
+import { statusColor, statusDisc, contrast, hex6, isHex } from "./color.js";
 import { ASSETS, FACETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
 import { HUE_NAMES, hueOf, pickHues } from "./palette.js";
 import { button, glyph, hoverOn, iconButton, sectionHeader, text } from "./widgets.js";
@@ -35,6 +36,14 @@ export const TILE = Object.freeze({
 
 /** A group with more open tiles than this draws as a virtual list (§5.5 item 8). */
 export const VIRTUAL_ABOVE = 80;
+
+/**
+ * The most tiles the open groups draw as tile grids in one render, all groups
+ * together (r3-16): past it the biggest groups switch to virtual lists until
+ * the rest fit. A per-group switch alone let four groups of 79 draw 316 tiles
+ * a frame, which ran past the 50 ms render budget.
+ */
+export const TILE_BUDGET = 80;
 
 /** Virtual list row height and the most rows shown before it scrolls. */
 export const VLIST = Object.freeze({ row: 28, rows: 10 });
@@ -141,8 +150,10 @@ function hues(ctx) {
 export function tileLook(ctx) {
   const T = ctx.T;
   const S = ctx.S;
+  // The badge disc: T.popover, or (win98) a surface where needs-you keeps its red (r3-21).
+  const disc = statusDisc(T);
   const onPopover = Object.create(null);
-  for (const st of STATUS_ORDER) onPopover[st] = statusColor(T, st, "popover");
+  for (const st of STATUS_ORDER) onPopover[st] = statusColor(T, st, disc);
   return {
     chromeHover: hoverOn(T, T.chrome),
     blockedOnChrome: statusColor(T, "blocked", "chrome"),
@@ -153,6 +164,8 @@ export function tileLook(ctx) {
     blocked: statusColor(T, "blocked", "raised"),
     // The envelope marker's cream disc vanishes on a light tile: give it a real edge there.
     envRing: isHex(S.sheet) && isHex(T.raised) && contrast(S.sheet, hex6(T.raised)) < 1.5 ? T.muted : T.border,
+    disc,
+    // The badge glyph colours, guarded for `disc` (the name predates the disc choice).
     onPopover,
     select: handler(ctx, "select"),
     open: handler(ctx, "open"),
@@ -233,6 +246,68 @@ function pipsRow(pips, kids, g, hue, look) {
     }
   }
   return row;
+}
+
+/**
+ * A tile's fledglings that need you, in vm order (waiting ones come first):
+ * the kid objects, or null for a waiting pip with no kid behind it (tested).
+ */
+export function waitingKids(tile) {
+  const pips = tile && Array.isArray(tile.pips) ? tile.pips : [];
+  const kids = tile && Array.isArray(tile.kids) ? tile.kids : [];
+  const out = [];
+  const n = Math.max(pips.length, kids.length);
+  for (let i = 0; i < n; i++) {
+    const k = kids[i] && typeof kids[i] === "object" ? kids[i] : null;
+    const st = k && typeof k.status === "string" ? k.status : pips[i];
+    if (st === "blocked" || st === "error") out.push(k && typeof k.helperId === "string" && k.helperId ? k : null);
+  }
+  return out;
+}
+
+/** The first waiting fledgling with an id (the one a click opens), or null. */
+function firstWaiting(waiting) {
+  for (const k of waiting) if (k) return k;
+  return null;
+}
+
+/**
+ * The parent tile's needs-you flag for its waiting fledglings (r3-17): a
+ * badge-size disc at the top left with the needs-you pennant and a ring in
+ * the needs-you colour, the same size as the status badge at every density
+ * (a 4 px pip alone was lost among 64 dense tiles). Clicking it opens the
+ * first waiting fledgling (pane.focus, or terminal.peek without a pane,
+ * §5.6) and stops there; the tooltip counts them.
+ */
+function kidFlag(id, waiting, g, look) {
+  const T = look.T;
+  const kid = firstWaiting(waiting);
+  const n = waiting.length;
+  const tip = n === 1
+    ? str(kid && kid.tooltip) || "A fledgling needs you: click to open it"
+    : `${n} fledglings need you: click to open ${kid ? `${str(kid.name) || "the first"}` : "the first"}`;
+  const el = h_flex()
+    .id(`cw-flock-kidflag-${id}`)
+    .absolute()
+    .top(-4)
+    .left(-4)
+    .w(g.badge)
+    .h(g.badge)
+    .rounded(g.badge / 2)
+    .justify_center()
+    .bg(look.disc || T.popover)
+    .border(1)
+    .border_color(look.blocked)
+    .tooltip(clip(tip, FLOCK_CLIP.tooltip))
+    .child(svg(statusGlyphPath("blocked")).w(g.badgeGlyph).h(g.badgeGlyph).text_color(look.onPopover.blocked));
+  if (kid) {
+    const kidId = kid.helperId;
+    el.cursor_pointer().on_click((e, cx) => {
+      if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+      look.openHelper(kidId, cx);
+    });
+  }
+  return el;
 }
 
 /**
@@ -318,8 +393,9 @@ export function tileElement(tile, opts, ctx) {
     );
   }
 
-  // Status badge at the top right (−4, −4): a T.popover disc, 1 px T.border
-  // ring, the status glyph guarded for T.popover (widgets.glyph, inlined).
+  // Status badge at the top right (−4, −4): a `look.disc` disc (T.popover in
+  // every theme where needs-you reads there), 1 px T.border ring, the status
+  // glyph guarded for that disc (widgets.glyph, inlined).
   const mark = svg(statusGlyphPath(status)).w(g.badgeGlyph).h(g.badgeGlyph).text_color(look.onPopover[status]);
   if (!opts.calm && tile.spin === true && status === "working") mark.spin(opts.inStep ? 600 : 1200);
   const badge = h_flex()
@@ -331,12 +407,18 @@ export function tileElement(tile, opts, ctx) {
     .h(g.badge)
     .rounded(g.badge / 2)
     .justify_center()
-    .bg(T.popover)
+    .bg(look.disc || T.popover)
     .border(1)
     .border_color(T.border)
     .child(mark);
   if (!opts.calm && tile.pulse === true && status === "blocked") badge.loop("opacity", { from: 0.55, to: 1, period: 1200 });
   el.child(badge);
+
+  // A waiting fledgling's needs-you flag (another window's helpers are not ours to open).
+  if (pips.length && !opts.elsewhere) {
+    const waiting = waitingKids(tile);
+    if (waiting.length) el.child(kidFlag(id, waiting, g, look));
+  }
 
   // Envelope marker at the bottom right: its own target (stops propagation).
   if (withEnvelope) {
@@ -403,7 +485,7 @@ function tileGrid(tiles, opts, ctx, key) {
 }
 
 /** A 28 px row for the virtual list: no handlers, no ids, no loops (rows are rebuilt every frame). */
-function listRow(t, look, selectedId) {
+function listRow(t, look, selectedId, elsewhere) {
   const T = look.T;
   const status = statusOf(t.status);
   const hue = hueOf(look.hues, t.hue);
@@ -421,7 +503,7 @@ function listRow(t, look, selectedId) {
         .flex_none()
         .rounded(9)
         .justify_center()
-        .bg(T.popover)
+        .bg(look.disc || T.popover)
         .border(1)
         .border_color(T.border)
         .child(svg(statusGlyphPath(status)).w(12).h(12).text_color(look.onPopover[status])),
@@ -429,7 +511,16 @@ function listRow(t, look, selectedId) {
     .child(div().opacity(Math.max(0.3, Math.min(1, num(t.opacity, 1)))).child(speciesSprite(speciesOf(t.species), 16, hue, { surface: T.chrome })))
     .child(text(clip(str(t.name), FLOCK_CLIP.rowName), { size: 11, weight: 600, color: T.foreground, truncate: true }, T).flex_1())
     .child(text(clip(str(t.statusWord), FLOCK_CLIP.rowName), { size: 11, color: T.muted }, T));
-  if (status === "blocked" || t.dashed === true) row.border(1).border_dashed().border_color(look.blockedOnChrome);
+  // A waiting fledgling makes the row a needs-you mark too (r3-17): the row
+  // click opens that fledgling (virtualGroup), so it takes the dashed edge
+  // and a pennant with the count of waiting fledglings.
+  const waiting = elsewhere ? [] : waitingKids(t);
+  if (status === "blocked" || t.dashed === true || waiting.length) row.border(1).border_dashed().border_color(look.blockedOnChrome);
+  if (waiting.length) {
+    const flag = h_flex().flex_none().gap(2).child(svg(statusGlyphPath("blocked")).w(12).h(12).flex_none().text_color(look.blockedOnChrome));
+    flag.child(text(clip(String(waiting.length), FLOCK_CLIP.count), { size: 11, weight: 600, color: T.foreground }, T));
+    row.child(flag);
+  }
   if (t.envelope === true) row.child(sprite(spritePath("status", "envelope"), 11, T.muted));
   return row;
 }
@@ -439,9 +530,19 @@ function virtualGroup(key, tiles, look, selectedId) {
   const list = tiles.filter((t) => t && typeof t.helperId === "string");
   const select = look.select;
   const openHelper = look.openHelper;
-  const needs = Object.create(null);
-  // Needs-you rows open their agent; Elsewhere rows (another window's) select.
-  if (key !== "elsewhere") for (const t of list) if (t.dashed === true || statusOf(t.status) === "blocked") needs[t.helperId] = true;
+  // Needs-you rows open their agent; a row whose fledgling waits opens that
+  // fledgling (r3-17); Elsewhere rows (another window's) select.
+  const opens = Object.create(null);
+  const elsewhere = key === "elsewhere";
+  if (!elsewhere) {
+    for (const t of list) {
+      if (t.dashed === true || statusOf(t.status) === "blocked") opens[t.helperId] = t.helperId;
+      else {
+        const kid = firstWaiting(waitingKids(t));
+        if (kid) opens[t.helperId] = kid.helperId;
+      }
+    }
+  }
   const rows = Math.min(list.length, VLIST.rows);
   return v_virtual_list(
     `cw-flock-vl-${key}`,
@@ -451,13 +552,16 @@ function virtualGroup(key, tiles, look, selectedId) {
     (range) => {
       const out = [];
       const end = Math.min(range && typeof range.end === "number" ? range.end : list.length, list.length);
-      for (let i = Math.max(0, (range && range.start) || 0); i < end; i++) out.push(listRow(list[i], look, selectedId));
+      for (let i = Math.max(0, (range && range.start) || 0); i < end; i++) out.push(listRow(list[i], look, selectedId, elsewhere));
       return out;
     },
   )
     .w_full()
     .h(rows * VLIST.row)
-    .on_item_click((helperId, cx) => (needs[helperId] === true ? openHelper(helperId, cx) : select(helperId === selectedId ? null : helperId, cx)));
+    .on_item_click((helperId, cx) => {
+      const target = Object.hasOwn(opens, helperId) ? opens[helperId] : null;
+      return target ? openHelper(target, cx) : select(helperId === selectedId ? null : helperId, cx);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +773,41 @@ export function flockKeys(vm, ui) {
 }
 
 /**
+ * The open groups drawn as virtual lists, as a null-prototype set
+ * `{ [key]: true }` ("needs", …, "all", "elsewhere"; tested). A group with
+ * more than VIRTUAL_ABOVE tiles always is (§5.5 item 8); then, while the
+ * open tile grids together hold more than TILE_BUDGET tiles, the biggest one
+ * left (the later one on a tie, so needs-you keeps its tiles longest) is
+ * switched too (r3-16). Folded groups draw nothing and count nothing.
+ */
+export function virtualGroups(vm, ui) {
+  const h = (vm && vm.helpers) || {};
+  const groups = Array.isArray(h.groups) ? h.groups : [];
+  const elsewhere = Array.isArray(h.elsewhere) ? h.elsewhere : [];
+  const out = Object.create(null);
+  const open = [];
+  for (const g of groups) {
+    const key = str(g && g.key);
+    if (key !== "all" && isFolded(vm, ui, key)) continue;
+    open.push({ key, n: Array.isArray(g && g.tiles) ? g.tiles.length : 0 });
+  }
+  if (elsewhere.length && !isFolded(vm, ui, "elsewhere")) open.push({ key: "elsewhere", n: elsewhere.length });
+  let total = 0;
+  for (const o of open) {
+    if (o.n > VIRTUAL_ABOVE) out[o.key] = true;
+    else total += o.n;
+  }
+  while (total > TILE_BUDGET) {
+    let big = null;
+    for (const o of open) if (out[o.key] !== true && (!big || o.n >= big.n)) big = o;
+    if (!big) break;
+    out[big.key] = true;
+    total -= big.n;
+  }
+  return out;
+}
+
+/**
  * The Flock's ScrollHandle (the panel's `#cw-content` tracks it as ctx.scroll):
  * main.js creates it in init and hands it to the Session with `sectionIndex`.
  * Null where the host has none.
@@ -703,6 +842,7 @@ export function flockParts(vm, ui, ctx) {
   const sel = selectedTile(vm, ui);
   const selectedId = sel ? sel.helperId : null;
   const tileOpts = { dense, calm, inStep, selectedId, look: tileLook(ctx) };
+  const virtual = virtualGroups(vm, ui);
   const out = [];
   for (const key of flockKeys(vm, ui)) {
     let el = null;
@@ -734,7 +874,7 @@ export function flockParts(vm, ui, ctx) {
       );
       if (!folded) {
         el.child(
-          elsewhere.length > VIRTUAL_ABOVE
+          virtual.elsewhere === true
             ? virtualGroup("elsewhere", elsewhere, tileOpts.look, selectedId)
             : tileGrid(elsewhere, { ...tileOpts, elsewhere: true }, ctx, "elsewhere"),
         );
@@ -753,7 +893,7 @@ export function flockParts(vm, ui, ctx) {
           }, T),
         );
       }
-      if (!folded) el.child(tiles.length > VIRTUAL_ABOVE ? virtualGroup(gk, tiles, tileOpts.look, selectedId) : tileGrid(tiles, tileOpts, ctx, gk));
+      if (!folded) el.child(virtual[gk] === true ? virtualGroup(gk, tiles, tileOpts.look, selectedId) : tileGrid(tiles, tileOpts, ctx, gk));
     }
     // (albumSection is null only when flockKeys left the Album out)
     if (el) out.push(el.flex_none());

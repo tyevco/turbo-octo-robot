@@ -696,3 +696,83 @@ test("r2-21: a needs-you mark of an Elsewhere helper says it is in another windo
     assert.equal(w.slot.flash.text, "That agent is in another window");
   }
 });
+
+// r3-06: a notification is held back while the panel is shown in an active
+// window, so one sent then finds the panel folded. Its click runs
+// creaseworks.show, which unfolds it (layout.show only clears the hidden flag).
+test("r3-06: clicking a notification unfolds a folded panel; with the ribbon and panel both hidden it shows the panel", async () => {
+  const { panel, ribbon } = await game({ layout: LAYOUT({ panelSize: { weight: 0.3 } }) });
+  w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 262, height: 784 }, cx));
+  w.ctl.within("event", ribbon, (cx) => ribbon.session.onCommand("fold", cx));
+  w.ctl.layoutValue = LAYOUT({ panelSize: { weight: RAIL_WEIGHT } });
+  await w.advance(1000);
+  w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 64, height: 784 }, cx));
+  await w.advance(1000);
+  assert.equal(panelState(w.slot), "folded");
+  // Notifications on; a wish becomes ready while the window is active and the panel folded.
+  await w.handler(panel, "setting", "notify.master", true);
+  w.slot.state.lifetime = 7e9;
+  await w.advance(3000);
+  assert.equal(w.ctl.notifications.length, 1, "sent: a folded panel is not shown");
+  const n = w.ctl.notifications[0].notification;
+  assert.deepEqual(n.action, { name: "creaseworks.show", args: {} });
+  // The toast's click (defaults/mods/toast/main.js: run(action.name, action.args)).
+  const before = runsOf(w.ctl, "layout.resize").length;
+  w.ctl.hostCall("run", [n.action.name, n.action.args]);
+  w.ctl.commandQueue.push("show"); // herdr delivers it to every shown copy: the mock's queue once per copy (as above)
+  await w.flush();
+  const resizes = runsOf(w.ctl, "layout.resize").slice(before);
+  assert.deepEqual(resizes.map((r) => r.args), [{ id: "cw-panel", weight: 0.3 }], "unfolded to the remembered weight, once (one copy acts)");
+  assert.equal(w.ctl.runErrors().length, 0);
+  // Ribbon and panel both hidden: no copy on screen takes a command, so the click shows the panel itself.
+  const notify = await import("../../mods/creaseworks/glue/notify.js");
+  assert.deepEqual(notify.clickAction({ layout: layoutInfo(LAYOUT({ panelHidden: true, ribbonHidden: true })) }), { name: "layout.show", args: { id: "cw-panel" } });
+  assert.deepEqual(notify.clickAction({ layout: layoutInfo(LAYOUT({ panelHidden: true })) }).name, "creaseworks.show", "the ribbon shows and unfolds it");
+});
+
+// r3-05: herdr gives each copy its own localStorage (keyed by its props).
+// The panel copy measures the width, but keys, the palette and ribbon marks
+// unfold the panel from the ribbon copy: both stores must hold the weight,
+// and init must bring it back after a restart with the panel folded.
+test("r3-05: the remembered panel weight reaches the ribbon copy's own store and survives a restart folded", async () => {
+  const { panel, ribbon } = await game({ localStorage: true, layout: LAYOUT({ panelSize: { weight: 0.55 } }) });
+  w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 520, height: 784 }, cx));
+  assert.equal(w.slot.widths.lastWeight, 0.55);
+  await w.advance(1000);
+  const stores = w.ctl.localStorageDump();
+  const P = JSON.stringify({ role: "panel" });
+  const R = JSON.stringify({ role: "ribbon" });
+  assert.equal(stores[P]["creaseworks.panelWeight"], "0.55", "the panel copy's store");
+  assert.equal(stores[R]["creaseworks.panelWeight"], "0.55", "and the ribbon copy's (synced on its tick)");
+  assert.equal(stores[R]["creaseworks.panelWidth"], "520");
+  // The ribbon folds it (a key reaches every shown copy; the ribbon acts on it).
+  const command = (view, name) => w.ctl.within("event", view, (cx) => view.session.onCommand(name, cx));
+  command(ribbon, "fold");
+  assert.deepEqual(runsOf(w.ctl, "layout.resize").at(-1).args, { id: "cw-panel", weight: RAIL_WEIGHT });
+  const kept = w.ctl.localStorageDump();
+  w.dispose();
+  // A restart: the layout keeps the panel folded; the slot is new.
+  for (const order of [["panel", "ribbon"], ["ribbon", "panel"]]) {
+    w = win({
+      agents: [agent(1, "working")], terminals: [term(1, "working")],
+      layout: LAYOUT({ panelSize: { weight: RAIL_WEIGHT } }), localStorage: kept,
+    });
+    const v = {};
+    for (const role of order) v[role] = await w.copy(role);
+    await w.advance(2000);
+    assert.equal(w.slot.widths.lastWeight, 0.55, `init brings the weight back (${order.join(" then ")})`);
+    w.ctl.within("event", v.panel, (cx) => v.panel.session.onSize({ width: 64, height: 784 }, cx));
+    // The key (ctrl-shift-g) reaches every shown copy; the ribbon copy acts on it.
+    command(v.panel, "fold");
+    command(v.ribbon, "fold");
+    assert.deepEqual(runsOf(w.ctl, "layout.resize").at(-1).args, { id: "cw-panel", weight: 0.55 }, "unfolds to the remembered weight, not 0.39");
+    // Its store alone holds it too: a ribbon whose slot lost it still unfolds right.
+    w.slot.widths.lastWeight = null;
+    w.ctl.layoutValue = LAYOUT({ panelSize: { weight: RAIL_WEIGHT } });
+    await w.advance(1000);
+    await w.handler(v.ribbon, "show");
+    assert.deepEqual(runsOf(w.ctl, "layout.resize").at(-1).args, { id: "cw-panel", weight: 0.55 }, "from the ribbon copy's own store");
+    w.dispose();
+  }
+  w = null;
+});

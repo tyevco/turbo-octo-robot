@@ -29,14 +29,18 @@ import { packAlbum, unpackAlbum } from "./helpers.js";
 
 /**
  * The file format version in the envelope. 2 = Album entries may be packed
- * arrays (R13); 3 = the chunked check above. The state's own `version` stays
+ * arrays (R13); 3 = the chunked check above; 4 = a packed Album entry may end
+ * in its terminal key (5 or 7 items, R6, r3-18) and the helpers map may hold
+ * Album archive entries (`past-…`, R13, r3-04), which a format-3 build would
+ * misread, so it reads a format-4 file as newer (read-only, never written).
+ * The check rule of 4 is 3's. The state's own `version` stays
  * VERSION (state.js): the in-memory state did not change, only its encoding.
  * From format 3 on a build reads any higher format as "newer" (read-only,
  * never written) before verifying its check. Builds of formats 1 and 2 verify
  * the whole-text check first, so they read a format 3 file as damaged; none
  * of them was released (DESIGN §12.1, R13).
  */
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 /** Helpers handled per parseSaveSteps step (≈ 15 ms a step in the wasm QuickJS harness; the slowest step of a two-year save ≈ 60 ms). */
 export const STEP_HELPERS = 1500;
@@ -242,7 +246,7 @@ export function* parseSaveSteps(text) {
   // A higher format is "newer" before its check is verified: this build may
   // not know its rule, and a newer file is never treated as damaged (its
   // backup is never restored over it). Formats 1-2 hash the whole state text;
-  // 3 the chunked rule.
+  // 3 and 4 the chunked rule.
   const newer = doc.version > SAVE_VERSION;
   let out = null;
   if (doc.version < 3) {

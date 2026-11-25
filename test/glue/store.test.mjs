@@ -798,3 +798,88 @@ test("a save of 64 KiB or more loads in steps (a task yield between parse steps)
   assert.equal(b.ok, false, "a superseded load stops at its next step");
   assert.equal(b.slot.state, null);
 });
+
+/** Runs async host work in a task scope and settles it (virtual clock). */
+async function hostWork(fn) {
+  let p;
+  await w.ctl.dispatch("task", null, () => {
+    p = fn();
+  });
+  for (let i = 0; i < 50; i++) await w.ctl.flush();
+  return p;
+}
+
+// r3-08: the newest kept copy is always at the highest n, so a shift drops the oldest.
+test("r3-08: a gap in save.damaged-1..5 is closed, and the next shift replaces the oldest copy, never a newer one", async () => {
+  const files = {};
+  for (let n = 2; n <= 5; n++) files[damaged(n)] = `old-${n}`; // damaged-1 removed by hand
+  w = win({ files });
+  const paths = store.pathsFor(HOME);
+  assert.equal(await hostWork(() => store.keepAside(paths, "X")), "save.damaged-5.json", "the newest is the highest n");
+  assert.deepEqual([1, 2, 3, 4, 5].map((n) => w.ctl.readFile(damaged(n))), ["old-2", "old-3", "old-4", "old-5", "X"], "the gap closed; nothing dropped");
+  assert.equal(await hostWork(() => store.keepAside(paths, "Y")), "save.damaged-5.json");
+  assert.deepEqual([1, 2, 3, 4, 5].map((n) => w.ctl.readFile(damaged(n))), ["old-3", "old-4", "old-5", "X", "Y"], "the oldest (old-2) replaced, X kept");
+  // A gap above the highest in use: the copy goes after it, nothing moves.
+  w.dispose();
+  w = win({ files: { [damaged(1)]: "a", [damaged(3)]: "b" } });
+  assert.equal(await hostWork(() => store.keepAside(paths, "c")), "save.damaged-4.json");
+  assert.deepEqual([1, 2, 3, 4, 5].map((n) => w.ctl.readFile(damaged(n))), ["a", null, "b", "c", null]);
+});
+
+// r3-01: a damaged save.json read again on every init (a load cut off, a
+// reload, a restart) is kept aside once, not once per load.
+test("r3-01: the same damaged save is kept aside once however often it is loaded", async () => {
+  const { newSlot } = await import("../../mods/creaseworks/glue/live.js");
+  const good = freshState(3);
+  const files = { [SAVE]: "{{{damaged", [BAK]: saveText(good) };
+  for (let n = 1; n <= 3; n++) files[damaged(n)] = `older ${n}`;
+  w = win({ files });
+  const view = await w.copy("panel");
+  await w.ctl.flush();
+  w.ctl.externalWrite(SAVE, "{{{damaged"); // as if the first load's save never landed
+  for (let i = 0; i < 4; i++) {
+    const slot = newSlot(HOME, null);
+    slot.loading = 1;
+    const env = { now: () => Date.now(), seed: () => 1, gen: 1, sleep: () => Promise.resolve() };
+    const { p } = await w.ctl.dispatch("event", view, () => ({ p: store.load(slot, env) }));
+    for (let k = 0; k < 50; k++) await w.ctl.flush();
+    assert.equal(await p, true);
+    assert.match(slot.notice.text, /Damaged copy kept\./);
+    assert.deepEqual(slot.save.damaged, ["save.damaged-4.json"], `load ${i + 1}: listed under the one file that holds it`);
+  }
+  assert.deepEqual([1, 2, 3, 4, 5].map((n) => w.ctl.readFile(damaged(n))), ["older 1", "older 2", "older 3", "{{{damaged", null], "kept once; the older copies stay");
+});
+
+// r3-09: a deleted save.json is said as missing, never as another window's merge.
+test("r3-09: save.json deleted under a running game is said and written again; no 'merged' banner", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  assert.ok(parsed(w.ctl).ok);
+  const kinds = new Set();
+  w.ctl.externalWrite(SAVE, null);
+  await w.hits(v, 2);
+  for (let i = 0; i < 200; i++) {
+    await w.advance(100);
+    if (w.slot.notice) kinds.add(w.slot.notice.kind);
+  }
+  assert.equal(parsed(w.ctl).state.stats.hits, 2, "written again");
+  assert.ok(!kinds.has("merged"), `no merged notice (${[...kinds]})`);
+  assert.equal(w.slot.notices.load.kind, "recovered");
+  assert.equal(w.slot.notices.load.text, store.MISSING_TEXT);
+  // Garbage written by another writer: the recovered notice, and no "merged" beside it.
+  kinds.clear();
+  w.ctl.externalWrite(SAVE, "garbage from elsewhere");
+  await w.hits(v, 1);
+  for (let i = 0; i < 200; i++) {
+    await w.advance(100);
+    if (w.slot.notices.write) kinds.add(w.slot.notices.write.kind);
+  }
+  assert.ok(!kinds.has("merged"), `no merged write notice (${[...kinds]})`);
+  assert.match(w.slot.notices.load.text, /damaged by another writer/);
+  assert.equal(parsed(w.ctl).state.stats.hits, 3);
+});
+
+test("r3 notices fit the banner (NOTICE_MAX graphemes)", () => {
+  for (const text of [store.MISSING_TEXT, store.LOAD_RETRIED_TEXT]) assert.ok(engine.graphemes(text).length <= store.NOTICE_MAX, text);
+});

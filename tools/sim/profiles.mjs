@@ -34,6 +34,7 @@ export const P1 = Object.freeze({
   // Agent i: hourly cycle offset (997·i) mod 3600 s: `blocks` × [work, needs] then rest (minutes).
   cycle: Object.freeze({ work: 12, needs: 2, blocks: 3, rest: 18 }),
   kidShare: 0.25, // one working fledgling during the first 25 % of each working block
+  freshKids: false, // true: every block's fledgling is a new sub-agent (a new address), gone when the block ends
   calm: false,
   buyEvery: null, // null = every second of a session (§3.1); P2: every 5 min of open time
   autoBuy: Object.freeze(["mail-sorter", "thrifty-fox"]),
@@ -43,7 +44,7 @@ export const P1 = Object.freeze({
 
 const p = (id, name, change) => Object.freeze({ ...P1, id, name, ...change });
 
-/** Every profile, P1-P12 (BALANCE §3 "Other profiles"). */
+/** Every profile, P1-P13 (BALANCE §3 "Other profiles"). */
 export const PROFILES = Object.freeze({
   P1,
   P2: p("P2", "never clicks", { hands: false, cps: 0, scraps: false, ream: false, craneCatch: 0, chainSuccess: 0, buyEvery: 300 }),
@@ -57,6 +58,9 @@ export const PROFILES = Object.freeze({
   P10: p("P10", "busy agents", { cycle: Object.freeze({ work: 15, needs: 2, blocks: 3, rest: 9 }) }),
   P11: p("P11", "fast hands", { cps: 3 }),
   P12: p("P12", "calm", { calm: true }),
+  // r3-24: short turns (12 × [3 min working, 1 min needs you], then 12 resting:
+  // 12 finished tasks an hour) and a burst of fresh sub-agents, one per block
+  P13: p("P13", "short turns", { cycle: Object.freeze({ work: 3, needs: 1, blocks: 12, rest: 12 }), freshKids: true }),
 });
 
 export const PROFILE_IDS = Object.freeze(Object.keys(PROFILES));

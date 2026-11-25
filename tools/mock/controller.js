@@ -459,7 +459,61 @@ export class Controller {
     this.failQueue = [];
     this.raceQueue = [];
 
+    // localStorage: herdr gives each copy its own store, keyed by its props
+    // (src/mods.rs mod_policy: store-<hash(props)>.json). Opt-in
+    // (`localStorage: true`, or { [JSON props]: { key: value } } to start
+    // from stores a previous run left): installed at globalThis.localStorage.
+    this.propsByApp = new Map();
+    this.localStores = null;
+    this._savedLocalStorage = undefined;
+    if (sc.localStorage) this.installLocalStorage(sc.localStorage === true ? {} : sc.localStorage);
+
     if (sc.patchDate) this.patchDate();
+  }
+
+  /** The store key of the copy running now: its props as JSON ("null" outside any copy). */
+  _storeKey() {
+    const app = this.scope ? this.scope.app : null;
+    const props = app != null && this.propsByApp.has(app) ? this.propsByApp.get(app) : null;
+    return JSON.stringify(props ?? null);
+  }
+
+  /** Installs a per-copy localStorage (see the constructor); `initial` = { [JSON props]: { key: value } }. */
+  installLocalStorage(initial = {}) {
+    this.localStores = new Map(Object.entries(initial).map(([k, v]) => [k, new Map(Object.entries(v ?? {}).map(([a, b]) => [a, String(b)]))]));
+    const ctl = this;
+    const store = () => {
+      const k = ctl._storeKey();
+      if (!ctl.localStores.has(k)) ctl.localStores.set(k, new Map());
+      return ctl.localStores.get(k);
+    };
+    const ls = {
+      getItem: (k) => (store().has(String(k)) ? store().get(String(k)) : null),
+      setItem: (k, v) => void store().set(String(k), String(v)),
+      removeItem: (k) => void store().delete(String(k)),
+      clear: () => store().clear(),
+      key: (i) => [...store().keys()][i] ?? null,
+      get length() {
+        return store().size;
+      },
+    };
+    if (this._savedLocalStorage === undefined) this._savedLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage") ?? null;
+    Object.defineProperty(globalThis, "localStorage", { value: ls, configurable: true, writable: true, enumerable: false });
+  }
+
+  /** Every copy's store as plain data: { [JSON props]: { key: value } } (pass it as a later scenario's `localStorage`). */
+  localStorageDump() {
+    const out = {};
+    if (!this.localStores) return out;
+    for (const [k, m] of this.localStores) out[k] = Object.fromEntries(m);
+    return out;
+  }
+
+  _uninstallLocalStorage() {
+    if (this._savedLocalStorage === undefined) return;
+    if (this._savedLocalStorage) Object.defineProperty(globalThis, "localStorage", this._savedLocalStorage);
+    else delete globalThis.localStorage;
+    this._savedLocalStorage = undefined;
   }
 
   // -------------------------------------------------------------------------
@@ -759,6 +813,8 @@ export class Controller {
   enter(phase, owner = null, opts = {}) {
     if (!PHASES.includes(phase)) throw new TypeError(`mock: unknown phase ${phase}`);
     const frame = new Frame(phase, owner, opts.gen ?? this.generation, { ...opts, app: this._frameApp(owner, opts) });
+    // A copy's props are fixed when it is made: its localStorage follows them.
+    if (opts.initializing && frame.app != null && !this.propsByApp.has(frame.app)) this.propsByApp.set(frame.app, this.propsValue);
     frame.prev = this.scope;
     this.scope = frame;
     const cx = opts.cx === "ambient" ? this._ambientCx() : this._callCx(frame);
@@ -1597,6 +1653,7 @@ export class Controller {
 
   dispose() {
     this.unpatchDate();
+    this._uninstallLocalStorage();
     for (const t of [...this.tasks.values()]) this._finish(t);
     if (globalThis.__herdr === this) delete globalThis.__herdr;
   }

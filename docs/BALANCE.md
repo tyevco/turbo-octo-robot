@@ -92,6 +92,17 @@ Buy the candidate with the smallest payback if affordable; repeat until it is no
 | P10 busy agents | working blocks 15 min (3 × [15 working, 2 needs you], then 9 resting) |
 | P11 fast hands | 3 hand hits per second |
 | P12 calm | P1 with calm mode on |
+| P13 short turns | short turns and a burst of sub-agents: 12 × [**3 min working, 1 min needs you**], then 12 resting (still 36 working minutes an hour, but **12 finished tasks an hour**); each block's fledgling is a **new sub-agent** (a new address) that works the first 45 s, finishes, and is gone when the block ends |
+
+P13 guards the envelope-unit rule (DESIGN §6.1, review r3-24): a finish earns a share of a unit
+that follows the time since the helper's previous credited finish (12 min or more = a whole
+unit), and every fledgling of a parent draws on that parent's one budget. Before it, every finish
+more than 60 s after the last earned a whole unit and each new sub-agent address its own half
+unit, so short turns about doubled the units created and moved the first wish before day 3
+(3 min / 1 min turns with no rest: 15:42 on seed 1). With the rule, short-turn variants of P1 on
+seed 1 (5/1, 3/1 and 1/1 minutes with no rest, 1/1 with a new sub-agent each block) reach the
+first wish between 19:47 and 24:00, every one with day 1-3 click shares above P1's floors, and
+P2's never-click policy on 1/1 turns (25:56) stays slower than P1's (22:42).
 
 ---
 
@@ -135,6 +146,7 @@ M17 is provisional: if it fails, retune the later-wish gate `max(5, ceil(0.25·W
 | P10 busy agents | 19:20 | 17:00 – 22:00 | 16:00 – 23:00 | P10 ≤ P1 | 19:22 (18:54–20:01) |
 | P11 fast hands | 18:30 | 16:30 – 21:00 | **≥ 16:00** and ≤ 22:00 | — | 18:30 (17:29–19:18) |
 | P12 calm | = P1 | each seed within ±3 % of the same P1 seed | | calm changes no earnings | (= P1 by construction) |
+| P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 22:00 (21:41–22:09) |
 
 Monotonicity (medians): P3 ≥ P4 ≥ P1 ≥ P5 ≥ P6 ≥ P7. More agents never make the game slower,
 and 30 or 64 agents never reach the first wish on the first day of open time.
@@ -158,6 +170,7 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
 | P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
+| P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 10.1 / 19.1 / 22.6 % |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
 
@@ -241,7 +254,7 @@ Knob 2 was 0.15 while the bench pace scaled the whole sum of `b_i`. Making it ma
 12:30 and 10:32 at 0.15); 0.07 puts them back inside their windows (12:42 and 11:21).
 
 The exponent sets `crowd(N)` everywhere it is used, not only in `Hs0`: Bundle envelopes and the
-overflow conversion (`45 · Rp · crowd(N) · units`, DESIGN §6.1), Elsewhere helpers' credit
+overflow conversion (`max(45 · Rp, 75 · V) · crowd(N) · units`, DESIGN §6.1), Elsewhere helpers' credit
 (`Hstale`, §12.5) and away gathering (§10.2). Against 0.15 they pay the same up to the knee and
 less above it: about 5 % less at 8 agents (`crowd(8)` 0.525 instead of 0.555), 15 % less at 30
 (0.154 instead of 0.180) and 20 % less at 64 (0.076 instead of 0.095). The simulator rows already

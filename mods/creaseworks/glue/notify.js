@@ -56,9 +56,25 @@ export function wanted(slot, t, env) {
   return null;
 }
 
-function send(w) {
+/**
+ * The toast's click action. `creaseworks.show` reaches every shown copy of
+ * the mod (the ribbon, or the panel while the ribbon is hidden), which shows
+ * and unfolds the panel, or flashes why it can't (commands.js show). A
+ * notification is held back while the panel is shown and the window active,
+ * so one is usually sent with the panel folded: `layout.show` only clears the
+ * hidden flag and left it on the 64 px rail (r3-06). Only with both the ribbon
+ * and the panel hidden (no copy on screen to take a command) is it
+ * `layout.show` of the panel.
+ */
+export function clickAction(slot) {
+  const L = slot && slot.layout;
+  if (L && L.known && L.ribbonHidden && L.panelHidden) return { name: "layout.show", args: { id: "cw-panel" } };
+  return { name: "creaseworks.show", args: {} };
+}
+
+function send(w, slot) {
   try {
-    notify({ title: w.title, body: w.body, level: "info", timeout: 6000, icon: ICON, action: { name: "layout.show", args: { id: "cw-panel" } } });
+    notify({ title: w.title, body: w.body, level: "info", timeout: 6000, icon: ICON, action: clickAction(slot) });
     return true;
   } catch {
     return false;
@@ -79,7 +95,7 @@ export function check(slot, t, env, save) {
     if (slot.save.confirmed >= claim.s) {
       N.claim = null;
       touch(slot);
-      if (sentOn(s, claim.day) <= DAILY_CAP && claim.day === env.day) return send(claim) ? "sent" : null;
+      if (sentOn(s, claim.day) <= DAILY_CAP && claim.day === env.day) return send(claim, slot) ? "sent" : null;
       return "capped";
     }
     if (claim.at > t) claim.at = t; // the wall clock moved back: count the 10 min from now
@@ -91,7 +107,7 @@ export function check(slot, t, env, save) {
   const action = { type: "notified", event: w.event, day: env.day };
   if (w.episode) action.episode = w.episode;
   dispatch(slot, action, t);
-  if (w.event === "save") return send(w) ? "sent" : null;
+  if (w.event === "save") return send(w, slot) ? "sent" : null;
   N.claim = { s: slot.seq, event: w.event, day: env.day, at: t, title: w.title, body: w.body };
   save();
   return "claimed";

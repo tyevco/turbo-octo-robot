@@ -51,9 +51,10 @@ if (missingTabs.length) {
 const { renderPanel, activeTab, RAIL_BELOW } = await import("../../mods/creaseworks/ui/panel.js");
 const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creaseworks/ui/mat.js");
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
-const { renderAway, awayLines } = await import("../../mods/creaseworks/ui/away.js");
+const { renderAway, awayLines, AWAY_CLOSE } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
-const { renderRibbon, pipArea, densityLevel, ribbonLayout, textBound, CHIP_GLYPH, ENV_MARKER } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, CHIP_GLYPH, ENV_MARKER, HINT_FOLD } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { statusColor, statusDisc, contrast } = await import("../../mods/creaseworks/ui/color.js");
 const { spritePath } = await import("../../mods/creaseworks/ui/art.js");
 
 installMockWindow();
@@ -479,7 +480,8 @@ test("ribbon: a lead chip (narrow hint, save chip, welcome pill) is subtracted b
     for (let n = 1; n <= 34; n++) {
       for (const l of leads) {
         const v = ribbonOf(n, Wd, { save: l.save ?? null, pill: l.pill ?? null });
-        const c = makeCtx("paper", { width: Wd, height: 30 }, { narrowHint: Boolean(l.narrowHint) });
+        // Folded panel: the welcome pill only shows then (r3-14), and its width must count.
+        const c = makeCtx("paper", { width: Wd, height: 30 }, { narrowHint: Boolean(l.narrowHint), panelShown: false });
         const ly = ribbonLayout(v, c, Wd);
         const tag = `n ${n} W ${Wd} ${JSON.stringify(l)}`;
         assert.ok(ly.lead + ly.need <= ly.w, `${tag}: ${ly.lead} + ${ly.need} > ${ly.w} (level ${ly.level})`);
@@ -807,4 +809,114 @@ test("qjs: the frame modules load under the sandbox and render 64 helpers within
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Review r3 fixes on the away card and the ribbon
+
+/** Every text node under `json`. */
+function textsOf(json) {
+  const out = [];
+  const visit = (n) => {
+    if (n && n.kind === "text") out.push(n.text);
+    for (const k of (n && n.children) || []) if (k && typeof k === "object") visit(k);
+  };
+  visit(json);
+  return out;
+}
+
+test("r3-13: the away card's ✕ says closing collects the folds (dismiss 'away' credits the pot)", async () => {
+  const a = F.scenario("away");
+  const json = renderAway(a.vm, a.ui, makeCtx("graphite", a)).toJSON();
+  const close = findNode(json, "cw-away-close");
+  assert.equal(styleOf(close, "tooltip"), AWAY_CLOSE.away);
+  assert.match(AWAY_CLOSE.away, /collect/i);
+  assert.doesNotMatch(AWAY_CLOSE.away, /stay/i, "the folds do not stay: dismiss collects them");
+  // The engine really collects on dismiss: nothing is left to Collect afterwards.
+  const E = await import("../../mods/creaseworks/engine/index.js");
+  const T0 = Date.UTC(2026, 10, 25, 9);
+  const s = E.newGame({ seed: 3, now: T0, day: "2026-11-25" });
+  let seq = 0;
+  const act = (x) => E.apply(s, { w: "w-r313close01", s: ++seq, ...x });
+  for (let i = 0; i < 50; i++) act({ t: T0 + i * 100, type: "click" });
+  E.advance(s, T0 + 3 * 3600000, "w-r313close01");
+  assert.ok(s.away.pot, "three hours away leave a pot");
+  act({ t: T0 + 3 * 3600000 + 10, type: "dismiss", notice: "away" });
+  assert.equal(s.away.pot, null, "closing the card collected the pot");
+  assert.deepEqual(act({ t: T0 + 3 * 3600000 + 20, type: "collect" }).map((e) => e.kind), ["ignored"], "nothing is left to Collect");
+  const busy = F.scenario("busy");
+  assert.equal(styleOf(findNode(renderAway(busy.vm, busy.ui, makeCtx("graphite", busy)).toJSON(), "cw-away-close"), "tooltip"), AWAY_CLOSE.busy);
+});
+
+test("r3-14: the 'Welcome back' pill shows only while the panel is folded or hidden; a flash still shows", () => {
+  const W = 1172;
+  const vm = ribbonOf(4, W, { pill: "Welcome back +4.81M" });
+  const s = { width: W, height: 30 };
+  const shown = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: true })).toJSON();
+  assert.ok(!ids(shown).includes("cw-rib-welcome"), "no pill beside the panel's own away card");
+  assert.equal(ribbonLayout(vm, makeCtx("graphite", s, { panelShown: true }), W).lead, 0, "and no width reserved for it");
+  const folded = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: false })).toJSON();
+  assert.ok(ids(folded).includes("cw-rib-welcome"), "folded or hidden: the pill");
+  assert.equal(styleOf(findNode(folded, "cw-rib-welcome"), "tooltip"), "Open Creaseworks to collect");
+  // The glue's panelFull (a tight rail has no away card) wins over panelShown.
+  assert.ok(ribbonPill(vm, { panelShown: true, panelFull: false }), "tight rail: the pill stays");
+  assert.equal(ribbonPill(vm, { panelShown: false, panelFull: true }), null);
+  // A flash shares the pill (and the footer) whether the panel shows or not.
+  const fl = { ...vm, ribbon: { ...vm.ribbon, pill: "Nobody needs you" }, notices: [{ kind: "flash", text: "Nobody needs you", actions: [], place: "footer", save: false }] };
+  const fj = renderRibbon(fl, {}, makeCtx("graphite", s, { panelShown: true })).toJSON();
+  assert.ok(ids(fj).includes("cw-rib-welcome"));
+  assert.equal(styleOf(findNode(fj, "cw-rib-welcome"), "tooltip"), "Nobody needs you", "a flash's tooltip is its own text");
+  assert.deepEqual(ribbonPill(fl, { panelShown: true }), { text: "Nobody needs you", flash: true });
+});
+
+test("r3-23: the compact narrow hint names the panel ('Fold panel'), never a bare 'Fold' without its question", () => {
+  // 1440×900 at zoom 1.5: twelve helpers at level C do not fit beside the full hint.
+  const W = 640;
+  const vm = ribbonOf(12, W);
+  const ctx = makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true });
+  const lay = ribbonLayout(vm, ctx, W);
+  assert.ok(lay.compact, "the compact lead is chosen");
+  const json = renderRibbon(vm, {}, ctx).toJSON();
+  const fold = findNode(json, "cw-rib-hint-fold");
+  assert.ok(textsOf(fold).includes(HINT_FOLD.compact), textsOf(fold).join("|"));
+  assert.ok(!textsOf(json).includes("Fold"), "no bare 'Fold' next to the fold count");
+  assert.match(styleOf(fold, "tooltip") ?? textsOf(json).join(" "), /narrow/i, "the question is in the tooltip");
+  const spec = lay.specs.find((x) => x.key === "hint");
+  assert.equal(styleOf(fold, "w"), spec.fold);
+  assert.ok(spec.fold >= 14 + textBound(HINT_FOLD.compact, 600), "its width fits the longer label");
+  // With room, the full hint keeps its question beside a plain "Fold".
+  const wide = renderRibbon(ribbonOf(4, 1172), {}, makeCtx("graphite", { width: 1172, height: 30 }, { narrowHint: true })).toJSON();
+  assert.ok(textsOf(wide).some((t) => /narrow/.test(t)));
+  assert.ok(textsOf(findNode(wide, "cw-rib-hint-fold")).includes(HINT_FOLD.full));
+});
+
+test("r3-21: win98's needs-you glyph keeps its red on the away card and the ribbon save chip (a white disc, not #404040)", () => {
+  const T = THEMES.win98;
+  const disc = statusDisc(T);
+  assert.notEqual(disc, T.popover.toLowerCase(), "win98 red fails 3:1 on #c0c0c0, so another surface");
+  for (const st of ["blocked", "working", "done", "idle"]) {
+    assert.ok(contrast(T[st], disc) >= 3, `${st} reads on the disc`);
+    assert.equal(statusColor(T, st, disc), T[st].toLowerCase(), `${st} keeps its own colour`);
+  }
+  const a = F.scenario("away");
+  const json = renderAway(a.vm, a.ui, makeCtx("win98", a)).toJSON();
+  const colours = [];
+  walk(json, (n) => {
+    const c = styleOf(n, "text_color");
+    if (c) colours.push(c);
+  });
+  assert.ok(colours.includes(T.blocked.toLowerCase()), "the needs line's pennant is red");
+  // Graphite (red passes on its popover) is unchanged: glyph straight on the card.
+  assert.equal(statusDisc(THEMES.graphite), THEMES.graphite.popover);
+  // The ribbon save chip: on the disc, its warn icon in the needs-you colour.
+  const vm = ribbonOf(4, 1172, { save: "Save problem" });
+  const rj = renderRibbon(vm, {}, makeCtx("win98", { width: 1172, height: 30 })).toJSON();
+  const pill = findNode(rj, "cw-rib-save-pill");
+  assert.equal(styleOf(pill, "bg"), disc);
+  const icons = [];
+  walk(pill, (n) => {
+    const c = styleOf(n, "text_color");
+    if (c) icons.push(c);
+  });
+  assert.ok(icons.includes(T.blocked.toLowerCase()), icons.join(","));
 });

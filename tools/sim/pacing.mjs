@@ -64,7 +64,7 @@ function agentModel(prof) {
     marks.add((c.blocks * block + off) % HOUR);
   }
   const sorted = [...marks].sort((a, b) => a - b);
-  return { c, block, work, kidLen, offsets, sorted };
+  return { c, block, work, kidLen, offsets, sorted, freshKids: prof.freshKids === true };
 }
 
 /** Status and turn of agent i and its fledgling at play-clock second `s`. */
@@ -86,7 +86,9 @@ function agentAt(m, i, s) {
     }
   }
   const base = 1000 + m.c.blocks * cyc;
-  return { status, turn: base + done, kid, kidTurn: base + kidDone };
+  // the block's own fledgling (freshKids): its index, or -1 while the agent rests
+  const blk = j >= m.c.blocks ? -1 : m.c.blocks * cyc + j;
+  return { status, turn: base + done, kid, kidTurn: base + kidDone, blk };
 }
 
 /** The next play-clock second > s at which some agent changes. */
@@ -106,7 +108,15 @@ function observation(m, agents, s, withKids = true) {
       addr: `a${i}`, created: 1000 + i, status: a.status, raw: a.status, turn: a.turn, parent: null,
       pane: `p${i}`, title: `agent ${i}`, paneName: `pane ${i}`, space: "main", tab: "1", kind: "pane",
     });
-    if (withKids) {
+    if (withKids && m.freshKids) {
+      // a new sub-agent each block (r3-24): working, then done (+1 turn) until the block ends
+      if (a.blk >= 0) {
+        list.push({
+          addr: `k${i}.${a.blk}`, created: 5000 + i + 7 * a.blk, status: a.kid, raw: a.kid, turn: a.kid === "working" ? 0 : 1, parent: `a${i}`,
+          pane: null, title: `sub-agent ${i}`, paneName: null, space: "main", tab: "1", kind: "kid",
+        });
+      }
+    } else if (withKids) {
       list.push({
         addr: `k${i}`, created: 5000 + i, status: a.kid, raw: a.kid, turn: a.kidTurn, parent: `a${i}`,
         pane: null, title: `sub-agent ${i}`, paneName: null, space: "main", tab: "1", kind: "kid",
@@ -123,7 +133,7 @@ export function agentObservation(profileId, sec) {
   return observation(m, m.offsets.map((_, i) => i), sec, true);
 }
 
-const obsKey = (list) => list.map((o) => `${o.status[0]}${o.turn}`).join(",");
+const obsKey = (list) => list.map((o) => `${o.addr}:${o.status[0]}${o.turn}`).join(",");
 
 // ---------------------------------------------------------------------------
 // The player

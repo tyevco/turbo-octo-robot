@@ -391,3 +391,104 @@ test("r2-06: closeView gives close(cx) its 250 ms, then releases the copy (its f
   assert.equal(w.slot.save.writing, null);
   assert.deepEqual(w.ctl.errors, []);
 });
+
+// r3-07: a hot reload during Reset, Restore or Check save drops the tool's
+// claim (herdr cancels its task): the player is told it may not have taken effect.
+test("r3-07: a hot reload during Reset says the Reset may not have happened", async () => {
+  w = win({ latency: { write: 400, read: 0 } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 5);
+  await w.advance(18000);
+  w.slot.flash = null;
+  await w.handler(v, "resetGame");
+  for (let i = 0; i < 5; i++) await w.advance(50);
+  assert.equal(w.slot.save.writingFor, "reset", "the reset holds the claim");
+  await w.reload();
+  assert.equal(w.slot.save.writing, null, "released at init");
+  const n = w.slot.notice;
+  assert.ok(n && n.kind === "recovered" && /Creaseworks reloaded/.test(n.text) && /may not have taken effect/.test(n.text), JSON.stringify(n));
+  assert.ok(engine.graphemes(n.text).length <= 140, "fits the banner (NOTICE_MAX)");
+  assert.equal(w.slot.state.stats.hits, 5, "the game was not reset");
+  await w.advance(20000);
+  assert.equal(w.slot.notice, n, "said until dismissed");
+  // A plain save cycle cut off by a reload is made again quietly.
+  w.slot.notices.load = null;
+  w.slot.notice = null;
+  await w.hits(w.copies[0], 1);
+  await w.handler(w.copies[0], "buy", "paper-stack", 1);
+  for (let i = 0; i < 30 && w.slot.save.writingFor !== "cycle"; i++) await w.advance(100);
+  assert.equal(w.slot.save.writingFor, "cycle");
+  await w.reload();
+  assert.equal(w.slot.notice, null, "no notice for an ordinary save");
+});
+
+// r3-01: the load runs its parse steps across task yields (the session hands
+// the store its task's cx.sleep), and a load that stops is started again and said.
+test("r3-01: the load yields with the task's cx.sleep between parse steps", async () => {
+  const eu = await import("../engine/_util.mjs");
+  const store = await import("../../mods/creaseworks/glue/store.js");
+  const s = eu.seeded(77, Date.now() - 3600000);
+  const me = eu.writer(s, "wBig");
+  let t = Date.now() - 3500000;
+  for (let b = 0; b < 8; b++) {
+    me.act(eu.observeAction((t += 60000), Array.from({ length: 400 }, (_, i) => eu.agent(5000 + b * 400 + i, "working", 0))));
+    me.act(eu.observeAction((t += 1000), []));
+  }
+  const text = engine.serialize(s);
+  assert.ok(text.length >= store.STEP_PARSE_CHARS);
+  w = win({ files: { [SAVE]: text } });
+  let sleeps = 0;
+  const sleep = w.ctl._sleep.bind(w.ctl);
+  w.ctl._sleep = (scope, ms) => {
+    if (w.slot && w.slot.loading) sleeps++;
+    return sleep(scope, ms);
+  };
+  const v = await w.copy("panel");
+  await w.copy("ribbon");
+  assert.equal(w.slot.loading, 1, "one load for both copies");
+  await w.flush();
+  assert.ok(w.slot.state, "loaded");
+  assert.ok(sleeps >= 4, `the load yielded between parse steps (${sleeps})`);
+  assert.equal(engine.serialize(w.slot.state), text);
+  assert.ok(v.session.cache, "and the vm is built before render");
+});
+
+test("r3-01: a load that stops (its task cut off) is started again; the placeholder and a notice say so", async () => {
+  const { LOAD_STALL_MS, LOAD_RETRY_TEXT, LOADING_TEXT } = await import("../../mods/creaseworks/glue/session.js");
+  const { LOAD_RETRIED_TEXT } = await import("../../mods/creaseworks/glue/store.js");
+  const { findById } = await import("../../tools/mock/gpui-kit.js");
+  const good = engine.newGame({ seed: 3, now: Date.now() - 1000, day: "2026-01-01" });
+  good.bank = 4321;
+  // The first load's read never answers in time (as if herdr interrupted its task).
+  w = win({ files: { [SAVE]: engine.serialize(good) }, latency: { read: 1e9 } });
+  const v = await w.copy("panel");
+  const text = (view) => JSON.stringify(w.render(view).tree);
+  assert.match(text(v), new RegExp(LOADING_TEXT));
+  w.ctl.latency.read = 500;
+  await w.advance(LOAD_STALL_MS - 1000);
+  assert.equal(w.slot.state, null, "still waiting");
+  assert.equal(w.slot.loadTries, 0);
+  await w.advance(2000);
+  assert.equal(w.slot.loadTries, 1, "started again");
+  assert.match(text(v), new RegExp(LOAD_RETRY_TEXT.replace(/[.…]/g, ".")), "the placeholder says so: never silent");
+  await w.advance(3000);
+  assert.ok(w.slot.state, "loaded");
+  assert.equal(w.slot.state.bank >= 4321, true, "the save, not a fresh game");
+  assert.equal(w.slot.loading, 0);
+  assert.equal(w.slot.notice.kind, "recovered");
+  assert.equal(w.slot.notice.text, LOAD_RETRIED_TEXT);
+  assert.ok(findById(w.render(v).tree, "cw-panel"));
+  // A copy that started a load and closed: another copy starts it again at once.
+  w.dispose();
+  w = win({ files: { [SAVE]: engine.serialize(good) }, latency: { read: 1e9 } });
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  assert.equal(w.slot.loadBy, panel.session.copyId);
+  w.ctl.latency.read = 0;
+  await w.ctl.closeView(panel);
+  await w.advance(1000);
+  assert.ok(w.slot.state, "the ribbon copy loaded it");
+  assert.equal(w.slot.notice.text, LOAD_RETRIED_TEXT);
+  assert.ok(ribbon.session.vm());
+});

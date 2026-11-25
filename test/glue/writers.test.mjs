@@ -103,7 +103,8 @@ test("the notification cap (3 a day) holds across two writers", async () => {
   assert.equal(n.level, "info");
   assert.equal(n.timeout, 6000);
   assert.equal(n.icon, "mods/creaseworks/art/notify-icon.svg");
-  assert.deepEqual(n.action, { name: "layout.show", args: { id: "cw-panel" } });
+  // A click shows and unfolds the panel through the mod's own command (r3-06: layout.show left a folded panel on the rail).
+  assert.deepEqual(n.action, { name: "creaseworks.show", args: {} });
   assert.equal(w.ctl.recorded.playSound.length, 0, "never sound");
   // Day is full now for both.
   assert.equal(notifier.wanted(A, t + 2000, nenv), null);

@@ -3,7 +3,8 @@
 // middle: one mark per helper, never capped (density A chips, B two-row pips,
 // C tallies beyond B), right block 100 (envelope count, mini Sheet while the
 // panel is folded or hidden, fold toggle). A save chip, the "Welcome back"
-// pill or the narrow-window hint take the first place of the middle area;
+// pill (only while the panel is folded or hidden, or a flash) or the
+// narrow-window hint take the first place of the middle area;
 // their reserved width is subtracted before the density level is chosen
 // (`ribbonLayout`), so a lead chip never pushes a mark past the edge.
 // The ribbon draws no loops (the view's budget gives it none).
@@ -11,7 +12,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { cellWidth, clip, formatInt } from "../engine/index.js";
-import { statusColor } from "./color.js";
+import { statusColor, statusDisc } from "./color.js";
 import { hueOf } from "./palette.js";
 import { sheetPaths, spritePath, sprite, statusGlyphPath } from "./art.js";
 import { button, chip, iconButton, text, hoverOn } from "./widgets.js";
@@ -182,6 +183,38 @@ function buttonBound(label) {
 
 const MIDDLE_GAP = 4;
 const HINT_TEXT = "Terminals are narrow: fold Creaseworks?";
+/**
+ * The narrow hint's fold button: "Fold" beside the question, "Fold panel"
+ * when the compact lead drops the question (r3-23: a bare "Fold" next to the
+ * fold count read as the game's own fold click). Tested.
+ */
+export const HINT_FOLD = Object.freeze({ full: "Fold", compact: "Fold panel" });
+
+/**
+ * True when the panel shows its full view, with the away card over the mat
+ * (`ctx.panelFull` from the glue; else `ctx.panelShown`, which a tight rail
+ * also sets).
+ */
+function panelFull(ctx) {
+  if (!ctx) return false;
+  return typeof ctx.panelFull === "boolean" ? ctx.panelFull : Boolean(ctx.panelShown);
+}
+
+/**
+ * The ribbon pill to draw, `{ text, flash }`, or null (tested). A flash
+ * (the glue puts it in the pill and a footer notice) always shows. The
+ * "Welcome back" pill shows only while the panel is folded or hidden (DESIGN
+ * §3.7): with the panel shown its away card carries the same news, and the
+ * pill's "open Creaseworks" would point at what is already open (r3-14).
+ */
+export function ribbonPill(vm, ctx) {
+  const rib = (vm && vm.ribbon) || {};
+  const text = typeof rib.pill === "string" && rib.pill ? rib.pill : null;
+  if (!text) return null;
+  const notices = vm && Array.isArray(vm.notices) ? vm.notices : [];
+  for (const n of notices) if (n && n.kind === "flash" && n.text === text) return { text, flash: true };
+  return panelFull(ctx) ? null : { text, flash: false };
+}
 const DENSE = Object.freeze({ A: 0, B: 1, C: 2 });
 
 /** A tally's label: the count, clipped to `RIBBON_CLIP.n` graphemes (never px-truncated). */
@@ -211,7 +244,8 @@ function tally(t, T, h) {
 /**
  * The lead elements as specs `{ key, w, label }` (no elements built). With
  * `compact` the pills drop their labels (tooltips keep the words) and the
- * narrow hint is its two buttons only; used when even level C would not fit.
+ * narrow hint is its two buttons only ("Fold panel", "Not now"); used when
+ * even level C would not fit.
  */
 function leadSpecs(vm, ctx, compact) {
   const rib = vm.ribbon || {};
@@ -222,13 +256,14 @@ function leadSpecs(vm, ctx, compact) {
     const label = compact ? null : clip(save, RIBBON_CLIP.pill);
     out.push({ key: "save", label, w: chipBound(label), save, banner });
   }
-  if (typeof rib.pill === "string" && rib.pill) {
-    const label = compact ? null : clip(rib.pill, RIBBON_CLIP.pill);
-    out.push({ key: "welcome", label, w: chipBound(label), pill: rib.pill });
+  const pill = ribbonPill(vm, ctx);
+  if (pill) {
+    const label = compact ? null : clip(pill.text, RIBBON_CLIP.pill);
+    out.push({ key: "welcome", label, w: chipBound(label), pill: pill.text, flash: pill.flash });
   }
   if (ctx && ctx.narrowHint) {
     const label = compact ? null : clip(HINT_TEXT, RIBBON_CLIP.hint);
-    const fold = buttonBound("Fold");
+    const fold = buttonBound(label ? HINT_FOLD.full : HINT_FOLD.compact);
     const later = buttonBound("Not now");
     const pill = label ? 18 + textBound(label, 400) : 0;
     out.push({ key: "hint", label, pill, fold, later, w: (pill ? pill + 4 : 0) + fold + 4 + later });
@@ -244,9 +279,12 @@ function leadWidth(specs) {
 
 function leadElement(sp, T, S, h) {
   if (sp.key === "save") {
+    // On the status disc surface (T.popover, or win98's white: red fails 3:1 on #c0c0c0, r3-21).
+    const disc = statusDisc(T);
     return chip("cw-rib-save", sp.label, {
       icon: "warn",
-      iconColor: statusColor(T, "blocked", "popover"),
+      bg: disc,
+      iconColor: statusColor(T, "blocked", disc),
       border: statusColor(T, "blocked", "chrome"),
       maxW: sp.w,
       tooltip: clip(String(sp.banner ? sp.banner.text : sp.save), RIBBON_CLIP.tooltip),
@@ -258,7 +296,9 @@ function leadElement(sp, T, S, h) {
       icon: "fold",
       border: T.border,
       maxW: sp.w,
-      tooltip: sp.label ? "Open Creaseworks to collect" : clip(`${sp.pill}: open Creaseworks to collect`, RIBBON_CLIP.tooltip),
+      tooltip: sp.flash
+        ? clip(sp.pill, RIBBON_CLIP.tooltip)
+        : sp.label ? "Open Creaseworks to collect" : clip(`${sp.pill}: open Creaseworks to collect`, RIBBON_CLIP.tooltip),
       onClick: (e, cx) => h.show(cx),
     }, T, S);
   }
@@ -271,7 +311,7 @@ function leadElement(sp, T, S, h) {
   }
   const foldTip = sp.label ? undefined : HINT_TEXT;
   return row
-    .child(button("cw-rib-hint-fold", "Fold", { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => h.fold(cx) }, T))
+    .child(button("cw-rib-hint-fold", sp.label ? HINT_FOLD.full : HINT_FOLD.compact, { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => h.fold(cx) }, T))
     .child(button("cw-rib-hint-later", "Not now", { variant: "ghost", h: 28, w: sp.later, size: 11, px: 6, onClick: (e, cx) => h.dismiss("narrow", cx) }, T));
 }
 

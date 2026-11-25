@@ -111,7 +111,7 @@ Paths (absolute, from `appHome()`):
 ```
 <appHome>/data/<mod>/save.json        current save
 <appHome>/data/<mod>/save.bak.json    previous good save (rotated, see below)
-<appHome>/data/<mod>/save.damaged-<n>.json   damaged files kept aside (n = 1..5, oldest replaced)
+<appHome>/data/<mod>/save.damaged-<n>.json   damaged files kept aside (n = 1..5, newest highest, oldest replaced)
 ```
 
 Written only with herdr `writeTextFile(path, text, expected)` (CAS + atomic rename for existing
@@ -131,11 +131,20 @@ check, DESIGN §12.1). Large saves are parsed across task steps: `parseSaveSteps
 by `engine/index.js`) yields after the JSON parse and after every 1,500 helpers, and the store's
 `parseIn` drives it with a task yield between steps for any save of 64 KiB or more
 (`STEP_PARSE_CHARS`) on the load, merge, overwrite, check, restore and share paths (a two-year
-save: about 31 steps, the slowest about 60 ms in the wasm QuickJS harness).
+save: about 31 steps, the slowest about 60 ms in the wasm QuickJS harness). The yield is the
+task's `cx.sleep(0)`, which every caller passes in its env (`sleep`): without it `pause` is a
+microtask and the whole parse runs in one task step (r3-01: the load passed none, so a two-year
+save took 314-512 ms in one step and a larger or damaged one was interrupted for good;
+`test/qjs/load-steps.test.mjs`). The load also yields between the recovery and backup parses and
+after keeping a damaged file aside.
 
 Load order: `save.json` → if damaged, keep it aside as `save.damaged-<n>.json`, try `save.bak.json`
 → if damaged too, keep aside, start new. Every non-clean outcome sets a visible save notice
-(banner in the game with what happened and what was kept) — never silent.
+(banner in the game with what happened and what was kept) — never silent. A load that stops (its
+task interrupted by herdr's budget, or cancelled with a closed view: neither settles) is started
+again by the session's watchdog once it has made no progress for `LOAD_STALL_MS` (15 s) or its
+copy has gone; the placeholder says so ("Opening the save stopped partway; trying again…") and,
+once loaded, a `recovered` load notice does (r3-01).
 
 Write protocol (one writer per process, see A6):
 
@@ -557,7 +566,9 @@ export class Session {
 The data tick (every 1000 ms visible / 5000 ms hidden, per copy): heartbeat; if ticker: observe
 (only on change), `advance(now)`, automation and notification checks, save cadence; every copy:
 re-render (`cx.notify()`) when `slot.rev` or the formatted clock bucket changed (5 s buckets in
-calm mode).
+calm mode). Time alone moving the counters (`advance` bumping `state.rev`) does not touch the
+slot: the bucket decides those re-renders, so calm mode really re-renders every 5 s; a player
+action, a roster change, a notice or a flash touches the slot and re-renders at once (r3-12).
 
 Save notices (`recovered fresh conflict merged error newer`) live in the slot (`slot.notice`),
 not in the engine state; `view()` receives them via `opts.saveNotice` so the vm is complete.
@@ -919,7 +930,9 @@ one-line placeholder.
 `dark`/`zoom` from `settings()`, `calm`, `width`, `height`, `save`, `handlers`, and for the ribbon
 `panelShown`, `narrowHint`), `uiForRender()` (the copy's `ui` with `ui.now` set), `loading()`,
 `changed(cx)` (builds the vm in the tick / handler, then `cx.notify()`, so render only reads the
-cache), `dispatch(action, cx)`, `openHelper(idOrGroup, cx)`. `ui` also carries `buyCount` (the
+cache; the load task calls it once the game is loaded, so the first render after a load reads a
+built vm too: r3-03), `dispatch(action, cx)`, `openHelper(idOrGroup, cx)`, `loadingText()` (the
+placeholder's text; it says when a load is being started again). `ui` also carries `buyCount` (the
 Works toggle; `handlers.setting("buyCount", v)`). Handlers add `resetGame` (B11 tabs builder).
 The vm cache key is `state.rev | slot.rev | width | tab | buyCount | notice kind@at@retry |
 clock bucket (1 s, 5 s calm) | short | flash`; `short` = panel height < 640.
@@ -932,7 +945,9 @@ write}` (`notice` is the one on show: error > conflict > newer > fresh > recover
 `flash {text, until}` (3 s messages: "Nobody needs you", "That agent has gone", Settings tool
 results; shown as the ribbon `pill` and a footer notice), `obs {sig, presence}`, `live` / `panes`
 (null-prototype maps from the latest `terminals()` / `agents()` read), `widths {panel,
-panelHeight, ribbon, lastPanel}`, `layout` (`layoutInfo(layout())`), `presence {visible, active,
+panelHeight, ribbon, lastPanel, lastWeight}`, `loadAt` / `loadBy` / `loadGen` / `loadTries` (the
+load under way: its last progress, the copy and code generation that started it, how many times
+it was started again; Session `watchLoad`), `layout` (`layoutInfo(layout())`), `presence {visible, active,
 panelShown}`, `request` (a ribbon/rail `select` / `showGroup` for the panel copy's `ui`),
 `notify {claim, rescued}`, `narrow {filesEpoch, filesWas, dismissed}`, `cycle` (▲/✓ cycling).
 Copy ids are `"<role>:<random>"`; a new `init` takes over older copies of its role (their timers
@@ -940,10 +955,15 @@ died with their generation), so the ticker passes on at once after a hot reload.
 stale after `max(5 s, 2.5 × its tick interval)` (a hidden window beats every 5 s).
 
 **Store (A4).** `load` reads `location.json` first (a damaged pointer falls back to the local
-save, with a notice). Damaged copies: the first free `n` of 1..5; when all exist the files shift
-down (2→1 … 5→4) and the new one is 5, so 1 is always the oldest. An unreadable `save.json`
+save, with a notice). Damaged copies: the newest is always the highest `n` of 1..5 (the next `n`
+after the highest in use); when 5 is in use the kept files move down to close any gap, and only
+when all five hold a copy is 1, the oldest, replaced (r3-08: filling a gap first made the next
+shift drop a newer copy). Text already kept in one of them is not kept again (r3-01: a damaged
+`save.json` read on every reload filled all five). Names listed in Details move with their files. An unreadable `save.json`
 (> 1 MiB, not a file) is an `error` notice with back-off. A merge shows `merged` only when
-another writer's `applied` grew (a hot reload's own late write is not "another window");
+another writer's `applied` grew (a hot reload's own late write is not "another window"; a
+`save.json` found missing says so instead, `MISSING_TEXT`, and one damaged by another writer says
+that: r3-09);
 refused purchases are named in it. `checkSave`, `restoreBackup`, `resetGame` (old file kept as
 `save.damaged-<n>.json`, listed as "(restore)"/"(reset)") and `sharePath(path)` (validated:
 absolute, `.json`, absent or a Creaseworks save; writes only `location.json`; this window's
@@ -957,7 +977,9 @@ roster observations past `COALESCE_AT` (512) and is given up past `PENDING_MAX` 
 (`save.logLost`: the next write keeps the other file aside); merges replay it in slices
 (`replayPending`, which finishes a given-up log before the new one). A save claim
 (`save.writingBy`/`writingGen`) is released on adoption only when it was made by an older code
-generation (`codeGeneration()`, a token renewed each time herdr evaluates `live.js` again), or
+generation (`codeGeneration()`, a token renewed each time herdr evaluates `live.js` again; a
+Settings tool's claim, Check, Reset, Restore or a share cut off before its pointer write, is said
+in a `recovered` notice, since that tool may not have taken effect: r3-07), or
 after `WRITE_STALL_MS` (60 s) without progress; a second panel in the same generation never
 drops a live claim. Save timers are rebased when the wall clock moves back, and backup rotation
 failures get their own notice and back-off.
@@ -966,15 +988,24 @@ failures get their own notice and back-off.
 saves at once, and calls `notify()` only when that save is confirmed and the merged counter for
 the day is still ≤ 3, so two windows racing for the last slot send one. The `save` event (a save
 error / fresh notice lasting 5 min, once per episode) is sent on the local counter. "Quiet" = the
-panel copy is alive, not hidden and not folded, and `window()?.active`.
+panel copy is alive, not hidden and not folded, and `window()?.active`. The toast's click action
+is `creaseworks.show` (every shown copy gets it; the one acting on commands runs `show()`, which
+shows and unfolds the panel or flashes why it can't): a toast sent while the window is active
+finds the panel folded, and `layout.show` only clears the hidden flag (r3-06). With the ribbon and
+the panel both hidden no copy takes a command, so the action is `layout.show {id: "cw-panel"}`.
 
 **Commands (§2.6).** The ribbon copy acts unless `layout()` reports `cw-ribbon` hidden; the panel
 acts only when it does (or, with an unreadable `layout()`, when no ribbon copy is alive).
+The commands are `fold`, `show` (the notification click), `answer` and `envelope`.
 `layout()` is read tolerantly (a tree of `{id, hidden, size, children}`; a node missing from a
 known tree counts as hidden). `fold`: hidden panel → `layout.show` + `layout.resize` to the last
 weight; rail (< 140) → last weight; else remember the width (slot + `localStorage`
 `creaseworks.panelWidth`) and the panel's `{weight}` from `layout()` as a share of main's weight
-(slot `widths.lastWeight` + `localStorage` `creaseworks.panelWeight`, try/catch) and resize to the
+(slot `widths.lastWeight` + `localStorage` `creaseworks.panelWeight`, try/catch). herdr gives each
+copy its own `localStorage` (keyed by its props), and the panel copy measures while keys, the
+palette and ribbon marks unfold from the ribbon copy: each copy's data tick copies the slot's
+widths into its own store (`syncStore`), the copy that remembers a weight always writes its own
+store, and `init` restores `lastWeight` as well as `lastPanel` (r3-05). Then it resizes to the
 rail, `{weight: 0.001}` (`RAIL_WEIGHT`), held at cw-panel's `min: 64`. Fold and unfold are always
 `{weight}`, never `{px}` (B15); unfold is the remembered share × main's current weight, else 0.39.
 `layoutInfo` also reports `mainWeight`, `filesWeight`, `filesMin`, `filesMax`; its `filesPx` is the
@@ -1024,7 +1055,9 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   `send_command` delivers only to shown copies) and `layout.toggle {id: "cw-panel"}` returns
   `no node "cw-panel" in the shown layout`; herdr toasts each as "<name> failed". Nothing else
   happens. The entries stay (the toggle is the only way to hide the panel, DESIGN §2.2); RECIPE's
-  Watch out and README's Keys say so (`test/layout` checks both).
+  Watch out and README's Keys say so (`test/layout` checks both). A notification toast clicked
+  after switching to another layout is the same case: its `creaseworks.show` action (r3-06)
+  reaches no copy and herdr toasts "creaseworks.show failed"; nothing else happens.
 * **Narrow windows and zoom.** Superseded by B15 (the panel used to be `{px: 320}` and was
   pushed off-screen at 1100 px with Files open and at zoom 1.5).
 

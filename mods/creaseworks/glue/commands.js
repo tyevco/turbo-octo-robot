@@ -15,7 +15,7 @@
 // panel to the remembered weight, or, when it already has it, flashes why it
 // cannot open the full panel instead of doing nothing.
 // The last unfolded weight, as a share of main's, is remembered in the slot
-// and localStorage, every call in try/catch; `answer` opens the helper that
+// and in every copy's own localStorage (syncStore), every call in try/catch; `answer` opens the helper that
 // has needed you longest; `envelope` opens the oldest envelope.
 
 import { nextCommand, run } from "herdr";
@@ -246,9 +246,33 @@ function keepWeight(slot, px) {
   const w = L ? L.panelWeight : null;
   if (typeof px !== "number" || px < FULL_BELOW || !goodWeight(w)) return;
   const share = Math.round((w / mainWeightOf(slot)) * 1000) / 1000;
-  if (!goodWeight(share) || share === slot.widths.lastWeight) return;
+  if (!goodWeight(share)) return;
   slot.widths.lastWeight = share;
-  rememberWeight(share);
+  // Written to the calling copy's own store whenever it lacks it (r3-05: the
+  // slot already holding the share used to skip the write, so the ribbon's
+  // store, where keys and the palette unfold the panel, never got one).
+  if (recallWeight() !== share) rememberWeight(share);
+}
+
+/**
+ * Copies the slot's remembered widths into the calling copy's own
+ * localStorage (herdr gives each copy its own store, keyed by its props: the
+ * panel measures the width, but keys, the palette and ribbon marks unfold it
+ * from the ribbon copy). `mem` is that copy's record of what its store
+ * holds, so a store is read and written only when the slot's value changed.
+ * Run from each copy's data tick (r3-05).
+ */
+export function syncStore(slot, mem) {
+  const w = slot.widths.lastWeight;
+  if (goodWeight(w) && mem.weight !== w) {
+    mem.weight = w;
+    if (recallWeight() !== w) rememberWeight(w);
+  }
+  const px = slot.widths.lastPanel;
+  if (typeof px === "number" && px >= RAIL_BELOW && px <= 900 && mem.width !== px) {
+    mem.width = px;
+    if (recallWidth() !== Math.round(px)) rememberWidth(px);
+  }
 }
 
 /** Records the panel copy's measured width; an unfolded one (and its weight) is remembered. */
@@ -524,11 +548,17 @@ export function actsOnCommands(slot, role, info, t, staleMs) {
   return !roleAlive(slot, "ribbon", t, staleMs);
 }
 
-/** Runs one command name ("fold", "answer", "envelope"; a ":value" suffix is ignored). */
+/**
+ * Runs one command name ("fold", "show", "answer", "envelope"; a ":value"
+ * suffix is ignored). `show` is a notification's click action (notify.js):
+ * it shows and unfolds the panel, or says why it can't (r3-06: layout.show
+ * only clears the hidden flag, and a folded panel is a resize, not hidden).
+ */
 export function runCommand(slot, name, t) {
   const c = String(name).split(":")[0];
   if (!slot.state) return "loading";
   if (c === "fold") return fold(slot, undefined, t);
+  if (c === "show") return show(slot, undefined, t);
   if (c === "answer") {
     const r = openHelper(slot, "needs", t);
     return r.ok ? "opened" : r.why;

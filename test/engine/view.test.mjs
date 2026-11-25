@@ -217,6 +217,19 @@ test("density: auto is dense from 21 tiles; always / never / opts.dense override
   assert.equal(v(s20, T0, { dense: false }).helpers.dense, false);
 });
 
+test("r3-19: density auto is dense in the narrow panel (200-279 px) whatever the count", () => {
+  const { s } = withAgents(Array.from({ length: 6 }, () => "working"));
+  assert.equal(v(s, T0, { width: 320 }).helpers.dense, false);
+  assert.equal(v(s, T0, { width: 280 }).helpers.dense, false);
+  assert.equal(v(s, T0, { width: 279 }).helpers.dense, true);
+  assert.equal(v(s, T0, { width: 226 }).helpers.dense, true);
+  assert.equal(v(s, T0, { width: 200 }).helpers.dense, true);
+  s.settings.density = "never";
+  assert.equal(v(s, T0, { width: 226 }).helpers.dense, false, "Never wins over narrow");
+  s.settings.density = "auto";
+  assert.equal(v(s, T0, { width: 226, dense: false }).helpers.dense, false, "opts.dense overrides");
+});
+
 // ---------------------------------------------------------------------------
 // Ribbon and rail
 
