@@ -363,12 +363,19 @@ export function unpackAlbum(id, a) {
 
 const round4 = (x) => (x === 0 || !Number.isFinite(x) ? 0 : Number(x.toPrecision(4)));
 
-/** Compact a gone pane record in place: exactly unpackAlbum(packAlbum(...)) of it. */
+/**
+ * Compact a gone pane record in place: exactly unpackAlbum(packAlbum(...)) of
+ * it. Its folds and fledgling folds keep 4 significant digits (≤ 0.005 %),
+ * which is what keeps a packed entry near 45 bytes; anything later added to a
+ * compact record (an envelope cashed in, a fledgling folded in) is rounded
+ * the same way by compacting it again (review r5-08: those sums were written
+ * at full precision, ≈ 10 bytes more per entry).
+ */
 function compactRecord(h) {
   const s = h.stats || {};
   const m = typeof h.missingSince === "number" && Number.isFinite(h.missingSince) ? h.missingSince : 0;
   const a = [h.name, round4(s.folds), isFiniteNum(s.tasks) ? s.tasks : 0, Math.floor(m / MINUTE)];
-  if (s.kidsPast > 0 && isFiniteNum(s.kidsPast)) a.push(s.kidsPast, isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
+  if (s.kidsPast > 0 && isFiniteNum(s.kidsPast)) a.push(s.kidsPast, isFiniteNum(s.kidsFolds) ? round4(s.kidsFolds) : 0);
   if (validKey(h.key)) a.push(h.key);
   const look = lookOf(h.id);
   if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0 || skippedName(a[0])) a[0] = 0;
@@ -792,6 +799,7 @@ function foldKid(state, h) {
   const s = h.stats;
   p.stats.kidsPast = (p.stats.kidsPast || 0) + 1 + (isFiniteNum(s.kidsPast) && s.kidsPast > 0 ? s.kidsPast : 0);
   p.stats.kidsFolds = (p.stats.kidsFolds || 0) + (isFiniteNum(s.folds) ? s.folds : 0) + (isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
+  if (p.compact === true) compactRecord(p); // keeps its packed precision (r5-08)
   delete hs[h.id];
   rosterChanged(state);
 }
@@ -816,14 +824,17 @@ export function archiveId(m) {
  * stays in the Album. A terminal of an archived helper that returns joins as
  * a new helper. Batched (only past keep + batch), so the selection runs once
  * per K.albumArchiveBatch departures; deterministic (leaving times and ids).
+ * `keep`: how many of the newest compact records stay (K.albumCompactKeep,
+ * fewer when the save would pass K.saveBudget, albumKeepFor).
  */
-function archiveOldest(state, compacts) {
+function archiveOldest(state, compacts, keep) {
   const hs = state.helpers;
   const n = compacts.length;
+  if (!(keep < n)) return;
   const keys = new Float64Array(n);
   for (let i = 0; i < n; i++) keys[i] = compacts[i].missingSince;
   keys.sort();
-  const cut = keys[n - K.albumCompactKeep - 1];
+  const cut = keys[n - keep - 1];
   for (const h of compacts) {
     const m = h.missingSince;
     if (!(m <= cut)) continue;
@@ -858,6 +869,97 @@ function archiveOldest(state, compacts) {
   rosterChanged(state);
 }
 
+// ---------------------------------------------------------------------------
+// Whole-save bound (R13, review r5-07). Archiving by count alone bounded only
+// the Album: present helpers (≈ 600 bytes each, an agent with sub-agents is
+// several) came on top, so a large roster over a full Album passed herdr's
+// 1 MiB write limit and every save cycle failed. prune estimates the save's
+// bytes (saveBytes) and, when the compact records would push it past
+// K.saveBudget, keeps fewer of them one by one (the oldest go to archive
+// entries, still counted and shown). The estimate is cheap (no stringify):
+// a present helper's strings are counted exactly as UTF-8 JSON, every other
+// record by its shape (content.js saveBytes*), so it is deterministic and the
+// same in every window.
+
+const PLAIN = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
+
+/** UTF-8 bytes of `v` written as a JSON string (quotes included); 4 ("null") for a non-string. */
+export function jsonBytes(v) {
+  if (typeof v !== "string") return 4;
+  if (PLAIN.test(v)) return v.length + 2;
+  let n = 2;
+  const len = v.length;
+  for (let i = 0; i < len; i++) {
+    const c = v.charCodeAt(i);
+    if (c === 0x22 || c === 0x5c) n += 2;
+    else if (c < 0x20) n += 6;
+    else if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < len && (v.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 4;
+      i++;
+    } else if (c >= 0xd800 && c <= 0xdfff) n += 6; // a lone surrogate is written escaped
+    else n += 3;
+  }
+  return n;
+}
+
+/** Estimated saved bytes of a present helper's record. */
+function presentBytes(h) {
+  return K.saveBytesPresent + jsonBytes(h.addr) + jsonBytes(h.name) + jsonBytes(h.parent) + jsonBytes(h.seenBy) +
+    jsonBytes(h.title) + jsonBytes(h.pane) + jsonBytes(h.paneName) + jsonBytes(h.space) + jsonBytes(h.tab);
+}
+
+/** Estimated saved bytes of a compact record's packed entry. */
+function compactBytes(h) {
+  let n = K.saveBytesCompact;
+  if (h.stats.kidsPast > 0) n += K.saveBytesCompactKids;
+  // A name of its own ("Pib 2") is written instead of 0; a base name never
+  // holds a space (§5.1), so no hash is needed here (this runs per record).
+  const nm = h.name;
+  if (typeof nm === "string" && nm.indexOf(" ") >= 0) n += nm.length + 1;
+  return n;
+}
+
+/** Estimated saved bytes of helper record `h` (any kind). */
+function recordBytes(h) {
+  if (!h.gone) return presentBytes(h);
+  if (h.compact === true) return compactBytes(h);
+  return K.saveBytesGone;
+}
+
+/** Estimated bytes outside the helpers map: the fixed part and the envelopes. */
+function restBytes(state) {
+  let n = K.saveBytesRest;
+  for (const id in state.envelopes) n += K.saveBytesEnvelope;
+  return n;
+}
+
+/** The whole save's estimated size in bytes (what prune holds under K.saveBudget; tests compare it with serialize). */
+export function saveBytes(state) {
+  let n = restBytes(state);
+  const hs = state.helpers;
+  for (const id in hs) n += recordBytes(hs[id]);
+  return n;
+}
+
+/**
+ * How many of `n` compact records (`bytes` estimated in all) stay one by one
+ * when everything else in the save is estimated at `other` bytes: all of them
+ * while n ≤ K.albumCompactKeep + K.albumArchiveBatch and the save fits
+ * K.saveBudget; else K.albumCompactKeep, or fewer, so that the kept ones plus a
+ * batch of new ones fit the budget (batched like the count rule). n = keep all.
+ */
+export function albumKeepFor(n, bytes, other) {
+  const room = K.saveBudget - other;
+  const over = n > K.albumCompactKeep + K.albumArchiveBatch;
+  if (!over && bytes <= room) return n;
+  if (n === 0) return 0;
+  const per = bytes / n;
+  const fit = Math.floor(room / per) - K.albumArchiveBatch;
+  return Math.max(0, Math.min(K.albumCompactKeep, fit, n));
+}
+
 /** A compact record changed after compaction (an envelope opened or a check-in for it): fields its packed form cannot hold. */
 function compactChanged(h) {
   const s = h.stats;
@@ -870,7 +972,9 @@ function compactChanged(h) {
  * beyond the K.albumKeep most recently gone are compacted, and a compact record
  * changed since is compacted again; once more than K.albumCompactKeep +
  * K.albumArchiveBatch compact records are kept, the oldest beyond
- * K.albumCompactKeep are merged into archive entries (archiveOldest). With the step context, the envelope of a
+ * K.albumCompactKeep are merged into archive entries (archiveOldest), and
+ * more of them when the save would pass K.saveBudget (albumKeepFor, r5-07).
+ * With the step context, the envelope of a
  * helper whose record is compact or no longer in the save is cashed in
  * (settleEnvelope), so envelopes of long-gone helpers cannot pile up. Writers
  * unseen for 30 days are pruned.
@@ -880,24 +984,33 @@ export function prune(state, t, ctx, ev) {
   const kids = [];
   const full = [];
   const compacts = [];
+  let other = restBytes(state); // estimated bytes of everything but compact records (r5-07)
+  let cbytes = 0; // and of the compact records
   for (const id in hs) {
     const h = hs[id];
-    if (!h.gone) continue;
+    if (!h.gone) {
+      other += presentBytes(h);
+      continue;
+    }
     if (h.kind === "kid") {
+      other += K.saveBytesGone;
       if (skippedName(h.name)) h.name = lookOf(h.id).name;
       if (typeof h.missingSince !== "number") continue;
       if (t - h.missingSince > K.kidAlbumMs) foldKid(state, h);
       else kids.push(h);
     } else if (h.archive > 0) {
-      continue; // an archive entry (r3-04): many helpers, never compacted again
+      other += K.saveBytesGone; // an archive entry (r3-04): many helpers, never compacted again
     } else if (h.compact === true) {
       if (compactChanged(h)) compactRecord(h);
       compacts.push(h);
+      cbytes += compactBytes(h);
     } else if (!(h.salt > 0)) {
       if (skippedName(h.name)) h.name = lookOf(h.id).name;
+      other += K.saveBytesGone; // counted whole even if compacted below, until the next call
       full.push(h); // a salted record keeps its `salt` (R6), so it is never compacted
-    } else if (skippedName(h.name)) {
-      h.name = lookOf(h.id).name;
+    } else {
+      if (skippedName(h.name)) h.name = lookOf(h.id).name;
+      other += K.saveBytesGone;
     }
   }
   if (kids.length > K.kidAlbumKeep) {
@@ -912,7 +1025,8 @@ export function prune(state, t, ctx, ev) {
     for (let i = 0; i < full.length && excess > 0; i++) if (compactRecord(full[i])) excess--;
     if (excess !== n0) rosterChanged(state);
   }
-  if (compacts.length > K.albumCompactKeep + K.albumArchiveBatch) archiveOldest(state, compacts);
+  const keep = albumKeepFor(compacts.length, cbytes, other);
+  if (keep < compacts.length) archiveOldest(state, compacts, keep);
   if (ctx && ev) settleOld(state, ctx, t, ev);
   settledNotices(state);
   for (const w in state.writersSeen) {
@@ -926,7 +1040,8 @@ export function prune(state, t, ctx, ev) {
 /**
  * Cash in every envelope whose helper's record is compact or gone from the
  * save (§6.1, R13): at most one footer notice per call. The record stays
- * compact (settleEnvelope adds only to its folds). The notice is an
+ * compact (settleEnvelope adds only to its folds, rounded as compaction
+ * rounds them, r5-08). The notice is an
  * "overflow" note (the same conversion, so the view shows it and it expires
  * after K.noteLifeMs like one; `settled` marks it): "+3.2K from a full
  * envelope (Pib, long gone)", or "(4 helpers long gone)" for several.
@@ -941,7 +1056,12 @@ function settleOld(state, ctx, t, ev) {
   if (!ids) return;
   ctx.refresh();
   let amount = 0;
-  for (const id of ids) amount += settleEnvelope(state, ctx, id, t, ev);
+  for (const id of ids) {
+    amount += settleEnvelope(state, ctx, id, t, ev);
+    // the folds join a compact record at its packed precision (r5-08)
+    const x = hs[id];
+    if (x !== undefined && x.compact === true) compactRecord(x);
+  }
   const h = ids.length === 1 ? hs[ids[0]] : undefined;
   pushNotice(state, { kind: "overflow", at: t, data: { amount, count: ids.length, settled: true, name: settledWho(h, ids.length) } });
 }

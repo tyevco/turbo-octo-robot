@@ -284,3 +284,57 @@ test("an envelope or check-in on a compact record (an older save) never keeps it
   const v = s.stats.units;
   assert.ok(Math.abs(v.created - (v.opened + v.converted + waitingUnits(s))) < 1e-9);
 });
+
+// Review r5-08: cashing in an envelope (or folding a fledgling) added a
+// full-precision sum to a compact record, which compactChanged never caught,
+// so its packed entry carried ≈ 10 more bytes ([0,32.75387861057565,…]).
+const sig4 = (x) => (x === 0 ? 0 : Number(x.toPrecision(4)));
+
+test("r5-08: folds cashed in or folded into a compact record keep its packed precision (4 significant digits)", () => {
+  const s = seeded(508);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  s.owned["paper-stack"] = 23; // Rp > 0, so a settled envelope pays an odd amount
+  let t = T0;
+  // the first helper finishes a task (a timed envelope waits: no Mail Sorter) and has a fledgling
+  me.act(observeAction((t += 1000), [agent(1), kid(2, 1)]));
+  me.act(observeAction((t += 61000), [{ ...agent(1), status: "idle", raw: "idle", turn: 1 }, kid(2, 1)]));
+  const pid = engine.helperId("t1", 1001);
+  const kidId = engine.helperId("t2", 1002);
+  s.helpers[kidId].stats.folds = 123.456789;
+  me.act(observeAction((t += 1000), []));
+  assert.ok(s.envelopes[pid] || Object.keys(s.envelopes).length === 0);
+  const hadEnvelope = !!s.envelopes[pid];
+  if (!hadEnvelope) s.envelopes[pid] = { type: "rush", units: 1.37, landedAt: t, lastAt: t };
+  if (!hadEnvelope) s.stats.units.created += 1.37;
+  // K.albumKeep more leave: the first record is compacted and its envelope cashed in in the same pass
+  for (let k = 0; k < K.albumKeep; k++) {
+    me.act(observeAction((t += 1000), [agent(100 + k)]));
+    me.act(observeAction((t += 1000), []));
+  }
+  const p = s.helpers[pid];
+  assert.equal(p.compact, true);
+  assert.equal(s.envelopes[pid], undefined, "cashed in");
+  const note = s.notices.find((n) => n.kind === "overflow" && n.data.settled === true);
+  assert.ok(note && note.data.amount > 0);
+  assert.notEqual(note.data.amount, sig4(note.data.amount), "the cash-in itself has more than 4 digits");
+  assert.equal(p.stats.folds, sig4(p.stats.folds), `folds ${p.stats.folds}`);
+  // the fledgling folds into its compact parent 30 days on: kidsFolds keeps 4 digits too
+  me.act(observeAction((t += 31 * 86400000), [], { day: "2026-12-27" }));
+  assert.equal(s.helpers[kidId], undefined);
+  assert.equal(p.compact, true);
+  assert.equal(p.stats.kidsPast, 1);
+  assert.equal(p.stats.kidsFolds, sig4(123.456789));
+  // what is saved is the record itself (R13: in memory = unpack(pack)), at 4 digits
+  const text = engine.serialize(s);
+  const a = JSON.parse(text).state.helpers[pid];
+  assert.ok(Array.isArray(a));
+  assert.equal(a[1], p.stats.folds);
+  assert.equal(a[5], p.stats.kidsFolds);
+  for (const x of [a[1], a[5]]) assert.ok(String(x).replace(/e.*$/, "").replace(/[-.]/g, "").replace(/^0+/, "").length <= 4, String(x));
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
+  const v = s.stats.units;
+  assert.ok(Math.abs(v.created - (v.opened + v.converted + waitingUnits(s))) < 1e-9);
+});

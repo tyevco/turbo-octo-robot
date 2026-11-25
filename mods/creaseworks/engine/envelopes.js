@@ -74,7 +74,9 @@ export function addUnits(state, ctx, to, units, t, ev, key) {
  * what opening it would (`envUnit · u · envMult · crowd(N)`, no Tailwind); a
  * timed boost converts like units above the cap (`envUnit · crowd(N) · u`).
  * The folds go to the record's Album total only (a compact record keeps its
- * packed form). Returns the folds paid (0 when there is no envelope).
+ * packed form: helpers.js settleOld compacts it again, so the sum keeps the
+ * packed precision, review r5-08). Returns the folds paid (0 when there is no
+ * envelope).
  */
 export function settleEnvelope(state, ctx, helperId, t, ev) {
   const env = state.envelopes[helperId];

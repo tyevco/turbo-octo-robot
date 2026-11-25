@@ -194,6 +194,14 @@ export const K = f({
   // R13, r3-04: compact Album records kept one by one; beyond keep + batch the
   // oldest are merged into one archive entry per 30 days they left in
   albumCompactKeep: 10000, albumArchiveBatch: 1000, albumArchiveMs: 30 * 86400000,
+  // R13, r5-07: the whole save is held under saveBudget (estimated bytes, far
+  // under herdr's 1 MiB write limit) by archiving more compact records when the
+  // present roster is large. Per-record estimates (UTF-8 bytes as written):
+  // a present helper's fields without its strings (which are counted exactly),
+  // a full Album record or archive entry, a packed entry (+ fledgling totals,
+  // + a name of its own), an envelope, and everything outside helpers/envelopes.
+  saveBudget: 896 * 1024, saveBytesPresent: 560, saveBytesGone: 416,
+  saveBytesCompact: 42, saveBytesCompactKids: 14, saveBytesEnvelope: 80, saveBytesRest: 16 * 1024,
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,
   noticesMax: 12, noteLifeMs: 60000,
