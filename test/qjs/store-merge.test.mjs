@@ -14,14 +14,16 @@
 // more, or a budget interrupt, with nothing else wrong) is run once more on a
 // fresh host, so a busy machine does not fail the suite; a second miss fails.
 //
-// Run with: npm run test:qjs (about 40 s).
+// Every teardown is judged (r4-17, DESIGN R13): see teardownFault below.
+//
+// Run with: npm run test:qjs (about 80 s: each run again with the collector held back).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createHost, BudgetError } from "../../tools/qjs/harness.mjs";
+import { createHost, BudgetError, RuntimeFreeError } from "../../tools/qjs/harness.mjs";
 import * as engine from "../../mods/creaseworks/engine/index.js";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -64,7 +66,23 @@ function heavySave(days) {
   return s;
 }
 
-async function mergeRounds(days, minKiB) {
+// Teardown (DESIGN R13, review r4-17): this wasm build's JS_FreeRuntime leak
+// check fires both for a leaked VM handle and for an engine fault that depends
+// only on when the collector runs. A run as the engine runs must free cleanly
+// or fail with exactly that check (nothing else); the same run with the
+// collector held back (gcHeadroom: only WHEN garbage is collected changes)
+// must free cleanly, which a leaked handle cannot.
+const HEADROOM = 96 * 1024 * 1024;
+
+function teardownFault(leak, what) {
+  if (leak === null) return "freed cleanly";
+  assert.ok(leak instanceof RuntimeFreeError, `${what}: dispose failed in another way: ${leak?.stack ?? leak}`);
+  assert.equal(leak.gcObjList, true, `${what}: not the JS_FreeRuntime leak check: ${leak.message}`);
+  return "JS_FreeRuntime leak check (engine collector timing; the held-back replay decides)";
+}
+
+/** Runs three merge rounds; returns the dispose error (null when freed cleanly) and the headroom record. */
+async function mergeRounds(days, minKiB, gcHeadroom = 0) {
   const state = heavySave(days);
   const text = engine.serialize(state);
   const kib = text.length / 1024;
@@ -79,8 +97,10 @@ async function mergeRounds(days, minKiB) {
   const host = await createHost({
     modRoot: MOD,
     scenario: { appHome: HOME, home: "/home/player", props: { role: "panel" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite", agents, terminals, now, files: { [SAVE]: text } },
+    gcHeadroom,
   });
   const rounds = [];
+  let leak = null;
   try {
     await host.load();
     host.advance(0);
@@ -114,30 +134,37 @@ async function mergeRounds(days, minKiB) {
     console.log(`# ${days}-day save (${kib.toFixed(0)} KiB): merge rounds' longest task step ${rounds.map((m) => m.toFixed(0)).join(", ")} ms`);
     for (const m of rounds) assert.ok(m < 500, `every task step of a merge inside 500 ms (${m.toFixed(1)} ms)`);
   } finally {
+    // Never swallowed (r4-17): a failure above propagates as it is; a clean run returns its teardown.
     try {
       host.dispose();
     } catch (e) {
-      // The wasm runtime sometimes cannot free a heap this size (a harness limit, not the mod's).
-      if (!/could not be freed cleanly/.test(String(e && e.message))) throw e;
+      leak = e;
     }
   }
+  return { leak, headroom: host.headroom };
 }
 
 /** mergeRounds, run once more on a fresh host when the first run missed the budget on timing alone. */
-async function mergeRoundsRetried(days, minKiB) {
+async function mergeRoundsRetried(days, minKiB, gcHeadroom = 0) {
   try {
-    await mergeRounds(days, minKiB);
+    return await mergeRounds(days, minKiB, gcHeadroom);
   } catch (e) {
     if (!(e && e.timing)) throw e;
     console.log(`# ${days}-day save: ${e.message}; running once more (a busy machine?)`);
-    await mergeRounds(days, minKiB);
+    return await mergeRounds(days, minKiB, gcHeadroom);
   }
 }
 
-test("a CAS merge onto a one-year save stays inside the 500 ms task budget", { timeout: 600000 }, async () => {
-  await mergeRoundsRetried(365, 300);
-});
+for (const [days, minKiB, what] of [[365, 300, "a one-year save"], [600, 480, "a save of about 500 KiB"]]) {
+  test(`a CAS merge onto ${what} stays inside the 500 ms task budget`, { timeout: 600000 }, async () => {
+    const { leak } = await mergeRoundsRetried(days, minKiB);
+    console.log(`# ${days}-day merge teardown as the engine runs: ${teardownFault(leak, `${days}-day merge`)}`);
+  });
 
-test("a CAS merge onto a save of about 500 KiB stays inside the 500 ms task budget", { timeout: 600000 }, async () => {
-  await mergeRoundsRetried(600, 480);
-});
+  test(`the ${days}-day merge run frees the QuickJS runtime cleanly with the engine's collector held back (R13, r4-17)`, { timeout: 600000 }, async () => {
+    const { leak, headroom } = await mergeRoundsRetried(days, minKiB, HEADROOM);
+    assert.equal(headroom.length, 1, "one VM booted with the headroom");
+    assert.ok(headroom[0].peak >= HEADROOM, "the headroom was reached");
+    if (leak) throw leak;
+  });
+}

@@ -484,3 +484,71 @@ test("r2-03 review: no claim is held across the yield before the first write, so
   assert.equal(A.notice, null);
   assert.equal(A.save.writing, null);
 });
+
+test("r4-09: a log given up while a write is out stays given up: the next conflict keeps the other file aside, nothing undone", async () => {
+  w = win({ latency: { write: 500 } });
+  const start = engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) });
+  start.bank = 1e12;
+  start.lifetime = 1e12;
+  w.ctl.externalWrite(SAVE, engine.serialize(start));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  for (let i = 0; i < PENDING_MAX - 1; i++) click(A, t + i);
+  // A save goes out; while it is in flight three purchases pass PENDING_MAX.
+  let p;
+  await w.ctl.dispatch("task", null, () => {
+    p = store.cycle(A, env);
+  });
+  await w.ctl.advance(600); // (the backup rotates first)
+  assert.ok(A.inflight, "the write is out");
+  for (let i = 0; i < 3; i++) dispatch(A, { type: "buy", item: "paper-stack", count: 1 }, Date.now());
+  assert.equal(A.save.logLost, true);
+  assert.equal(A.state.owned["paper-stack"], 3);
+  await w.ctl.advance(1000);
+  assert.equal(await p, true);
+  assert.equal(parsed(w.ctl).state.owned["paper-stack"] || 0, 0, "the text written lacks the purchases");
+  assert.equal(A.save.logLost, true, "so the log stays given up");
+  // Another window writes the save before A's next save.
+  const B = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wB");
+  click(B, Date.now());
+  let q;
+  await w.ctl.dispatch("task", null, () => {
+    q = store.cycle(B, env);
+  });
+  await w.ctl.advance(1000);
+  assert.equal(await q, true);
+  const bText = w.ctl.readFile(SAVE);
+  let r;
+  await w.ctl.dispatch("task", null, () => {
+    r = store.cycle(A, env);
+  });
+  await w.ctl.advance(3000);
+  assert.equal(await r, true);
+  assert.equal(A.state.owned["paper-stack"], 3, "no purchase undone");
+  assert.equal(parsed(w.ctl).state.owned["paper-stack"], 3);
+  assert.equal(w.ctl.readFile(`${SAVE.replace(/\.json$/, "")}.damaged-1.json`), bText, "the other window's file kept aside");
+  assert.equal(A.notice && A.notice.kind, "recovered", "and said");
+  assert.equal(A.save.logLost, false, "cleared by a write that holds the whole game");
+});
+
+test("r4-09: the recovery write keeps a log given up during it given up too", async () => {
+  w = win({ latency: { write: 500 }, files: { [SAVE]: `{"pad":"${"x".repeat(1100000)}"}` } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  const A = w.slot;
+  assert.ok(A.save.unreadable);
+  const t = Date.now();
+  for (let i = 0; i < PENDING_MAX - 1; i++) click(A, t + i);
+  let p;
+  await w.ctl.dispatch("task", null, () => {
+    p = store.cycle(A, env);
+  });
+  await w.ctl.advance(100);
+  assert.notEqual(A.save.writing, null, "the recovery write is out");
+  for (let i = 0; i < 3; i++) click(A, Date.now());
+  assert.equal(A.save.logLost, true);
+  await w.ctl.advance(1000);
+  assert.equal(await p, true);
+  assert.equal(A.save.logLost, true);
+  void v;
+});

@@ -488,7 +488,11 @@ sidebar), grouped headers hidden, statuses on badges only.
 
 **Album.** Helpers whose agent has gone: 28 px rows (glyph 16, name, "left 3 d ago", lifetime
 folds). They never produce. A returning agent with the same `(address, created_ms)` rejoins with
-its history. An archive entry (§5.1, after 10,000 newer Album helpers) is one row named by its
+its history, including its envelope-unit budgets (`unitAt`, `kidUnitAt`), its last finish and
+when it started waiting (`lastFinishAt`, `blockedAt`): leaving and coming back in the same
+terminal (a one-shot agent run in a loop) never refills a budget (§6.1, review r4-10), and a wait
+begun before it left still earns its thanks. Only compaction forgets them (a compact record
+rejoins with fresh budgets, like a new terminal). An archive entry (§5.1, after 10,000 newer Album helpers) is one row named by its
 helper count ("1,204 helpers"), with when they left as a range from its newest to its oldest
 helper ("left 34–63 d ago") and their summed folds; the header
 counts every helper. With the Album open, a roster change rebuilds only the rows that moved
@@ -874,7 +878,10 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   parent's output"). When that record is no longer in the save (the parent was merged into an
   archive entry, below) the totals fold into the archive entry of the 30 days the fledgling left
   in, and with no such entry (or no parent ever known) the fledgling stays as an Album helper of
-  its own (a gone pane record, compacted and archived like any other): nothing is dropped. To keep the save bounded (R13), gone fledglings beyond the 200 most recently
+  its own (a gone pane record, compacted and archived like any other): nothing is dropped. A
+  fledgling that was a pane helper for a while (its parent was away, §5.2) may hold fledglings
+  folded into its own record; when it folds, it carries them along (`kidsPast` + 1 + its own
+  `kidsPast`, `kidsFolds` + its folds + its own `kidsFolds`, review r4-11). To keep the save bounded (R13), gone fledglings beyond the 200 most recently
   gone (`K.kidAlbumKeep`) fold into their parent at once, and gone pane helpers beyond the 200 most
   recently gone (`K.albumKeep`) are **compacted**: they keep `{id, name, species, hue, folds,
   tasks}`, the minute they left and any `kidsPast`/`kidsFolds`, and the save writes each as a
@@ -1323,7 +1330,16 @@ away = f · ( Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk ) · a    
 * **Helpers nobody can see.** With two windows (§12.5), a helper last observed by another window
   more than 60 s ago counts as away for production: it earns the same away rate for at most 8 h
   after its `lastSeen`, then nothing, until a window sees it again. One rule covers "game closed"
-  and "the window that sees this agent closed".
+  and "the window that sees this agent closed": each helper has **one 8-h unseen allowance per
+  absence** (review r4-06). The time since it went unseen (60 s after the later of its `lastSeen`
+  and its window's last sign of life) is spent whether another window paid it live at the away
+  rate, an away segment paid it, or nothing did; an away segment from `t0` pays each present pane
+  helper for `min(a, 8 h − spent)`, whichever window reopens. So a helper whose window closed
+  while another stayed open 4 h earns 4 h more when the game reopens, not a fresh 8 h, and live
+  stale credit plus away credit never pass 8 h. A helper seen at the close (the usual case) has
+  the whole allowance, so one window closing and reopening is unchanged. With helpers of
+  different allowances the segment is credited in closed-form pieces: while `m` helpers still
+  earn, `crowd(m)` applies (`away.js` awayHelpers; `test/engine/away.test.mjs` r4-06).
 * The engine splits `(clock, now]` at these breakpoints and credits each piece in closed form;
   whichever writer advanced the clock owns that interval (A5), so time is credited once.
 

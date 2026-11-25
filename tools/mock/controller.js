@@ -421,7 +421,9 @@ export class Controller {
       panes: sc.panes ?? null,
       focused: sc.focused,
     };
-    this.layoutValue = sc.layout ?? null;
+    // The shown layout tree (herdr's chrome as layout() returns it). A copy, so
+    // layout.* runs (applied here, as the window does) never change the caller's object.
+    this.layoutValue = sc.layout === undefined || sc.layout === null ? null : JSON.parse(JSON.stringify(sc.layout));
     this.layoutNames = sc.layouts ?? ["main"];
     this.keyList = sc.keys ?? [];
     this.fontList = sc.fonts ?? ["Geist", "Geist Mono", "JetBrains Mono"];
@@ -431,7 +433,10 @@ export class Controller {
     this.shared = new Map(Object.entries(sc.shared ?? {}).map(([k, v]) => [k, toSerde(bridgeIn(v))]));
     this.overlaySeq = 0;
     this.overlays = new Map();
-    this.commandQueue = [];
+    // herdr makes one command channel per loaded copy (src/mods.rs:1125-1129) and
+    // send_command puts a command into every shown copy's channel (mods.rs:785-799):
+    // app generation (null: a scope outside any copy) -> { app, gen, queue }.
+    this.channels = new Map();
     this.shuttingDown = false;
     this.clipboard = undefined;
     this.focusedHandle = null;
@@ -815,6 +820,8 @@ export class Controller {
     const frame = new Frame(phase, owner, opts.gen ?? this.generation, { ...opts, app: this._frameApp(owner, opts) });
     // A copy's props are fixed when it is made: its localStorage follows them.
     if (opts.initializing && frame.app != null && !this.propsByApp.has(frame.app)) this.propsByApp.set(frame.app, this.propsValue);
+    // Loading a copy opens its command channel: commands sent before its loop first awaits are kept.
+    if (opts.initializing && frame.app != null) this._channel(frame.app, frame.gen);
     frame.prev = this.scope;
     this.scope = frame;
     const cx = opts.cx === "ambient" ? this._ambientCx() : this._callCx(frame);
@@ -1484,6 +1491,11 @@ export class Controller {
       case "agent.focus":
         if (!live(a.terminal ?? "")) return noTerminal(a.terminal ?? "");
         break;
+      case "layout.toggle":
+      case "layout.show":
+      case "layout.hide":
+      case "layout.resize":
+        return this._applyLayout(name, a);
       case "pane.focus": {
         const panes = this._panes();
         const pane = a.pane ?? (typeof a.terminal === "string" ? panes.find((p) => p.terminal === a.terminal)?.pane : undefined);
@@ -1496,19 +1508,96 @@ export class Controller {
     return { ok: true };
   }
 
-  /** `mods::send_command`: delivers to this mod's queue when the name matches. */
+  /**
+   * layout.toggle / show / hide / resize, as the window applies them to the shown
+   * layout (src/window.rs:3640-3656): a missing node fails, a weight or px is
+   * stored as f32, and the new tree is published (the "layout" revision).
+   */
+  _applyLayout(name, args) {
+    if (this.layoutValue === null || typeof this.layoutValue !== "object") return { error: commands.noNodeError(name, args) };
+    const tree = JSON.parse(JSON.stringify(this.layoutValue));
+    const error = commands.applyLayoutCommand(tree, name, args);
+    if (error) return { error };
+    if (JSON.stringify(tree) !== JSON.stringify(this.layoutValue)) {
+      this.layoutValue = tree;
+      this._bump("layout");
+    }
+    return { ok: true };
+  }
+
+  /** The command channel of copy `app` (a reloaded copy gets a new one, like a new module). */
+  _channel(app, gen) {
+    let ch = this.channels.get(app);
+    if (!ch || (!this._channelOpen(ch) && this.isGenerationLive(gen) && this.isApplicationLive(app))) {
+      ch = { app, gen, queue: [] };
+      this.channels.set(app, ch);
+    }
+    return ch;
+  }
+
+  /** A channel closes when its copy goes away (closed, or its build reloaded). */
+  _channelOpen(ch) {
+    return this.isGenerationLive(ch.gen) && this.isApplicationLive(ch.app);
+  }
+
+  /**
+   * Whether copy `app` is on screen (window.rs publish_shown_copies): its
+   * {mod, props} block is among the shown layout's visible blocks. A copy no
+   * block of the layout describes (an overlay, a tab, a scenario without a
+   * modelled layout or with content-less nodes) counts as shown.
+   */
+  _copyShown(app) {
+    if (this.scenario.shown === false) return false;
+    if (app === null || !this.propsByApp.has(app)) return true;
+    return commands.layoutShowsCopy(this.layoutValue, this.modName, this.propsByApp.get(app));
+  }
+
+  /** `mods::send_command`: `command` into every open, shown copy's channel; how many got it. */
+  _deliver(command) {
+    let n = 0;
+    for (const [app, ch] of [...this.channels]) {
+      if (!this._channelOpen(ch)) {
+        this.channels.delete(app); // herdr: retain(|tx| !tx.is_closed())
+        continue;
+      }
+      if (!this._copyShown(app)) continue;
+      ch.queue.push(command);
+      n += 1;
+    }
+    return n;
+  }
+
+  /** `mods::send_command` for run("<mod>.<command>"): false when no shown copy listens. */
   _sendCommand(mod, command) {
     if (this.modName !== null && mod !== this.modName) return false;
-    if (this.scenario.shown === false) return false;
-    this.commandQueue.push(command);
-    this._record("command", { mod, command });
+    const copies = this._deliver(command);
+    if (copies === 0) return false;
+    this._record("command", { mod, command, copies });
     return true;
   }
 
-  /** A key press bound to "<mod>.<command>": queues `command` for nextCommand(). */
+  /**
+   * A key press bound to "<mod>.<command>": herdr's run_as → send_command, so
+   * every shown copy gets `command` once. Returns how many copies got it.
+   */
   sendCommand(command) {
-    this.commandQueue.push(command);
-    this._record("command", { mod: this.modName, command });
+    const copies = this._deliver(command);
+    this._record("command", { mod: this.modName, command, copies });
+    return copies;
+  }
+
+  /** The commands waiting in copy `owner`'s channel (a copy of the list; [] if it has none). */
+  pendingCommands(owner = null) {
+    const ch = this.channels.get(this.appOf(owner, false));
+    return ch && this._channelOpen(ch) ? ch.queue.slice() : [];
+  }
+
+  /**
+   * The person runs `name` (a key, click or palette entry): window.rs run_as,
+   * outside any mod. Returns { ok } or { error } (herdr would toast the error).
+   */
+  runAsPerson(name, args = null) {
+    return this._runAs(name, args);
   }
 
   /** The app is quitting: pending and later nextCommand() calls reject. */
@@ -1739,10 +1828,15 @@ const HOST = {
     this._notImplemented("watchFolder");
   },
   nextCommand() {
-    return this._async("nextCommand", () => {
-      if (this.commandQueue.length > 0) return this.commandQueue.shift();
+    // Reads the calling copy's own channel (mods.rs:1125-1129), not a shared queue.
+    const scope = this.scope;
+    let ch = null;
+    const promise = this._async("nextCommand", () => {
+      if (ch.queue.length > 0) return ch.queue.shift();
       throw new HostError(MESSAGES.shuttingDown);
-    }, { latency: this.latency.command, ready: () => this.commandQueue.length > 0 || this.shuttingDown });
+    }, { latency: this.latency.command, ready: () => ch.queue.length > 0 || this.shuttingDown });
+    ch = this._channel(scope ? scope.app ?? null : null, scope ? scope.gen : this.generation);
+    return promise;
   },
 
   // sync -----------------------------------------------------------------

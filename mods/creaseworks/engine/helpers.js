@@ -130,6 +130,30 @@ export function freshness(state, h, t, writer) {
 }
 
 /**
+ * How much away-rate time helper `h` may still earn in an away segment that
+ * starts at `t0` (§10.2 "helpers nobody can see", review r4-06). A helper has
+ * one unseen allowance of K.staleCreditMs (8 h) per absence, counted from the
+ * time it was last seen (`lastSeen`, or its writer's last sign of life, as in
+ * `freshness`): the time since it went unseen (60 s after that) is spent,
+ * whether it was credited live at the stale rate by another window, by an
+ * earlier away segment, or not at all. So the live stale credit and the away
+ * segment never add up past 8 h, whichever window reopens. A helper seen
+ * within 60 s of `t0` (the game just closed) has the whole 8 h. With no
+ * writer given (every helper live, as in `freshness`) or no `seenBy` (an
+ * older save) the whole allowance is left. The same for every writer (the
+ * helper's own window reopening or another one), so which window reopens
+ * changes nothing. Returns ms (0 to K.staleCreditMs).
+ */
+export function unseenLeftMs(state, h, t0, writer) {
+  if (writer === undefined || writer === null || !h.seenBy) return K.staleCreditMs;
+  const ws = state.writersSeen[h.seenBy];
+  const ls = typeof h.lastSeen === "number" && Number.isFinite(h.lastSeen) ? h.lastSeen : t0;
+  const seen = typeof ws === "number" ? Math.max(ws, ls) : ls;
+  const spent = Math.max(0, t0 - seen - K.staleMs);
+  return Math.max(0, Math.min(K.staleCreditMs, K.staleCreditMs - spent));
+}
+
+/**
  * The flock's production terms at time `t` (§5.3, §10.2 "helpers nobody can see").
  * Returns { n, crowd, Hs0, Hstale, working: [[h, b_i]...], kids: [[parent, b]...]
  * (working fledglings of a parent that is not working), stale: [h...], N, base }.
@@ -228,9 +252,18 @@ export function chargeRest(idx, E, dtMs) {
 // is the hash of addr#created, so a returning agent finds its record).
 const LIVE_FIELDS = {
   addr: "", created: 0, lastSeen: 0, seenBy: null, group: "resting",
-  lastFinishAt: null, unitAt: null, kidUnitAt: null, blockedAt: null, warm: 1, warmUntil: 0, thanksUntil: 0,
+  warm: 1, warmUntil: 0, thanksUntil: 0,
   title: null, pane: null, paneName: null, space: null, tab: null,
 };
+
+// History a full Album record keeps (review r4-10): the envelope-unit budgets
+// (r3-24) and the last finish and wait times. An agent that leaves and comes
+// back in the same terminal (a one-shot agent run in a loop, a restart) rejoins
+// with its budgets as they were, so leaving cannot refill them, and a wait
+// that started before it left still earns its thanks. Only compaction (R13)
+// forgets them; a rejoining compact record gets these defaults (a budget never
+// drawn on), as a brand-new terminal does. A null value is not saved.
+const KEPT_FIELDS = { lastFinishAt: null, unitAt: null, kidUnitAt: null, blockedAt: null };
 
 const round6 = (x) => (x === 0 ? 0 : Number(x.toPrecision(6)));
 
@@ -243,7 +276,10 @@ function toAlbum(h, t) {
   else delete h.salt;
   if (typeof h.addr === "string" && h.addr !== "") h.key = albumKey(h.addr, Number(h.created) || 0);
   for (const k of Object.keys(LIVE_FIELDS)) delete h[k];
-  delete h.kidFinishAt; // the fledgling budget's field before kidUnitAt (r3-24)
+  for (const k of Object.keys(KEPT_FIELDS)) if (!isFiniteNum(h[k])) delete h[k];
+  // the fledgling budget's field before kidUnitAt (r3-24), kept as kidUnitAt's start
+  if (isFiniteNum(h.kidFinishAt) && !isFiniteNum(h.kidUnitAt)) h.kidUnitAt = h.kidFinishAt;
+  delete h.kidFinishAt;
   h.gone = true;
   h.missingSince = t;
   h.rest = Math.round(h.rest * 1e4) / 1e4;
@@ -391,6 +427,7 @@ function rejoin(h, o, slots, t) {
   delete h.compact;
   delete h.key; // present again: its address is known (toAlbum sets the key anew)
   for (const k of Object.keys(LIVE_FIELDS)) if (!(k in h)) h[k] = LIVE_FIELDS[k];
+  for (const k of Object.keys(KEPT_FIELDS)) if (!(k in h)) h[k] = KEPT_FIELDS[k];
   h.addr = String(o.addr);
   h.created = Number(o.created) || 0;
   // A compacted record kept no turn or join time: rebaseline the turn to this
@@ -745,8 +782,12 @@ function foldKid(state, h) {
     rosterChanged(state);
     return;
   }
-  p.stats.kidsPast = (p.stats.kidsPast || 0) + 1;
-  p.stats.kidsFolds = (p.stats.kidsFolds || 0) + h.stats.folds;
+  // The fledgling and the fledglings already folded into its own record (a
+  // sub-agent in its own pane is a pane helper while its parent is away, §5.2,
+  // and absorbs fledglings of its own then): review r4-11.
+  const s = h.stats;
+  p.stats.kidsPast = (p.stats.kidsPast || 0) + 1 + (isFiniteNum(s.kidsPast) && s.kidsPast > 0 ? s.kidsPast : 0);
+  p.stats.kidsFolds = (p.stats.kidsFolds || 0) + (isFiniteNum(s.folds) ? s.folds : 0) + (isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
   delete hs[h.id];
   rosterChanged(state);
 }

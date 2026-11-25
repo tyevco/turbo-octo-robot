@@ -7,7 +7,8 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { buildObservation, signature, kidStatus, paneStatus } from "../../mods/creaseworks/glue/observe.js";
 import { normalizeAgent, normalizeTerminal, bridgeOut } from "../../tools/mock/controller.js";
-import { win, agent, term, flockScenario, engine } from "./_util.mjs";
+import { win, agent, term, flockScenario, engine, SAVE } from "./_util.mjs";
+import { READ_FAIL_TEXT, READ_FAIL_MS } from "../../mods/creaseworks/glue/session.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -165,4 +166,104 @@ test("the ticker observes on change only, and the engine gets the mapped statuse
   w.ctl.setTerminals([term(1, "error"), term(2, "working", { turn: 1 }), { address: "k9", status: "done", parent: "t2", created_ms: 5 }]);
   await w.advance(1000);
   assert.equal(observes(), n + 1, "a turn change: one observe");
+});
+
+// r4-01: herdr builds a host result by assignment under the frozen
+// Object.prototype (ARCHITECTURE A7), so a terminal label (or report field)
+// named like one of its members makes terminals() itself throw. Every tick
+// used to throw before advance, notifications and the save cadence: nothing
+// was observed, earned or saved, and nothing said so.
+
+for (const key of ["constructor", "toString", "valueOf"]) {
+  test(`r4-01: a terminal label named ${key} from the start: the game still saves, says so once, and observes once it reads again`, async () => {
+    w = win({ agents: [agent(1)], terminals: [term(1, "working", { labels: { [key]: "x" } })] });
+    const v = await w.copy("panel");
+    await w.advance(63000);
+    assert.equal(w.ctl.runErrors().length, 0, "no tick throws");
+    assert.equal(w.ctl.errors.length, 0, "no script task error");
+    assert.ok(w.ctl.writes.filter((x) => x.path === SAVE && x.ok !== false).length > 0, "the save cadence ran");
+    assert.ok(w.ctl.readFile(SAVE) !== null, "save.json is there");
+    assert.ok(w.slot.readFail.agents, "the failure spell is recorded");
+    assert.ok(w.slot.readFail.agents.count >= 60, "one per tick");
+    assert.equal(Object.keys(w.slot.state.helpers).length, 0, "no good reading yet: no helpers");
+    // The one-time notice: shown at the first throw for READ_FAIL_MS, not re-flashed every tick.
+    assert.equal(w.slot.flash, null, "the notice has run its time");
+    w.dispose();
+    w = win({ agents: [agent(1)], terminals: [term(1, "working", { labels: { [key]: "x" } })] });
+    const v2 = await w.copy("panel");
+    await w.advance(2000);
+    assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.agents, "said once, at once");
+    const until = w.slot.flash.until;
+    await w.advance(5000);
+    assert.equal(w.slot.flash.until, until, "not flashed again each tick");
+    const tree = JSON.stringify(w.render(v2).tree);
+    assert.ok(tree.includes("could not be read"), "the panel shows it");
+    // The label goes: observing resumes, the spell ends.
+    w.ctl.setTerminals([term(1, "working", { labels: { where: "main / 1" } })]);
+    await w.advance(2000);
+    assert.equal(Object.keys(w.slot.state.helpers).length, 1, "observed again");
+    assert.equal(w.slot.readFail.agents, undefined, "the spell is over");
+    assert.ok(v);
+  });
+}
+
+test("r4-01: a label appearing mid-run keeps the last good observation: helpers stay, folds keep coming, saves land", async () => {
+  w = win({ agents: [agent(1), agent(2, "blocked")], terminals: [term(1, "working"), term(2, "blocked")] });
+  await w.copy("panel");
+  await w.copy("ribbon");
+  await w.advance(5000);
+  const st = w.slot.state;
+  const before = Object.values(st.helpers).map((h) => `${h.addr}:${h.status}`).sort();
+  assert.deepEqual(before, ["t1:working", "t2:blocked"]);
+  const live = w.slot.live;
+  const panes = w.slot.panes;
+  w.ctl.setTerminals([term(1, "working", { labels: { toString: "y" } }), term(2, "blocked")]);
+  const writes = w.ctl.writes.length;
+  const bank = st.lifetime;
+  await w.advance(1000);
+  assert.equal(w.slot.flash && w.slot.flash.text, READ_FAIL_TEXT.agents);
+  assert.ok(READ_FAIL_MS >= 5000, "long enough to read");
+  await w.advance(60000);
+  assert.equal(w.ctl.runErrors().length, 0);
+  assert.equal(w.ctl.errors.length, 0);
+  assert.deepEqual(Object.values(w.slot.state.helpers).map((h) => `${h.addr}:${h.status}`).sort(), before, "last good observation stands");
+  assert.equal(w.slot.live, live, "liveness as last read");
+  assert.equal(w.slot.panes, panes, "pane ids as last read");
+  assert.ok(w.slot.state.lifetime > bank, "advance still runs: the working helper earns");
+  assert.ok(w.ctl.writes.length > writes, "the save cadence still runs");
+  assert.ok(w.ctl.readFile(SAVE) !== null);
+});
+
+test("r4-01: a layout() that throws keeps the last good layout; the tick and keys still act", async () => {
+  const LAYOUT = (bad) => ({
+    id: "root", type: "row", children: [
+      { id: "work", type: "column", children: [
+        { id: "work-body", type: "row", children: [
+          { id: "main", type: "block" },
+          { id: "cw-panel", type: "block", size: { weight: 0.39 }, ...(bad ? { constructor: 1 } : {}) },
+        ] },
+        { id: "cw-ribbon", type: "block", size: { px: 30 }, hidden: true },
+      ] },
+    ],
+  });
+  w = win({ agents: [agent(1)], terminals: [term(1)], layout: LAYOUT(false) });
+  const panel = await w.copy("panel");
+  await w.advance(3000);
+  const good = w.slot.layout;
+  assert.equal(good.known, true);
+  w.ctl.layoutValue = LAYOUT(true);
+  const writes = w.ctl.writes.length;
+  await w.advance(40000);
+  assert.equal(w.ctl.runErrors().length, 0);
+  assert.equal(w.ctl.errors.length, 0);
+  assert.deepEqual(w.slot.layout, good, "the last good layout");
+  assert.ok(w.slot.readFail.layout, "noted");
+  assert.ok(w.ctl.writes.length > writes, "saves go on");
+  // A key: onCommand used to throw at layout() (and the command loop swallowed it).
+  const runs = w.ctl.runs.length;
+  w.ctl.within("event", panel, (cx) => panel.session.onCommand("fold", cx));
+  assert.ok(w.ctl.runs.slice(runs).some((r) => r.name === "layout.resize"), "fold still acts");
+  w.ctl.layoutValue = LAYOUT(false);
+  await w.advance(1000);
+  assert.equal(w.slot.readFail.layout, undefined, "reads again: the spell is over");
 });

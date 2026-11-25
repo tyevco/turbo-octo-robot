@@ -3,7 +3,8 @@
 // serialisation and handler dispatch (ARCHITECTURE A8).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,14 +20,27 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const throwsType = (fn, message) => assert.throws(fn, (e) => e instanceof TypeError && e.message === message, message);
 const throwsRange = (fn, message) => assert.throws(fn, (e) => e instanceof RangeError && e.message === message, message);
 
-test("gpui-methods.json is the committed extraction of docs/research/gpui-kit.d.ts", () => {
-  const dts = readFileSync(join(root, "docs/research/gpui-kit.d.ts"), "utf8");
-  const fresh = render(extract(dts));
-  assert.equal(readFileSync(join(root, "tools/mock/gpui-methods.json"), "utf8"), fresh.json);
-  assert.equal(readFileSync(join(root, "tools/mock/gpui-methods.js"), "utf8"), fresh.js);
-  const data = JSON.parse(fresh.json);
+// docs/research/gpui-kit.d.ts is gitignored (800 KB, rebuilt from herdr's Rust
+// sources by docs/research/tools/gen-gpui-kit-dts.py), so a fresh clone does not
+// have it. The committed tools/mock/gpui-methods.json is the checked artefact:
+// it is always checked on its own (shape, counts, the .js twin), and it is
+// compared with a fresh extraction only where the .d.ts has been generated.
+const DTS = join(root, "docs/research/gpui-kit.d.ts");
+const DTS_MISSING = !existsSync(DTS) && "docs/research/gpui-kit.d.ts not generated (needs herdr source; see docs/research/tools/gen-gpui-kit-dts.py)";
+
+test("gpui-methods.json is well formed and gpui-methods.js holds the same data (no .d.ts needed)", () => {
+  const committed = readFileSync(join(root, "tools/mock/gpui-methods.json"), "utf8");
+  const data = JSON.parse(committed);
+  const again = render(data);
+  assert.equal(committed, again.json, "gpui-methods.json is in render() form");
+  assert.equal(readFileSync(join(root, "tools/mock/gpui-methods.js"), "utf8"), again.js);
+  assert.equal(data.source, "docs/research/gpui-kit.d.ts");
+  assert.match(data.sha256, /^[0-9a-f]{64}$/);
   assert.equal(data.counts.param, 59);
   assert.equal(data.counts.nullary, 3146);
+  assert.equal(data.nullary.length, data.counts.nullary);
+  assert.equal(Object.keys(data.param).length, data.counts.param);
+  assert.equal(data.behaviors.length, data.counts.behaviors);
   assert.equal(data.param.bg, "Color");
   assert.equal(data.param.w, "Length");
   assert.equal(data.param.p, "DefiniteLength");
@@ -40,6 +54,24 @@ test("gpui-methods.json is the committed extraction of docs/research/gpui-kit.d.
     assert.ok(data.behaviors.includes(name), name);
   }
   assert.deepEqual(data.components.TextView, ["highlight_range", "on_link_click", "on_selection_change", "raw_html", "scrollable", "selectable"]);
+});
+
+test("gpui-methods.json is the committed extraction of docs/research/gpui-kit.d.ts", { skip: DTS_MISSING }, () => {
+  const dts = readFileSync(DTS, "utf8");
+  const fresh = render(extract(dts));
+  assert.equal(JSON.parse(fresh.json).sha256, createHash("sha256").update(dts).digest("hex"));
+  assert.equal(readFileSync(join(root, "tools/mock/gpui-methods.json"), "utf8"), fresh.json);
+  assert.equal(readFileSync(join(root, "tools/mock/gpui-methods.js"), "utf8"), fresh.js);
+});
+
+test("the gitignored .d.ts is not read without a guard (fresh clones run npm test)", () => {
+  const ignored = readFileSync(join(root, ".gitignore"), "utf8").split("\n").map((line) => line.trim());
+  assert.ok(ignored.includes("docs/research/gpui-kit.d.ts"), "the 800 KB reconstruction stays out of git");
+  // Any test under test/ that reads the .d.ts must sit behind an existsSync skip.
+  const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const reads = self.split("\n").filter((line) => /readFileSync\(DTS\b|readFileSync\([^)]*gpui-kit\.d\.ts/.test(line));
+  assert.equal(reads.length, 1, "only the guarded extraction test reads the .d.ts");
+  assert.match(self, /\{ skip: DTS_MISSING \}/);
 });
 
 test("exports: gpui-kit has the real names plus listed mock helpers; gpui-base only real names", () => {

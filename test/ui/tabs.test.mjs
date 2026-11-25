@@ -461,7 +461,13 @@ test("detail card: shown only for a selected tile, first in the tab, with name Â
 });
 
 test("groups: fixed order, headers fold with toggleGroup, workspace order hides its header, folded group is one row", () => {
-  const s = F.scenario("flock-34");
+  const s0 = F.scenario("flock-34");
+  // With no fledgling waiting in Resting, the vm folds it (above 12; r4-12
+  // keeps it open over a waiting one, as flock-34 has).
+  const s = { ...s0, vm: clone(s0.vm) };
+  const rg = s.vm.helpers.groups.find((g) => g.key === "resting");
+  for (const t of rg.tiles) t.pips = t.pips.map((p) => (p === "blocked" ? "working" : p));
+  rg.folded = true;
   const ctx = makeCtx("graphite", s);
   const tree = renderFlock(s.vm, s.ui, ctx);
   const json = tree.toJSON();
@@ -469,6 +475,7 @@ test("groups: fixed order, headers fold with toggleGroup, workspace order hides 
   assert.deepEqual(secs, ["needs", "finished", "working", "resting"]);
   // Resting (15 > 12) is folded by the vm: header only.
   const resting = findById(json, "cw-flock-sec-resting");
+  assert.equal(s0.vm.helpers.groups.find((g) => g.key === "resting").folded, false, "flock-34 itself keeps Resting open");
   assert.equal(s.vm.helpers.groups.find((g) => g.key === "resting").folded, true);
   assert.equal(resting.children.length, 1);
   assert.equal(styleVal(resting.children[0], "h"), 24);
@@ -521,9 +528,10 @@ test("virtual list above 80 tiles: on_item_click on the list, no handlers in row
   assert.ok(findById(json, "cw-flock-grid-needs"));
   fire(tree, "cw-flock-vl-working", "on_item_click", working.tiles[85].helperId, fakeCx());
   assert.deepEqual(ctx.calls, [["select", working.tiles[85].helperId]]);
-  // 80 exactly stays a grid.
+  // 80 exactly stays a grid (with the fledgling-heavy Resting folded, as
+  // r3-16 measures it: open, the tile budget lists the biggest group).
   working.tiles = working.tiles.slice(0, VIRTUAL_ABOVE);
-  assert.equal(findById(renderFlock(vm, s.ui, ctx).toJSON(), "cw-flock-vl-working"), null);
+  assert.equal(findById(renderFlock(vm, { ...s.ui, folded: { resting: true } }, ctx).toJSON(), "cw-flock-vl-working"), null);
 });
 
 test("Elsewhere and Album fold by default; Album rows are 28 px with 'left â€¦ ago' and folds", () => {

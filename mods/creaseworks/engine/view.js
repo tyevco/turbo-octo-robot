@@ -363,6 +363,11 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
       groups.push({ key: "all", title: "Workspace order", count: roster.ordered.length, folded: false, tiles: roster.ordered.map((h) => tile(state, t, h, false, roster, loops)) });
     }
   } else {
+    // Resting folds above 12 (§3.3), but never over a waiting fledgling: its
+    // parent's needs-you flag must stay in sight (r4-12).
+    const waitingParents = Object.create(null);
+    for (const k of roster.kidsWaiting) waitingParents[k.parent] = true;
+    const hasWaitingKid = (h) => waitingParents[h.id] === true;
     for (const key of GROUP_ORDER) {
       const list = roster.groups[key];
       if (!list.length) continue;
@@ -370,7 +375,7 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
         key,
         title: TITLE[key],
         count: list.length,
-        folded: key === "resting" && list.length > 12,
+        folded: key === "resting" && list.length > 12 && !list.some(hasWaitingKid),
         tiles: list.map((h) => tile(state, t, h, false, roster, loops)),
       });
     }
@@ -850,24 +855,83 @@ function marksOf(state, t, roster) {
   return out;
 }
 
+// Level C (§3.10): needs-you and finished helpers keep their own pips and
+// working / resting become tally chips. When that still does not fit the
+// width (r4-07: herdr marks a helper "done" until you look, so after time
+// away most of a big flock can be finished), the finished pips fold into a
+// finished tally, and if needs-you pips alone overflow, the ones past the
+// edge become a "+N" needs tally. Tally widths are reserved first, so a count
+// is never clipped and every helper is either a pip or counted in a chip.
+// ui/ribbon.js runs the same fit (`fitLevelC`) on the width its lead chips
+// leave; the px bounds here match its `tallyBound`.
+
+const TALLY_GAP = 4;
+
+/** Px a level-C tally chip takes (as ui/ribbon.js: 34 + the 11/600 label, digits and capitals 7.2 px, others 6.4). */
+function tallyPx(label) {
+  const str = String(label);
+  let wide = 0;
+  for (let k = 0; k < str.length; k++) {
+    const ch = str.charCodeAt(k);
+    if ((ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90)) wide++;
+  }
+  return 34 + Math.ceil((str.length - wide) * 6.4 + wide * 7.2);
+}
+
+function tallyOf(status, count, more) {
+  const n = formatInt(count);
+  const words = { working: `${n} working`, idle: `${n} resting`, done: more ? `${n} more finished` : `${n} finished`, blocked: more ? `${n} more need you` : `${n} need you` };
+  return { status, count, label: more ? `+${n}` : n, tooltip: words[status] };
+}
+
+function levelCNeed(nPips, tallies) {
+  let px = Math.ceil(nPips / 2) * RIBBON.pip;
+  for (const t of tallies) px += TALLY_GAP + tallyPx(t.label);
+  return px;
+}
+
+function fitLevelC(all, w) {
+  const needs = [];
+  const done = [];
+  let working = 0;
+  let idle = 0;
+  for (const m of all) {
+    if (m.status === "blocked") needs.push(m);
+    else if (m.status === "done") done.push(m);
+    else if (m.status === "working") working++;
+    else idle++;
+  }
+  const rest = [];
+  if (working) rest.push(tallyOf("working", working, false));
+  if (idle) rest.push(tallyOf("idle", idle, false));
+  const fits = (nPips, tallies) => levelCNeed(nPips, tallies) <= w;
+  const keep = (list) => {
+    const kept = new Set(list);
+    return all.filter((m) => kept.has(m));
+  };
+  // The most pips (≤ hi) that fit before `tallies` plus a "+1"-wide chip (an upper bound), stepped down.
+  const most = (hi, base, tallies) => Math.max(0, Math.min(hi, 2 * Math.floor(Math.max(0, w - levelCNeed(0, tallies) - TALLY_GAP - tallyPx("+1")) / RIBBON.pip) - base));
+  // 1. Needs-you and finished individual.
+  if (fits(needs.length + done.length, rest)) return { marks: keep(needs.concat(done)), tallies: rest };
+  // 2. The finished past the edge fold into a "+N" finished tally (all of them if need be).
+  if (fits(needs.length, done.length ? [tallyOf("done", done.length, false)].concat(rest) : rest)) {
+    let j = most(done.length - 1, needs.length, rest);
+    for (; j > 0; j--) if (fits(needs.length + j, [tallyOf("done", done.length - j, true)].concat(rest))) break;
+    return { marks: keep(needs.concat(done.slice(0, j))), tallies: [tallyOf("done", done.length - j, j > 0)].concat(rest) };
+  }
+  // 3. Needs-you alone overflow: finished all folded, the needs-you past the edge a "+N" needs tally.
+  const others = done.length ? [tallyOf("done", done.length, false)].concat(rest) : rest;
+  let k = most(needs.length, 0, others);
+  for (; k > 0; k--) if (fits(k, [tallyOf("blocked", needs.length - k, true)].concat(others))) break;
+  return { marks: keep(needs.slice(0, k)), tallies: [tallyOf("blocked", needs.length - k, k > 0)].concat(others) };
+}
+
 function ribbonVm(state, all, W, header, saveNotice, envelopes, style, liveRate) {
   const n = all.length;
   const level = ribbonLevel(n, W);
   let marks = all;
-  const tallies = [];
-  if (level === "C") {
-    // Needs-you and finished stay individual; the rest become tally chips.
-    marks = [];
-    let working = 0;
-    let idle = 0;
-    for (const m of all) {
-      if (m.status === "blocked" || m.status === "done") marks.push(m);
-      else if (m.status === "working") working++;
-      else idle++;
-    }
-    if (working) tallies.push({ status: "working", count: working, label: formatInt(working), tooltip: `${formatInt(working)} working` });
-    if (idle) tallies.push({ status: "idle", count: idle, label: formatInt(idle), tooltip: `${formatInt(idle)} resting` });
-  }
+  let tallies = [];
+  if (level === "C") ({ marks, tallies } = fitLevelC(all, Math.max(0, W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad)));
   const pot = state.away.pot;
   return {
     marks,

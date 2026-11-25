@@ -588,6 +588,7 @@ export async function load(slot, opts) {
   S.logLost = false;
   let state = null;
   let notice = null;
+  let unreadableFresh = null;
 
   if (main.error !== null) {
     // Unreadable (too big, not a file): herdr's write pre-reads the file, so
@@ -607,7 +608,24 @@ export async function load(slot, opts) {
     // not roll back the normally rotated backup (nothing retires it).
     const rOk = r && r.ok ? r.state : null;
     const bOk = b && b.ok ? b.state : null;
-    state = rOk && (!bOk || rOk.clock >= bOk.clock) ? rOk : bOk || fresh();
+    // A damaged recovery file or backup is kept aside (r4-05): the recovery
+    // write and the backup rotation would otherwise replace it unseen.
+    let keptRec = null;
+    let keptBak = null;
+    if (r && !r.ok) {
+      keptRec = await keepAsideListed(slot, P, rec.text);
+      if (stale()) return false;
+    }
+    if (b && !b.ok) {
+      keptBak = await keepAsideListed(slot, P, bak.text);
+      if (stale()) return false;
+    }
+    state = rOk && (!bOk || rOk.clock >= bOk.clock) ? rOk : bOk;
+    if (!state) {
+      // Nothing to load from: a fresh game, said beside the unreadable notice (§12.2).
+      state = fresh();
+      unreadableFresh = { kind: "fresh", text: unreadableFreshText(r !== null, keptRec, b !== null, keptBak), at: t0 };
+    }
     S.unreadable = main.error;
     S.recoveryText = rec.error === null ? rec.text : null;
     notice = unreadableNotice(P, main.error, t0);
@@ -668,7 +686,7 @@ export async function load(slot, opts) {
   }
   let goneNotice = null;
   if (missingShared) {
-    const gone = `Shared save not found: ${tailClip(missingShared, 40)}. Using this window's own; share again in Settings when it's back.`;
+    const gone = goneText(missingShared);
     if (!notice) notice = { kind: "recovered", text: gone, at: t0 };
     else if (typeof notice.text === "string" && notice.kind !== "error") notice = { ...notice, text: goneJoined(notice.text) };
     else goneNotice = { kind: "recovered", text: gone, at: t0 }; // beside an unreadable local save (a newer one wins)
@@ -690,7 +708,7 @@ export async function load(slot, opts) {
   if (notice && notice.kind === "error") {
     // save.json unreadable: shown at once; the recovery file is written on the normal cadence
     slot.notices.write = notice;
-    slot.notices.load = goneNotice;
+    slot.notices.load = unreadableFresh && goneNotice ? { ...unreadableFresh, text: goneJoined(unreadableFresh.text) } : unreadableFresh || goneNotice;
     S.errors = 1;
     S.retryAt = 0;
     S.status = "error";
@@ -739,16 +757,38 @@ export function goneJoined(text) {
   return text; // (no load notice is this long; the problem it names comes first)
 }
 
+/** The load notice for a shared save that is not there (load, and during play: r4-04). */
+function goneText(path) {
+  return `Shared save not found: ${tailClip(path, 40)}. Using this window's own; share again in Settings when it's back.`;
+}
+
 /** The fresh-start notice text: what was missing or damaged, and what was really kept. */
 export function freshText(hadMain, kept, hadBak, keptBak) {
   const what = hadMain && hadBak ? "Save and backup were damaged." : hadMain ? "Save was damaged and there was no backup." : "Save was missing and the backup was damaged.";
-  const files = [hadMain ? kept : undefined, hadBak ? keptBak : undefined].filter((x) => x !== undefined);
+  return `${what} Started fresh; ${keptTail([hadMain ? kept : undefined, hadBak ? keptBak : undefined])}`;
+}
+
+/**
+ * The fresh-start notice beside an unreadable save.json (r4-05): which of the
+ * recovery file and the backup were damaged (or that there was neither), and
+ * what was really kept.
+ */
+export function unreadableFreshText(hadRec, keptRec, hadBak, keptBak) {
+  const what = hadRec && hadBak ? "the backup and recovery file were damaged" : hadBak ? "the backup was damaged" : hadRec ? "the recovery file was damaged and there was no backup" : "there was no backup";
+  const files = [hadRec ? keptRec : undefined, hadBak ? keptBak : undefined];
+  const tail = hadRec || hadBak ? `; ${keptTail(files)}` : ".";
+  return `Save can't be read and ${what}. Started fresh${tail}`;
+}
+
+/** "both files kept." / "the damaged file could not be kept." … for kept-aside results (undefined: no such file). */
+function keptTail(list) {
+  const files = list.filter((x) => x !== undefined);
   const lost = files.filter((x) => !x).length;
   let tail;
   if (!lost) tail = files.length > 1 ? "both files kept." : "the damaged file was kept.";
   else if (lost === files.length) tail = files.length > 1 ? "neither damaged file could be kept." : "the damaged file could not be kept.";
   else tail = "one damaged file could not be kept.";
-  return `${what} Started fresh; ${tail}`;
+  return tail;
 }
 
 function unreadableNotice(paths, message, t) {
@@ -802,6 +842,82 @@ function itemName(id) {
 }
 
 /**
+ * save.json became unreadable during play (too big, not a file: r4-03): the
+ * game goes over to save.recovery.json as a load would. A damaged recovery
+ * file found there is kept aside first (r4-05); the unreadable notice is
+ * shown. False when superseded.
+ */
+async function enterUnreadable(slot, env, stale, error) {
+  const S = slot.save;
+  const P = slot.paths;
+  const rec = await readOrError(recoveryPath(P));
+  if (stale()) return false;
+  if (rec.text !== null) {
+    const parsed = await parseIn(slot, rec.text, env, stale);
+    if (parsed === null || stale()) return false;
+    if (!parsed.ok) {
+      await keepAsideListed(slot, P, rec.text);
+      if (stale()) return false;
+    }
+  }
+  S.unreadable = error;
+  S.recoveryText = rec.error === null ? rec.text : null;
+  if (!(S.errors >= 1)) S.errors = 1;
+  S.status = "error";
+  const w = slot.notices.write;
+  setNotice(slot, "write", unreadableNotice(P, error, w && w.kind === "error" ? w.at : env.now()));
+  return true;
+}
+
+/**
+ * The shared save is not there during play (r4-04: a drive unmounted, the
+ * folder moved): when save.json and its backup are both absent, this window
+ * goes over to its own save as a load would (r2-07), with the same notice,
+ * and nothing is created at the shared path (a write there would make the
+ * folder again, under an unmounted mount point). The next write expects
+ * "absent", so this window's own save.json, when there is one, is merged with
+ * as a CAS conflict. Returns true when it switched, false when it did not
+ * (not shared, or a backup is there), null when superseded.
+ */
+async function leaveMissingShared(slot, env, stale) {
+  const P = slot.paths;
+  if (!P.shared) return false;
+  const bak = await readOrError(P.bak);
+  if (stale()) return null;
+  if (bak.error !== null || bak.text !== null) return false;
+  const S = slot.save;
+  const next = slotPaths(slot.home, null);
+  const own = await readOrError(next.bak);
+  if (stale()) return null;
+  if (S.overwrite) {
+    // A Reset / Restore under way replaces the file it writes: this window's
+    // own save is kept aside first, as the shared one was (reason kept).
+    const main = await readOrError(next.save);
+    if (stale()) return null;
+    if (main.text !== null) {
+      await keepAsideListed(slot, next, main.text, S.overwrite);
+      if (stale()) return null;
+    }
+  }
+  // From here to the end nothing awaits: the paths, base and backup switch together.
+  slot.paths = next;
+  slot.bakText = own.error === null ? own.text : null;
+  slot.bakAt = null;
+  slot.bakState = null;
+  S.unreadable = null;
+  S.recoveryText = null;
+  S.ownApplied = 0; // none of this window's saves may be in that file
+  slot.baseText = null;
+  S.baseOk = false;
+  const t = env.now();
+  setNotice(slot, "load", { kind: "recovered", text: goneText(P.shared), at: t });
+  markDirty(slot, t, true);
+  S.urgentAt = t;
+  touch(slot);
+  return true;
+}
+
+/**
  * Merge (A5): live = replay(parse(disk), pending), advance(now). Returns
  * { ok, refunds, stop }. A damaged disk file is kept aside and overwritten;
  * a newer one makes the game read-only.
@@ -811,6 +927,11 @@ async function mergeFromDisk(slot, env, stale) {
   const r = await readOrError(P.save);
   if (stale()) return { stop: true };
   if (r.error !== null) return { ok: false, error: r.error };
+  if (r.text === null) {
+    const left = await leaveMissingShared(slot, env, stale);
+    if (left === null) return { stop: true };
+    if (left) return { ok: true, refunds: [], foreign: false };
+  }
   const t = env.now();
   if (r.text === null) {
     slot.baseText = null; // deleted under us: create it again, and say so (r3-09)
@@ -898,6 +1019,11 @@ async function overwriteBase(slot, env, stale) {
   const r = await readOrError(P.save);
   if (stale()) return { stop: true };
   if (r.error !== null) return { ok: false, error: r.error };
+  if (r.text === null) {
+    const left = await leaveMissingShared(slot, env, stale); // (r4-04)
+    if (left === null) return { stop: true };
+    if (left) return { ok: true };
+  }
   const t = env.now();
   if (r.text !== null) {
     const parsed = await parseIn(slot, r.text, env, stale);
@@ -946,6 +1072,7 @@ async function recoveryWrite(slot, env, stale) {
     slot.baseText = null;
     S.baseOk = false;
     if (r.text !== null) S.logLost = true;
+    else if ((await leaveMissingShared(slot, env, stale)) === null) return null; // (r4-04)
     return "main";
   }
   S.unreadable = r.error;
@@ -953,6 +1080,7 @@ async function recoveryWrite(slot, env, stale) {
   for (let attempt = 0; attempt <= MERGE_RETRIES; attempt++) {
     const rev = slot.state.rev;
     const upto = slot.seq;
+    const epoch = slot.logEpoch || 0;
     const text = serialize(slot.state);
     try {
       await writeTextFile(rec, text, S.recoveryText);
@@ -972,7 +1100,8 @@ async function recoveryWrite(slot, env, stale) {
     S.recoveryText = text;
     S.confirmed = upto;
     confirmLog(slot, upto);
-    S.logLost = false;
+    // A log given up while this write was out holds actions the text lacks: kept lost (r4-09).
+    if ((slot.logEpoch || 0) === epoch) S.logLost = false;
     S.writtenRev = rev;
     S.status = "error"; // save.json itself is still not written
     S.retryAt = 0;
@@ -1062,9 +1191,18 @@ export async function cycle(slot, env) {
   S.status = "saving";
   touch(slot);
   const stale = () => S.writing !== gen;
-  const P = slot.paths;
   let merged = false;
   const refunds = [];
+  // save.json can't be read (r4-03): over to save.recovery.json in this same
+  // cycle, as a load would. "main" when save.json turned readable again.
+  const toRecovery = async (error) => {
+    if (!(await enterUnreadable(slot, env, stale, error))) return false;
+    await pause(env); // the serialisation in a task step of its own
+    if (stale()) return false;
+    progress(slot, env);
+    const w = await recoveryWrite(slot, env, stale);
+    return w === "main" ? "main" : w === true;
+  };
   try {
     // True while this step has done nothing since the yield above.
     let freshStep = sleeps;
@@ -1098,24 +1236,37 @@ export async function cycle(slot, env) {
       const rev = slot.state.rev;
       const text = serialize(slot.state);
       const upto = slot.seq;
+      const epoch = slot.logEpoch || 0;
       const own = ownApplied(slot.state, slot.writerId);
       slot.inflight = { text, upto, own };
       try {
-        await writeTextFile(P.save, text, slot.baseText);
+        // (slot.paths, not a copy: a shared save found missing switches them: r4-04)
+        await writeTextFile(slot.paths.save, text, slot.baseText);
       } catch (e) {
         if (stale()) return false;
         slot.inflight = null;
         if (!isCas(e)) {
-          fail(slot, hostMessage(e), env.now());
-          return false;
+          // herdr's write reads the file first: one that can't be read (too
+          // big, not a file) fails here. Told apart by reading it, never by
+          // the message (r4-03).
+          const again = await readOrError(slot.paths.save);
+          if (stale()) return false;
+          if (again.error === null) {
+            fail(slot, hostMessage(e), env.now());
+            return false;
+          }
+          const w = await toRecovery(again.error);
+          if (w === "main") continue;
+          return w;
         }
         if (S.overwrite || S.logLost) {
           // Reset / Restore, or a log too long to replay: replace the file, never merge into it.
           const o = await overwriteBase(slot, env, stale);
           if (o.stop) return false;
           if (!o.ok) {
-            fail(slot, o.error, env.now());
-            return false;
+            const w = await toRecovery(o.error); // (its read failed: r4-03)
+            if (w === "main") continue;
+            return w;
           }
           continue;
         }
@@ -1125,8 +1276,9 @@ export async function cycle(slot, env) {
         const m = await mergeFromDisk(slot, env, stale);
         if (m.stop) return false;
         if (!m.ok) {
-          fail(slot, m.error, env.now());
-          return false;
+          const w = await toRecovery(m.error); // (its read failed: r4-03)
+          if (w === "main") continue;
+          return w;
         }
         if (m.foreign === true) merged = true; // (a missing or damaged file is no other window's progress)
         for (const x of m.refunds) refunds.push(x);
@@ -1147,7 +1299,9 @@ export async function cycle(slot, env) {
       S.retryAt = 0;
       S.writtenRev = rev;
       S.overwrite = null;
-      S.logLost = false;
+      // A log given up while this write was out (live.js record) holds actions
+      // this text lacks: the next conflict must still replace, not merge (r4-09).
+      if ((slot.logEpoch || 0) === epoch) S.logLost = false;
       S.dirtyAt = slot.state.rev !== rev || slot.pending.length > 0 ? done : null;
       // An urgent request this write served is consumed; one made during the write stays.
       if (S.urgentAt !== null && (S.urgentAt <= t || S.dirtyAt === null)) S.urgentAt = null;
@@ -1294,15 +1448,13 @@ export async function checkSave(slot, env) {
     if (stale()) return "stale";
     const t = env.now();
     if (r.error !== null) {
-      if (!S.unreadable) {
-        S.unreadable = r.error;
-        setNotice(slot, "write", unreadableNotice(slot.paths, r.error, t));
-        S.status = "error";
-      }
+      if (!S.unreadable && !(await enterUnreadable(slot, env, stale, r.error))) return "stale";
       retryNow(slot, t);
       return "error";
     }
     if (r.text === null) {
+      // A shared save gone with its backup: this window's own, as a load would (r4-04).
+      if ((await leaveMissingShared(slot, env, stale)) === null) return "stale";
       slot.baseText = null;
       S.baseOk = false;
       retryNow(slot, t);

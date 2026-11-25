@@ -43,7 +43,9 @@
 //   name      file-name-safe, unique
 //   size      {width, height} CSS px of the view's shot (and of a float in a window)
 //   scenario  a mock herdr scenario (tools/mock/controller.js); `theme` is overridden
-//   setup     optional async (view, { ctl, advance, flush, theme }) run after init
+//   setup     optional async (view, { ctl, advance, flush, theme, zoom }) run after init
+//             (at zoom != 1 the copy is already sized in zoomed px when setup starts;
+//             a setup that sizes it again reports zoomed px too)
 //   block     optional: the layout block / float id this view's scenario fills in
 //             whole-window shots (else the entry marked `window: true`, else the first)
 // A named export `windowScenario` (optional) supplies the chrome's workspace data.
@@ -323,19 +325,21 @@ export async function runView(Class, entry, themeName, extra = {}) {
     if (typeof view.init === "function") {
       await ctl.dispatch("event", view, (cx) => view.init(undefined, cx), { cx: "ambient", initializing: view });
     }
-    if (entry.setup) {
-      await entry.setup(view, { ctl, advance: (ms) => ctl.advance(ms), flush: () => ctl.flush(), theme: themeName });
-    }
-    await ctl.flush();
     if (zoom !== 1) {
-      // The shell reports a block's size in zoomed px: size the copy the way it would.
+      // The shell reports a block's size in zoomed px: size the copy the way it
+      // would, BEFORE setup, and let no virtual time pass here. Setup then plays
+      // the view to the same moment at every zoom (r4-16: sizing after setup
+      // with an extra second let a merge finish, so the zoom 1.5 conflict shot
+      // never showed its banner).
       beginRender();
       const root = ctl.within("render", view, (cx) => renderRoot(view.render(cx)));
       const onSize = handlersOf(root).on_size_change;
       if (onSize) await ctl.dispatch("event", view, (cx) => onSize({ width: size.width * zoom, height: size.height * zoom }, cx));
-      await ctl.advance(1000);
-      await ctl.flush();
     }
+    if (entry.setup) {
+      await entry.setup(view, { ctl, advance: (ms) => ctl.advance(ms), flush: () => ctl.flush(), theme: themeName, zoom });
+    }
+    await ctl.flush();
     beginRender();
     const tree = ctl.within("render", view, (cx) => {
       return serialize(renderRoot(view.render(cx)), { cx });
@@ -405,7 +409,7 @@ export async function runWindowCopies(Class, target, themeName, size, layout, zo
     }
     if (entry.setup && copies.length) {
       const main = copies.find((c) => c.block.id === entry.block) ?? copies.find((c) => c.block.content.props?.role !== "ribbon") ?? copies[0];
-      await entry.setup(main.view, { ctl, advance: (ms) => ctl.advance(ms), flush: () => ctl.flush(), theme: themeName });
+      await entry.setup(main.view, { ctl, advance: (ms) => ctl.advance(ms), flush: () => ctl.flush(), theme: themeName, zoom });
     }
     // Size each copy like the shell: its root element's on_size_change with the block's size.
     const render = (view) => {

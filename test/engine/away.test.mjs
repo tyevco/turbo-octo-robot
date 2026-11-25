@@ -341,3 +341,62 @@ test("r1-33: older saves get the high-water mark at their clock; a rebase keeps 
   engine.advance(back.state, T0 - H);
   assert.equal(back.state.away.highWater, T0 + 30000);
 });
+
+test("r4-06: helpers another window stopped seeing earn the away rate for 8 h in all, live stale credit and away segment together", () => {
+  // wA sees 4 working agents and closes at T0; wB stays open (seeing none of
+  // them) for `open` hours, then every window is closed; one reopens at T0 + 16 h.
+  const run = (openH, reopenBy) => {
+    const s = seeded(7);
+    const A = writer(s, "wA");
+    const B = writer(s, "wB");
+    A.act(observeAction(T0, [1, 2, 3, 4].map((i) => agent(i, "working", 0))));
+    B.act(observeAction(T0 + 1000, []));
+    let t = T0 + 1000;
+    engine.advance(s, (t = T0 + 61000), "wB"); // the first 60 s are live (full rate)
+    const from = s.stats.bySource.helpers || 0;
+    const end = T0 + openH * H;
+    while (t < end) { t = Math.min(end, t + 30000); engine.advance(s, t, "wB"); }
+    const live = (s.stats.bySource.helpers || 0) - from;
+    engine.advance(s, T0 + 16 * H, reopenBy);
+    const away = s.away.pot.split.helpers;
+    const r = engine.rates(s);
+    const perMs = (0.25 * engine.crowd(4) * 4 * 0.3 * r.G) / 1000; // 4 helpers at the away rate (no workshops)
+    return { live: live / perMs, away: away / perMs, folds: s.helpers[engine.helperId("t1", 1001)].stats.folds };
+  };
+  for (const openH of [4, 8, 12]) {
+    for (const by of ["wA", "wB"]) {
+      const { live, away } = run(openH, by);
+      // from 60 s after lastSeen to 8 h after it (plus the 60 s the window
+      // gave live): never more than one 8-h allowance per absence
+      assert.ok(live + away <= 8 * H + 1000, `B open ${openH} h, ${by} reopens: ${(live + away) / H} h`);
+      assert.ok(live + away >= 8 * H - 62000, `B open ${openH} h, ${by} reopens: ${(live + away) / H} h`);
+      close(live, Math.min(openH * H, 8 * H) - 61000, 1e-6);
+    }
+  }
+  // B open only a moment: the away segment still pays (almost) the full 8 h
+  const short = run(0.02, "wA");
+  assert.ok(short.away > 7.9 * H && short.away <= 8 * H);
+});
+
+test("r4-06: with one window, a helper seen at the close earns the whole cap; one last seen 6 h before it earns 2 h", () => {
+  const s = seeded(8);
+  const A = writer(s, "wA");
+  A.act(observeAction(T0, [agent(1, "working", 0), agent(2, "working", 0)]));
+  // wB saw agent 2 last, 6 h ago, and nobody has seen it since
+  const id2 = engine.helperId("t2", 1002);
+  s.helpers[id2].seenBy = "wB";
+  s.helpers[id2].lastSeen = T0 - 6 * H;
+  s.writersSeen.wB = T0 - 6 * H;
+  const f0 = s.helpers[engine.helperId("t1", 1001)].stats.folds;
+  const g0 = s.helpers[id2].stats.folds;
+  engine.advance(s, T0 + 20 * H, "wA");
+  const r = engine.rates(s);
+  const base = 0.3 * r.G; // no workshops, folk 1
+  const spent = 6 * H - 60000; // unseen since 60 s after its lastSeen
+  const d2 = 8 * H - spent;
+  // two earn until d2, then one alone (crowd(1)) until the cap
+  const one = (0.25 * engine.crowd(2) * base * d2 + 0.25 * engine.crowd(1) * base * (8 * H - d2)) / 1000;
+  close(s.helpers[engine.helperId("t1", 1001)].stats.folds - f0, one, 1e-9);
+  close(s.helpers[id2].stats.folds - g0, (0.25 * engine.crowd(2) * base * d2) / 1000, 1e-9);
+  close(s.away.pot.split.helpers, one + (0.25 * engine.crowd(2) * base * d2) / 1000, 1e-9);
+});

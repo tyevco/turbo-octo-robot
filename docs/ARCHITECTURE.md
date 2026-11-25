@@ -251,6 +251,23 @@ checks (`cx.notify()` in render throws the real message). `Date.now()` in glue r
 clock only inside the harnesses (glue imports `now()` from `glue/clock.js`, which uses
 `Date.now()`; the harness swaps the global `Date.now`).
 
+Commands and layout.* as herdr runs them (r4-02). Every loaded copy has its own command channel,
+opened when the copy loads (`src/mods.rs:1125-1129`); `run("<mod>.<cmd>")` and a key press
+(`ctl.sendCommand(cmd)`, which returns how many copies got it) put the command into the channel of
+every open, shown copy (`mods::send_command`, `src/mods.rs:785-799`), and `nextCommand()` reads the
+calling copy's own channel. A copy is shown when its `{mod, props}` block is among the shown
+layout's visible blocks (hidden nodes, a stack's other children and their floats are not); a copy
+no block describes (an overlay, a tab, a layout without contents) counts as shown; `scenario.shown:
+false` shows none. A closed copy (`closeOwner`) or a reloaded build's copies get nothing; with no
+listening copy, `run("<mod>.<cmd>")` fails with herdr's `unknown command …`.
+`ctl.pendingCommands(view)` lists a copy's waiting commands. `layout.toggle|show|hide|resize` are
+applied to the shown layout (`layoutValue`, copied from the scenario, replaced on each change, never
+changed in place) with `tools/mock/commands.js` `applyLayoutCommand`, as `src/window.rs:3640-3656`
+does: a missing node fails (`no node "<id>"` for resize, `no node "<id>" in the shown layout` for
+the others; with no layout modelled every id is missing), `px` wins over `weight`, both stored as
+f32 (`Math.fround`), and the `"layout"` revision is bumped. `ctl.runAsPerson(name, args)` runs a
+command as the person (a key, click or palette entry) and returns `{ok}` or `{error}`.
+
 ### A8. Mock gpui (tools/mock)
 
 `gpui-kit.js` exports `View, div, svg, image, list, uniform_list, PathBuilder, Background`;
@@ -1173,7 +1190,9 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   screen px, with `inner` content boxes and `visible` clip rects); `tools/shots/shoot.mjs`
   `blockSizes` uses them, so whole-window copies measure what herdr would give them at each zoom;
   `tools/mock/commands.js` `applyLayoutCommand` applies `layout.toggle|show|hide|resize` and
-  `applyDrag` a divider drag (port of `drag_to`) to a tree as the window does. Tests:
+  `applyDrag` a divider drag (port of `drag_to`) to a tree as the window does; the mock controller
+  runs every `layout.*` a copy runs through `applyLayoutCommand` itself (A7, r4-02), so a bad id
+  is a run error and the copies read back the tree they changed. Tests:
   `test/layout/layout.test.mjs` (every state at 1100–2560 px, zoom 1 and 1.5, none skipped;
   zooms 1.6–3.0 clip Files before the game; folding helps; the designed widths above; RECIPE.md
   written from the built files), `test/glue/commands.test.mjs` (the commands' own runs

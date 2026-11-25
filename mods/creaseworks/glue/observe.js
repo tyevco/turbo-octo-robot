@@ -7,7 +7,9 @@
 // The two lists are joined by address (`created_ms` and `turn` come from
 // `terminals()`; a missing `created_ms` counts as 0). Addresses are data and
 // may be anything (`__proto__`, `constructor`, `peer/t7`): every index here
-// is a `Map` or a null-prototype object.
+// is a `Map` or a null-prototype object. (A label or report key named like
+// an Object.prototype member makes herdr's own terminals() call throw before
+// any of this runs: glue/session.js keeps the last good observation, r4-01.)
 
 const HOPS = 32;
 const PANE_STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };

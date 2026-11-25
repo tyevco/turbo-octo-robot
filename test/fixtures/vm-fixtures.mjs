@@ -200,13 +200,32 @@ function ribbonFor(present, elsewhere, W) {
   const n = all.length;
   if (n * 22 <= w) return { marks: all, level: "A", tallies: [] };
   if (n <= 2 * Math.floor(w / 14)) return { marks: all, level: "B", tallies: [] };
-  const marks = all.filter((m) => m.status === "blocked" || m.status === "done");
-  const tallies = [];
-  for (const status of ["working", "idle"]) {
-    const count = all.filter((m) => m.status === status).length;
-    if (count > 0) tallies.push({ status, count });
+  return { level: "C", ...fitC(all, w) };
+}
+
+// Level C fitted to the middle (as engine/view.js, r4-07): needs-you and
+// finished pips, working / resting tallies; then the finished past the edge
+// as a "+N" finished tally; then the needs-you past the edge as a "+N" needs
+// tally. Tally px: 34 + label (digits 7.2, others 6.4), 4 px gap; pips 14 a
+// column of two.
+function fitC(all, w) {
+  const tallyPx = (label) => 34 + Math.ceil([...label].reduce((a, ch) => a + (/[0-9A-Z]/.test(ch) ? 7.2 : 6.4), 0));
+  const need = (pips, ts) => Math.ceil(pips / 2) * 14 + ts.reduce((a, t) => a + 4 + tallyPx(t.label), 0);
+  const T = (status, count, more) => ({ status, count, label: more ? `+${count}` : String(count) });
+  const needs = all.filter((m) => m.status === "blocked");
+  const done = all.filter((m) => m.status === "done");
+  const rest = ["working", "idle"].map((st) => all.filter((m) => m.status === st).length).flatMap((c, i) => (c ? [T(i ? "idle" : "working", c, false)] : []));
+  const keep = (list) => all.filter((m) => list.includes(m));
+  if (need(needs.length + done.length, rest) <= w) return { marks: keep(needs.concat(done)), tallies: rest };
+  const others = done.length ? [T("done", done.length, false), ...rest] : rest;
+  if (need(needs.length, others) <= w) {
+    let j = done.length - 1;
+    while (j > 0 && need(needs.length + j, [T("done", done.length - j, true), ...rest]) > w) j--;
+    return { marks: keep(needs.concat(done.slice(0, j))), tallies: [T("done", done.length - j, j > 0), ...rest] };
   }
-  return { marks, level: "C", tallies };
+  let k = needs.length;
+  while (k > 0 && need(k, [T("blocked", needs.length - k, true), ...others]) > w) k--;
+  return { marks: keep(needs.slice(0, k)), tallies: [T("blocked", needs.length - k, k > 0), ...others] };
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +378,8 @@ function base(name, o = {}) {
     for (const key of GROUP_ORDER) {
       const tiles = grouped.filter((h) => GROUP_OF[h.status] === key);
       if (!tiles.length) continue;
-      const folded = (o.folded && o.folded.includes(key)) || (key === "resting" && tiles.length > 12);
+      // As the engine: Resting folds above 12, never over a waiting fledgling (r4-12).
+      const folded = (o.folded && o.folded.includes(key)) || (key === "resting" && tiles.length > 12 && !tiles.some((t) => t.pips.includes("blocked")));
       groups.push({ key, title: GROUP_TITLE[key], count: tiles.length, folded, tiles: tiles.map(tileOf) });
     }
   }
@@ -645,6 +665,21 @@ const RIBBON_ROSTERS = {
   64: { needs: 5, finished: 3, working: 30, resting: 26, envelopes: 0.15 },
   130: { needs: 7, finished: 5, working: 64, resting: 54, envelopes: 0.1 },
 };
+/**
+ * Ribbon stress rosters beyond the §15.3 views (not in VIEW_NAMES, no shot):
+ * after time away herdr leaves most of a big flock "done" (r4-07), or most
+ * of it waiting. `scenario(name, { window })` builds them like ribbon-*.
+ */
+export const RIBBON_STRESS = Object.freeze({
+  "ribbon-130-done": Object.freeze({ needs: 10, finished: 90, working: 20, resting: 10, envelopes: 0.1 }),
+  "ribbon-130-needs": Object.freeze({ needs: 110, finished: 10, working: 6, resting: 4, envelopes: 0.1 }),
+});
+for (const name of Object.keys(RIBBON_STRESS)) {
+  BUILDERS[name] = (opts) => {
+    const W = opts.width ?? RIBBON_WIDTHS[opts.window ?? 1440];
+    return [{ role: "ribbon", width: W, height: 30 }, ui(), base(name, { roster: RIBBON_STRESS[name], ribbonWidth: W })];
+  };
+}
 for (const n of RIBBON_COUNTS) {
   BUILDERS[`ribbon-${n}`] = (opts) => {
     const W = opts.width ?? RIBBON_WIDTHS[opts.window ?? 1440];

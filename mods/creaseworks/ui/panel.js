@@ -132,6 +132,8 @@ function header(vm, ui, ctx) {
 
 function boostBar(vm, ctx) {
   const T = ctx.T;
+  // Calm mode (DESIGN §11.1 item 4): the countdown snaps each tick (r4-13).
+  const calm = isCalm(vm, ctx);
   const boosts = Array.isArray(vm.boosts) ? vm.boosts : [];
   const bar = h_flex().id("cw-boostbar").w_full().h(FRAME.boost).flex_none().px(8).gap(6).overflow_hidden();
   if (!boosts.length) {
@@ -152,7 +154,7 @@ function boostBar(vm, ctx) {
         .tooltip(clip(`${b.label ?? type}: ${Math.ceil(num(b.msLeft) / 1000)} s left`, 60))
         .child(sprite(seal, 12, T.foreground))
         .child(text(clip(String(b.label ?? type), PANEL_CLIP.boost), { size: 11, weight: 600, color: T.foreground }, T))
-        .child(countdownBar(`cw-boostbar-${type}-bar`, num(b.msLeft), num(b.msTotal, 1), { width: 48, height: 3 }, T, ctx.S)),
+        .child(countdownBar(`cw-boostbar-${type}-bar`, num(b.msLeft), num(b.msTotal, 1), { width: 48, height: 3, calm }, T, ctx.S)),
     );
   }
   return bar;

@@ -81,6 +81,24 @@ test("Resting folds by default above 12 members; empty groups are left out", () 
   assert.equal(v(s12).helpers.groups[0].folded, false);
 });
 
+test("r4-12: Resting does not auto-fold while a resting parent's fledgling waits (its flag stays in sight)", () => {
+  const s = seeded(3);
+  const me = writer(s, "wA");
+  const agents = Array.from({ length: 13 }, (_, i) => agent(i, "idle"));
+  me.act(observeAction(T0, [...agents, kid(40, 5, "working")]));
+  assert.equal(v(s, T0 + 1000).helpers.groups.find((g) => g.key === "resting").folded, true, "a working fledgling does not stop the fold");
+  me.act(observeAction(T0 + 5000, [...agents, kid(40, 5, "blocked")]));
+  const vm = v(s, T0 + 6000);
+  const rest = vm.helpers.groups.find((g) => g.key === "resting");
+  assert.equal(rest.count, 13);
+  assert.equal(rest.folded, false, "the waiting fledgling's parent is drawn");
+  assert.ok(rest.tiles.find((x) => x.helperId === id(5)).pips.includes("blocked"));
+  assert.equal(vm.header.counts.needs, 1);
+  // Back to work: the group folds again.
+  me.act(observeAction(T0 + 10000, [...agents, kid(40, 5, "working")]));
+  assert.equal(v(s, T0 + 11000).helpers.groups.find((g) => g.key === "resting").folded, true);
+});
+
 test("workspace order: one list by space → tab → pane (natural), no status groups (§3.3)", () => {
   const extra = {
     0: { space: "web", tab: "tab 2", pane: "p1" },
@@ -266,6 +284,45 @@ test("ribbon C: needs-you and finished stay individual, the rest become tallies;
   assert.equal(at1100.rail.pips.length, 90);
   const { s: s64 } = withAgents(statuses.slice(0, 64));
   for (const W of [832, 1172]) assert.notEqual(engine.view(s64, T0, { role: "ribbon", width: W }).ribbon.level, "C");
+});
+
+test("r4-07: ribbon C fits the width: finished past the edge become '+N', then needs-you; every helper counted", () => {
+  // Pips 14 px a column of two; tallies 34 + label (digits 7.2 px, '+' 6.4) and a 4 px gap.
+  const tallyPx = (label) => 34 + Math.ceil([...String(label)].reduce((a, c) => a + (/[0-9A-Z]/.test(c) ? 7.2 : 6.4), 0));
+  const need = (r) => Math.ceil(r.marks.length / 2) * 14 + r.tallies.reduce((a, t) => a + 4 + tallyPx(t.label), 0);
+  const mix = (nb, nd, nw, ni) => Array.from({ length: nb + nd + nw + ni }, (_, i) => (i < nb ? "blocked" : i < nb + nd ? "done" : i < nb + nd + nw ? "working" : "idle"));
+  // The finding: 130 agents, 10 need you, 90 finished (herdr's unseen "done"), at the 1100 window (W 832).
+  const { s } = withAgents(mix(10, 90, 20, 10));
+  const r = engine.view(s, T0, { role: "ribbon", width: 832, writer: "wA" }).ribbon;
+  assert.equal(r.level, "C");
+  assert.ok(need(r) <= r.width, `${need(r)} px in ${r.width}`);
+  assert.ok(r.width - need(r) < 28 + tallyPx("+99"), "the pips fill what the tallies leave");
+  assert.equal(r.marks.filter((m) => m.status === "blocked").length, 10, "every needs-you helper keeps its pip");
+  const done = r.marks.filter((m) => m.status === "done").length;
+  assert.ok(done > 0 && done < 90);
+  assert.deepEqual(r.tallies.map((t) => [t.status, t.count, t.label]), [["done", 90 - done, `+${90 - done}`], ["working", 20, "20"], ["idle", 10, "10"]]);
+  assert.equal(r.tallies[0].tooltip, `${90 - done} more finished`);
+  // Marks keep group order (needs first).
+  assert.ok(r.marks.slice(0, 10).every((m) => m.status === "blocked"));
+  // Needs-you alone overflowing: all finished fold, the needs-you past the edge become "+N".
+  const { s: s2 } = withAgents(mix(110, 10, 6, 4));
+  const r2 = engine.view(s2, T0, { role: "ribbon", width: 832, writer: "wA" }).ribbon;
+  assert.ok(need(r2) <= r2.width);
+  assert.ok(r2.marks.length > 0 && r2.marks.every((m) => m.status === "blocked"));
+  assert.deepEqual(r2.tallies.map((t) => [t.status, t.count]), [["blocked", 110 - r2.marks.length], ["done", 10], ["working", 6], ["idle", 4]]);
+  assert.equal(r2.tallies[0].label, `+${110 - r2.marks.length}`);
+  assert.match(r2.tallies[0].tooltip, /more need you$/);
+  // Every mix and width: everyone a pip or counted, and never past the width.
+  for (const m of [[0, 200, 0, 0], [200, 0, 0, 0], [5, 5, 100, 100], [40, 60, 20, 10]]) {
+    const { s: sm } = withAgents(mix(...m));
+    for (const W of [600, 832, 1172]) {
+      const rm = engine.view(sm, T0, { role: "ribbon", width: W, writer: "wA" }).ribbon;
+      const n = m.reduce((a, b) => a + b, 0);
+      assert.equal(rm.marks.length + rm.tallies.reduce((a, t) => a + t.count, 0), n, `${m} @ ${W}`);
+      if (rm.level === "C") assert.ok(need(rm) <= rm.width, `${m} @ ${W}: ${need(rm)} > ${rm.width}`);
+      assert.ok(rm.tallies.every((t) => t.count > 0), `${m} @ ${W}: no empty tally`);
+    }
+  }
 });
 
 test("marks: status, hue, envelope, dashed needs-you, tooltip with the wait", () => {

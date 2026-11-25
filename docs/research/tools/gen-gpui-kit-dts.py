@@ -2,8 +2,18 @@
 """Reconstructs gpui-kit.d.ts exactly as typings::declarations_with_components
 emits it for FrozenComponentRegistry::default() with no host modules (the
 app-dir copy herdr writes in mods::write_workspace before install_policy).
-Reads Rust sources only; runs nothing from them."""
+Reads Rust sources only; runs nothing from them.
+
+Usage: gen-gpui-kit-dts.py <herdr-src> <gpui-pre-macros-0.3.8/src> docs/research/gpui-kit.d.ts
+then:  node tools/mock/extract-methods.mjs   (rewrites tools/mock/gpui-methods.{json,js})
+
+The output is gitignored. tools/mock/gpui-methods.json is the committed,
+checked artefact and records the sha256 of the .d.ts it came from;
+test/tooling/gpui.test.mjs compares it with a fresh extraction only when the
+.d.ts exists, so npm test passes on a fresh clone without herdr sources."""
 import re, sys
+if len(sys.argv) != 4:
+    sys.exit(__doc__)
 SRC = sys.argv[1]          # herdr-src root
 MACROS = sys.argv[2]       # gpui-pre-macros-0.3.8/src
 OUT = sys.argv[3]

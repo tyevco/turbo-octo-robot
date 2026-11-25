@@ -287,6 +287,43 @@ test("contrast notes: claims that are imprecise as written (reported, values pin
   assert.ok(minOf(idleChromeDark) >= 3.45);
 });
 
+test("contrast: a faded Flock tile's name stays ≥ 4.5:1 on the tile in every theme (r4-15: Elsewhere at 50 %)", async () => {
+  const { installMockWindow } = await import("../../tools/mock/gpui-kit.js");
+  installMockWindow();
+  const FL = await import("../../mods/creaseworks/ui/flock.js");
+  const s = F.scenario("flock-elsewhere");
+  assert.equal(s.vm.helpers.dense, false, "names are drawn");
+  const faded = s.vm.helpers.elsewhere.concat(s.vm.helpers.groups.flatMap((g) => g.tiles)).filter((t) => t.opacity < 1);
+  assert.ok(faded.some((t) => t.opacity === 0.5), "Elsewhere tiles are at 50 %");
+  assert.ok(faded.some((t) => t.opacity === 0.8), "and resting at 80 %");
+  for (const name of ALL) {
+    const T = THEMES[name];
+    const ctx = { T, S: P.pickScene(isDark(name)), hues: P.pickHues(isDark(name)), dark: isDark(name), zoom: 1, calm: false, width: 320, height: 784, handlers: {} };
+    const json = FL.renderFlock(s.vm, { ...s.ui, folded: { elsewhere: false } }, ctx).toJSON();
+    const hover = W.hoverOn(T, T.raised);
+    let seen = 0;
+    walk(json, (n) => {
+      const m = typeof n.id === "string" && n.id.match(/^cw-flock-tile-(.+)$/);
+      if (!m) return;
+      const tile = faded.find((t) => t.helperId === m[1]);
+      if (!tile) return;
+      const label = n.children.find((c) => (c.styles || []).some((x) => x[0] === "text_center"));
+      assert.ok(label, `${name}: ${tile.name} has a name`);
+      const op = (label.styles.find((x) => x[0] === "opacity") || [null, 1])[1];
+      assert.ok(op >= tile.opacity, "the name never fades past its tile");
+      for (const bg of [T.raised, hover]) {
+        const shown = C.mix(C.hex6(bg), C.hex6(T.foreground), op);
+        const v = cr(shown, C.hex6(bg));
+        assert.ok(v >= 4.5, `${name} ${tile.name} (tile ${tile.opacity}, name ${op}) on ${bg}: ${r2(v)}:1`);
+      }
+      // Still visibly faded where the tile is (Elsewhere reads at a glance).
+      if (tile.opacity === 0.5) assert.ok(op < 1, `${name}: an Elsewhere name still fades`);
+      seen++;
+    });
+    assert.ok(seen >= s.vm.helpers.elsewhere.length, `${name}: ${seen} faded tiles checked`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Art
 
@@ -589,7 +626,7 @@ test("ribbon: level-C tally chips show the whole count and the middle reserves i
         const tag = `${name} ${window} hint ${narrowHint}`;
         assert.ok(lay.lead + lay.need <= lay.w, `${tag}: ${lay.lead} + ${lay.need} > ${lay.w}`);
         for (const t of lay.tallies) {
-          const status = t.status === "working" ? "working" : "idle";
+          const status = t.status;
           const hit = find(json, `cw-rib-tally-${status}`);
           assert.ok(hit, `${tag}: tally ${status} drawn`);
           const pill = hit.children[0];
@@ -654,6 +691,12 @@ test("widgets: progress bar fill transitions width on absolute px; calm snaps lo
   const native = W.countdownBar("cw-boost", 30000, 90000, { native: true }, T, P.S_LIGHT).toJSON();
   assert.equal(native.children[0].styles.find((s) => s[0] === "w")[1], 0);
   assert.equal(native.children[0].transitions[0].duration, 30000);
+  // Calm (r4-13): the bar shows the time left and snaps, native or not.
+  for (const o of [{ calm: true }, { calm: true, native: true }, { calm: true, tickMs: 1000 }]) {
+    const c = W.countdownBar("cw-boost", 30000, 90000, o, T, P.S_LIGHT).toJSON().children[0];
+    assert.equal(c.styles.find((s) => s[0] === "w")[1], 16, JSON.stringify(o));
+    assert.deepEqual(c.transitions, [], JSON.stringify(o));
+  }
 });
 
 test("widgets: iconButton is a 28 px div#id carrying tooltip and handler around the svg", () => {
@@ -839,7 +882,12 @@ test("fixtures: views show what they are named for", () => {
   assert.equal(vm("flock-12").helpers.dense, false);
   assert.equal(count(vm("flock-34")), 34);
   assert.equal(vm("flock-34").helpers.dense, true);
-  assert.equal(vm("flock-34").helpers.groups.find((g) => g.key === "resting").folded, true, "resting folds above 12");
+  // Resting folds above 12 (ribbon-34's 15 resting have no fledglings), but
+  // never over a waiting fledgling (r4-12: flock-34's resting parents have some).
+  assert.equal(vm("ribbon-34").helpers.groups.find((g) => g.key === "resting").folded, true, "resting folds above 12");
+  const rest34 = vm("flock-34").helpers.groups.find((g) => g.key === "resting");
+  assert.ok(rest34.count > 12 && rest34.tiles.some((t) => t.pips.includes("blocked")));
+  assert.equal(rest34.folded, false, "a resting group with a waiting fledgling stays open");
   assert.equal(count(vm("flock-64-dense")), 64);
   assert.ok(vm("flock-elsewhere").helpers.elsewhere.length > 0);
   assert.ok(vm("album").helpers.album.length > 0);
@@ -859,6 +907,26 @@ test("fixtures: views show what they are named for", () => {
   assert.ok(F.scenario("wide").width >= 400);
   assert.equal(vm("short").sheet.short, true);
   assert.equal(vm("calm").settings.calm, true);
+});
+
+test("fixtures: ribbon stress rosters (r4-07) fit level C and count every helper", async () => {
+  const R = await import("../../mods/creaseworks/ui/ribbon.js");
+  for (const name of Object.keys(F.RIBBON_STRESS)) {
+    const spec = F.RIBBON_STRESS[name];
+    const n = spec.needs + spec.finished + spec.working + spec.resting;
+    for (const window of [1100, 1440]) {
+      const s = F.scenario(name, { window });
+      checkVm(s.vm, `${name}@${window}`);
+      const r = s.vm.ribbon;
+      assert.equal(r.marks.length + r.tallies.reduce((a, t) => a + t.count, 0), n, `${name}@${window}`);
+      if (r.level !== "C") continue;
+      const lay = R.ribbonLayout(s.vm, { panelShown: true }, s.width);
+      assert.ok(lay.need <= lay.avail, `${name}@${window}: ${lay.need} > ${lay.avail}`);
+      assert.deepEqual(lay.marks.map((m) => m.helperId), r.marks.map((m) => m.helperId), `${name}@${window}: fixture fit = ribbon fit`);
+      assert.deepEqual(lay.tallies.map((t) => [t.status, t.count, t.label]), r.tallies.map((t) => [t.status, t.count, t.label]));
+    }
+  }
+  assert.ok(!F.VIEW_NAMES.some((v) => Object.hasOwn(F.RIBBON_STRESS, v)), "not §15.3 views");
 });
 
 test("fixtures: ribbon density follows §3.10 (64 agents individual at both widths; tallies only above B)", () => {

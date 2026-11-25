@@ -1,7 +1,8 @@
 // The ribbon (DESIGN §3.10, §2.3): `renderRibbon(vm, ui, ctx)` (ARCHITECTURE
 // B11), 30 px × the work width. Left block 118 (fold icon, count, rate),
 // middle: one mark per helper, never capped (density A chips, B two-row pips,
-// C tallies beyond B), right block 100 (envelope count, mini Sheet while the
+// C tallies beyond B: every helper is a visible pip or counted in a visible
+// tally chip, `fitLevelC`), right block 100 (envelope count, mini Sheet while the
 // panel is folded or hidden, fold toggle). A save chip, the "Welcome back"
 // pill (only while the panel is folded or hidden, or a flash) or the
 // narrow-window hint take the first place of the middle area;
@@ -19,7 +20,7 @@ import { button, chip, iconButton, text, hoverOn } from "./widgets.js";
 import { bannerNotices } from "./banner.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const RIBBON_CLIP = Object.freeze({ count: 8, rate: 10, pill: 24, empty: 80, n: 5, tooltip: 140, hint: 44 });
+export const RIBBON_CLIP = Object.freeze({ count: 8, rate: 10, pill: 24, empty: 80, n: 7, tooltip: 140, hint: 44 });
 
 /** Block widths (§3.10): pad 8, left 118, right 100. */
 export const RIBBON_BLOCKS = Object.freeze({ pad: 8, left: 118, right: 100 });
@@ -236,7 +237,9 @@ function tally(t, T, h) {
   // the font); the count sizes its own pill and needOf reserves its width.
   return chip(`cw-rib-tally-${status}`, label, {
     status,
-    border: T.border,
+    // A needs-you tally (r4-07: the "+N" past the edge) is ringed like a needs-you mark.
+    border: status === "blocked" ? statusColor(T, "blocked", "chrome") : T.border,
+    dashed: status === "blocked",
     tooltip: clip(String(t.tooltip ?? `${label} ${group}`), RIBBON_CLIP.tooltip),
     onClick: (e, cx) => h.showGroup(group, cx),
   }, T);
@@ -326,28 +329,82 @@ function needOf(level, marks, tallies) {
   return w;
 }
 
-/** Level C from a full mark list: needs-you and finished stay individual, the rest become tallies (as engine/view.js). */
-function toTallies(all) {
-  const marks = [];
+function tallyOf(status, count, more) {
+  const n = formatInt(count);
+  const words = { working: `${n} working`, idle: `${n} resting`, done: more ? `${n} more finished` : `${n} finished`, blocked: more ? `${n} more need you` : `${n} need you` };
+  return { status, count, label: more ? `+${n}` : n, tooltip: words[status] };
+}
+
+/**
+ * Level C fitted to `avail` px (as engine/view.js, r4-07; tested): from any
+ * marks and tallies (a full list, or the view's level C, which may already
+ * have folded some), needs-you and finished stay pips and working / resting
+ * become tallies; if that overflows, the finished pips past the edge fold
+ * into a "+N" finished tally (all of them, "N", if need be); if needs-you
+ * pips alone still overflow, the ones past the edge become a "+N" needs
+ * tally. Tally widths are reserved before pips, so every
+ * helper is a visible pip or counted in a visible chip (§3.10 "never
+ * capped"). Returns `{ marks, tallies }`, tallies in order needs, finished,
+ * working, resting.
+ */
+export function fitLevelC(marksIn, talliesIn, avail) {
+  const marks = Array.isArray(marksIn) ? marksIn : [];
+  const needs = [];
+  const done = [];
   let working = 0;
   let idle = 0;
-  for (const m of all) {
-    const st = statusOf(m.status);
-    if (st === "blocked" || st === "done") marks.push(m);
+  let doneFolded = 0;
+  let needsFolded = 0;
+  for (const m of marks) {
+    const st = statusOf(m && m.status);
+    if (st === "blocked") needs.push(m);
+    else if (st === "done") done.push(m);
     else if (st === "working") working++;
     else idle++;
   }
-  const tallies = [];
-  if (working) tallies.push({ status: "working", count: working, label: formatInt(working), tooltip: `${formatInt(working)} working` });
-  if (idle) tallies.push({ status: "idle", count: idle, label: formatInt(idle), tooltip: `${formatInt(idle)} resting` });
-  return { marks, tallies };
+  for (const t of Array.isArray(talliesIn) ? talliesIn : []) {
+    const c = Math.max(0, Math.floor(num(t && t.count, 0)));
+    const st = statusOf(t && t.status);
+    if (st === "blocked") needsFolded += c;
+    else if (st === "done") doneFolded += c;
+    else if (st === "working") working += c;
+    else idle += c;
+  }
+  const rest = [];
+  if (working) rest.push(tallyOf("working", working, false));
+  if (idle) rest.push(tallyOf("idle", idle, false));
+  const fits = (nPips, tallies) => needOf("C", { length: nPips }, tallies) <= avail;
+  const keep = (list) => {
+    const kept = new Set(list);
+    return marks.filter((m) => kept.has(m));
+  };
+  // The most pips (≤ hi) that fit before `tallies` plus a "+1"-wide chip (an upper bound), stepped down.
+  const most = (hi, base, tallies) => Math.max(0, Math.min(hi, 2 * Math.floor(Math.max(0, avail - needOf("C", [], tallies) - MIDDLE_GAP - chipBound("+1")) / PIP_PITCH) - base));
+  // 1. Needs-you and finished individual.
+  if (!doneFolded && !needsFolded && fits(needs.length + done.length, rest)) return { marks: keep(needs.concat(done)), tallies: rest };
+  // 2. The finished past the edge fold into a "+N" finished tally (all of them if need be).
+  const nDone = done.length + doneFolded;
+  if (!needsFolded && fits(needs.length, nDone ? [tallyOf("done", nDone, false)].concat(rest) : rest)) {
+    let j = most(nDone > done.length ? done.length : done.length - 1, needs.length, rest);
+    for (; j > 0; j--) if (fits(needs.length + j, [tallyOf("done", nDone - j, true)].concat(rest))) break;
+    const tallies = nDone - j > 0 ? [tallyOf("done", nDone - j, j > 0)].concat(rest) : rest;
+    return { marks: keep(needs.concat(done.slice(0, j))), tallies };
+  }
+  // 3. Needs-you alone overflow: finished all folded, the needs-you past the edge a "+N" needs tally.
+  const others = nDone ? [tallyOf("done", nDone, false)].concat(rest) : rest;
+  const total = needs.length + needsFolded;
+  if (!total) return { marks: [], tallies: others };
+  let k = most(needs.length, 0, others);
+  for (; k > 0; k--) if (fits(k, [tallyOf("blocked", total - k, true)].concat(others))) break;
+  const tallies = total - k > 0 ? [tallyOf("blocked", total - k, k > 0)].concat(others) : others;
+  return { marks: keep(needs.slice(0, k)), tallies };
 }
 
 /**
  * The middle area's plan for a ribbon of work width `W` (tested):
  * `{ w, lead, avail, level, marks, tallies, need, compact, specs }`. The
  * level is the denser of the view's level and the one that fits beside the
- * lead chips; when that is C the view's tallies are used, or built here.
+ * lead chips; at C the marks and tallies are fitted to `avail` (`fitLevelC`).
  */
 export function ribbonLayout(vm, ctx, W) {
   const rib = (vm && vm.ribbon) || {};
@@ -365,16 +422,23 @@ export function ribbonLayout(vm, ctx, W) {
     let level = densityLevel(n, avail);
     if (viewLevel && DENSE[viewLevel] > DENSE[level]) level = viewLevel;
     let marks = marks0;
-    let tallies = viewLevel === "C" ? tallies0 : [];
-    if (level === "C" && viewLevel !== "C") ({ marks, tallies } = toTallies(marks0));
-    if (level !== "C") tallies = [];
+    let tallies = [];
+    // Level C is fitted to the width left here (the view fitted the whole middle).
+    if (level === "C") ({ marks, tallies } = fitLevelC(marks0, viewLevel === "C" ? tallies0 : [], avail));
     return { w, lead, avail, level, marks, tallies, need: needOf(level, marks, tallies), compact, specs };
   };
   const full = plan(false);
-  if (full.need <= full.avail || !full.specs.length) return full;
-  // Even level C overflows beside the full lead: the compact lead, when it clips less.
+  const hidden = (p) => {
+    let n = 0;
+    for (const t of p.tallies) if (statusOf(t.status) === "blocked") n += Math.max(0, num(t.count, 0));
+    return n;
+  };
+  if (!full.specs.length || (full.need <= full.avail && !hidden(full))) return full;
+  // Even level C overflows beside the full lead, or a needs-you helper lost
+  // its own mark to it (r4-07): the compact lead, when it clips or folds less.
   const tight = plan(true);
-  return tight.need - tight.avail < full.need - full.avail ? tight : full;
+  if (full.need > full.avail) return tight.need - tight.avail < full.need - full.avail ? tight : full;
+  return tight.need <= tight.avail && hidden(tight) < hidden(full) ? tight : full;
 }
 
 /** The ribbon. */

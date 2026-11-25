@@ -263,14 +263,124 @@ describe("run()", () => {
 
   test("'<mod>.<cmd>' goes to the mod's nextCommand(), settled on the next flush", async () => {
     make({ mod: "clicker" });
-    herdr.run("clicker.buy:3");
+    // Nobody listens yet (no copy loaded, no channel): the window says so.
+    herdr.run("clicker.buy:1");
+    assert.match(ctl.runErrors()[0].error, /unknown command "clicker.buy:1"/);
     const p = settledFlag(inEvent(() => herdr.nextCommand()));
+    herdr.run("clicker.buy:3");
     await tick();
     assert.equal(p.done, false, "never settles synchronously");
     await ctl.flush();
     assert.equal(p.value, "buy:3");
     herdr.run("other.thing");
-    assert.match(ctl.runErrors()[0].error, /unknown command "other.thing"/);
+    assert.match(ctl.runErrors()[1].error, /unknown command "other.thing"/);
+  });
+
+  // herdr: one channel per loaded copy (src/mods.rs:1125-1129); send_command
+  // puts the command into every shown copy's channel (mods.rs:785-799).
+  const loadCopy = async (view, props) => {
+    ctl.setProps(props);
+    await ctl.dispatch("event", view, () => {}, { cx: "ambient", initializing: view });
+  };
+  const listen = (view) => settledFlag(ctl.within("event", view, () => herdr.nextCommand()));
+  const copyLayout = (over = {}) => ({
+    id: "root", type: "column", children: [
+      { id: "a-node", type: "block", content: { mod: "clicker", props: { role: "a" } }, hidden: over.a === true },
+      { id: "tabs", type: "stack", active: over.active ?? "b-node", children: [
+        { id: "b-node", type: "block", content: { mod: "clicker", props: { role: "b" } } },
+        { id: "other", type: "block", content: { mod: "files" } },
+      ] },
+    ],
+  });
+
+  test("a command reaches every shown copy once, each through its own channel", async () => {
+    make({ mod: "clicker", layout: copyLayout() });
+    const A = { name: "a" };
+    const B = { name: "b" };
+    await loadCopy(A, { role: "a" });
+    await loadCopy(B, { role: "b" });
+    // Sent before either loop awaits: kept in each copy's channel.
+    assert.equal(ctl.sendCommand("fold"), 2);
+    assert.deepEqual([ctl.pendingCommands(A), ctl.pendingCommands(B)], [["fold"], ["fold"]]);
+    const a = listen(A);
+    const b = listen(B);
+    await ctl.flush();
+    assert.deepEqual([a.value, b.value], ["fold", "fold"], "each copy gets it once");
+    // A second wait finds its own channel empty: nothing was shared or duplicated.
+    const a2 = listen(A);
+    const b2 = listen(B);
+    await ctl.flush();
+    assert.deepEqual([a2.done, b2.done], [false, false]);
+    herdr.run("clicker.answer");
+    await ctl.flush();
+    assert.deepEqual([a2.value, b2.value], ["answer", "answer"]);
+    assert.deepEqual(ctl.log.filter((e) => e.type === "command").map((e) => [e.command, e.copies]), [["fold", 2], ["answer", 2]]);
+  });
+
+  test("only shown copies get commands: a hidden node, a stack's other child, a closed or reloaded copy", async () => {
+    make({ mod: "clicker", layout: copyLayout({ a: true }) });
+    const A = { name: "a" };
+    const B = { name: "b" };
+    await loadCopy(A, { role: "a" });
+    await loadCopy(B, { role: "b" });
+    assert.equal(ctl.sendCommand("x"), 1, "a-node is hidden");
+    assert.deepEqual([ctl.pendingCommands(A), ctl.pendingCommands(B)], [[], ["x"]]);
+    ctl.layoutValue = copyLayout({ a: false, active: "other" });
+    assert.equal(ctl.sendCommand("y"), 1, "b-node is not the stack's shown child");
+    assert.deepEqual([ctl.pendingCommands(A), ctl.pendingCommands(B)], [["y"], ["x"]]);
+    ctl.layoutValue = copyLayout();
+    ctl.closeOwner(B);
+    assert.equal(ctl.sendCommand("z"), 1, "a closed copy's channel is closed");
+    assert.deepEqual(ctl.pendingCommands(B), []);
+    ctl.cancelGeneration(ctl.generation);
+    ctl.newGeneration();
+    assert.equal(ctl.sendCommand("w"), 0, "a reloaded build's copies are gone");
+    herdr.run("clicker.w");
+    assert.match(ctl.runErrors().at(-1).error, /unknown command "clicker.w"/, "nobody listens");
+    // The reload loads the copy again: a new, empty channel.
+    await loadCopy(A, { role: "a" });
+    assert.equal(ctl.sendCommand("v"), 1);
+    assert.deepEqual(ctl.pendingCommands(A), ["v"]);
+    ctl.dispose();
+    make({ mod: "clicker", shown: false });
+    await loadCopy(A, { role: "a" });
+    assert.equal(ctl.sendCommand("u"), 0, "scenario.shown false: no copy on screen");
+  });
+
+  test("layout.* runs are checked and applied like the window: no node fails; weights and px are f32", () => {
+    const tree = copyLayout();
+    tree.children[0].size = { weight: 0.39 };
+    make({ mod: "clicker", layout: tree });
+    const before = ctl.revision("layout");
+    herdr.run("layout.resize", { id: "nope", weight: 0.3 });
+    herdr.run("layout.show", { id: "nope" });
+    herdr.run("layout.toggle", { id: "nope" });
+    herdr.run("layout.hide", { id: "" });
+    assert.deepEqual(ctl.runErrors(), [
+      { name: "layout.resize", error: 'no node "nope"' },
+      { name: "layout.show", error: 'no node "nope" in the shown layout' },
+      { name: "layout.toggle", error: 'no node "nope" in the shown layout' },
+      { name: "layout.hide", error: "layout.hide needs id" },
+    ]);
+    assert.equal(ctl.revision("layout"), before, "nothing changed");
+    herdr.run("layout.resize", { id: "a-node", weight: 0.3 });
+    assert.deepEqual(herdr.layout().children[0].size, { weight: Math.fround(0.3) }, "Span::Weight { weight: f32 }");
+    assert.equal(ctl.revision("layout"), before + 1);
+    herdr.run("layout.resize", { id: "a-node", px: 64.1, weight: 0.5 });
+    assert.deepEqual(herdr.layout().children[0].size, { px: Math.fround(64.1) }, "px wins");
+    herdr.run("layout.hide", { id: "b-node" });
+    herdr.run("layout.toggle", { id: "b-node" });
+    herdr.run("layout.toggle", { id: "b-node" });
+    assert.equal(herdr.layout().children[1].children[0].hidden, true);
+    herdr.run("layout.show", { id: "b-node" });
+    assert.equal(herdr.layout().children[1].children[0].hidden, false);
+    assert.equal(ctl.runErrors().length, 4, "the valid ones all succeeded");
+    assert.equal(tree.children[0].size.weight, 0.39, "the scenario's own object is never changed");
+    assert.deepEqual(ctl.runAsPerson("layout.show", { id: "gone" }), { error: 'no node "gone" in the shown layout' });
+    ctl.dispose();
+    make({ mod: "clicker" });
+    herdr.run("layout.show", { id: "cw-panel" });
+    assert.deepEqual(ctl.runErrors(), [{ name: "layout.show", error: 'no node "cw-panel" in the shown layout' }], "no layout: no node");
   });
 
   test("nextCommand waits for a command; a cancelled generation's wait does not consume it", async () => {
@@ -766,8 +876,8 @@ describe("strictness fixes", () => {
 
   test("an async result that cannot be converted never settles and is logged", async () => {
     make({ files: {} });
-    ctl.commandQueue.push({ constructor: 1 });
     const n = settledFlag(inEvent(() => herdr.nextCommand()));
+    ctl.sendCommand({ constructor: 1 });
     await ctl.flush();
     assert.equal(n.done, false);
     assert.match(ctl.errors.at(-1).message, /'constructor' is read-only/);

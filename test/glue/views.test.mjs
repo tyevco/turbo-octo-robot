@@ -139,6 +139,52 @@ test("every view runs as a real game in graphite and paper, shows what it is nam
   dropSlot();
 });
 
+/** Every text run of a serialised tree, in order. */
+function treeTexts(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (node.kind === "text") out.push(node.text);
+  for (const child of node.children ?? []) treeTexts(child, out);
+  return out;
+}
+
+// r4-16: ARCHITECTURE shoots every view at zoom 1 and 1.5, so both must show the
+// same moment. The rig used to resize after setup and run one more virtual
+// second, which let the conflict merge finish (no banner at 1.5) and moved
+// clocks, saves and multipliers; and setup ran 2/3 as wide at 1.5.
+test("zoom 1 and 1.5 shots show the same moment: same text, notices and width", async () => {
+  for (const entry of VIEWS) {
+    const at = {};
+    for (const zoom of [1, 1.5]) {
+      let width;
+      let notices;
+      const wrapped = {
+        name: entry.name,
+        size: entry.size,
+        scenario: entry.scenario,
+        async setup(view, tools) {
+          assert.equal(tools.zoom, zoom, "the rig tells setup the zoom");
+          await entry.setup(view, tools);
+          width = view.session.width;
+          notices = JSON.stringify(view.session.vm().notices);
+        },
+      };
+      const r = await runView(Creaseworks, wrapped, "graphite", { mod: "creaseworks", zoom });
+      assert.equal(r.errors.length, 0, `${entry.name}@${zoom}: ${r.errors.map((e) => e.message).join("; ")}`);
+      at[zoom] = { texts: treeTexts(r.tree), width, notices };
+    }
+    assert.equal(at[1].width, entry.size.width, `${entry.name}: setup runs at the view's width`);
+    assert.equal(at[1.5].width, entry.size.width, `${entry.name}: setup runs at the view's logical width at zoom 1.5 too`);
+    assert.equal(at[1.5].notices, at[1].notices, `${entry.name}: same notices at both zooms`);
+    assert.deepEqual(at[1.5].texts, at[1].texts, `${entry.name}: same text at both zooms`);
+  }
+  const conflict = VIEWS.find((v) => v.name === "banner-conflict");
+  const r = await runView(Creaseworks, conflict, "graphite", { mod: "creaseworks", zoom: 1.5 });
+  const texts = treeTexts(r.tree);
+  assert.ok(texts.includes("Another window changed the save."), "the conflict banner shows at zoom 1.5");
+  assert.ok(!texts.includes("Saved just now"), "the merge has not finished at zoom 1.5");
+  dropSlot();
+});
+
 test("whole windows run every game block as copies of one window: expanded, folded and hidden", async () => {
   const { runWindowCopies, WINDOW_STATES } = await import("../../tools/shots/shoot.mjs");
   const { parseLayout } = await import("../../tools/render/window.mjs");

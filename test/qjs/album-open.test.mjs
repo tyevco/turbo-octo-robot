@@ -3,7 +3,10 @@
 // renderer only for the rows in view, during layout, on the render budget. The
 // harness used to render up to 500 rows there, so this state could not be
 // checked against the budget; it now renders the visible range, and this test
-// holds render and layout under 50 ms with 7300 Album helpers.
+// holds render and layout under 50 ms with 7300 Album helpers. Every run's
+// teardown is judged (r4-17): as the engine runs it frees cleanly or fails with
+// exactly the JS_FreeRuntime leak check, and a replay with the collector held
+// back must free cleanly (DESIGN R13).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
@@ -53,6 +56,33 @@ function find(tree, id) {
   return null;
 }
 
+// Teardown (DESIGN R13, review r4-17). This wasm build's JS_FreeRuntime leak
+// check fires for a leaked VM handle AND for an engine fault that depends
+// only on when the collector runs; the message cannot tell them apart. So, as
+// in creaseworks.test.mjs: a run as the engine runs must free cleanly or fail
+// with exactly that leak check (anything else fails), and the same run again
+// with the collector held back (gcHeadroom, which changes only WHEN garbage is
+// collected) must free cleanly, which a leaked handle cannot.
+
+/** Held back for the replay: well above what these runs allocate. */
+const HEADROOM = 96 * 1024 * 1024;
+
+/** Teardown as the engine runs: clean, or this wasm build's leak check and nothing else. */
+function teardownFault({ leak, RuntimeFreeError }, what) {
+  if (leak === null) return "freed cleanly";
+  // (each run imports its own copy of the harness, so its own RuntimeFreeError class)
+  assert.ok(leak instanceof RuntimeFreeError, `${what}: dispose failed in another way: ${leak?.stack ?? leak}`);
+  assert.equal(leak.gcObjList, true, `${what}: not the JS_FreeRuntime leak check: ${leak.message}`);
+  return "JS_FreeRuntime leak check (engine collector timing; the held-back replay decides)";
+}
+
+/** Teardown with the collector held back: must free cleanly (a leaked handle fails here). */
+function strictTeardown({ leak, headroom }, what) {
+  assert.equal(headroom.length, 1, `${what}: one VM booted with the headroom`);
+  assert.ok(headroom[0].peak >= HEADROOM, `${what}: the headroom was reached`);
+  if (leak) throw leak;
+}
+
 function roster(n) {
   const agents = [];
   const terminals = [];
@@ -64,11 +94,14 @@ function roster(n) {
   return { agents, terminals };
 }
 
-test("the Album opened on a year-size save renders and lays out within the 50 ms render budget", { timeout: 180000 }, async () => {
-  const { text, clock, n } = await yearSave();
-  assert.equal(n, DAYS * PER_DAY);
+/**
+ * Opens the Album on the year save in a fresh wasm instance and checks render
+ * and layout against the budgets. Returns the dispose error, if any (never
+ * swallowed: the callers judge it, see teardownFault).
+ */
+async function albumYear({ text, clock, n }, tag, gcHeadroom = 0) {
   // A fresh wasm instance: the outcome does not depend on what other files left in the shared heap.
-  const { createHost, BUDGETS } = await import("../../tools/qjs/harness.mjs?album-open");
+  const { createHost, BUDGETS, RuntimeFreeError } = await import(`../../tools/qjs/harness.mjs?${tag}`);
   const host = await createHost({
     modRoot: MOD,
     scenario: {
@@ -81,7 +114,9 @@ test("the Album opened on a year-size save renders and lays out within the 50 ms
       now: clock + 1000,
       files: { [SAVE]: text },
     },
+    gcHeadroom,
   });
+  let leak = null;
   try {
     await host.load();
     host.advance(0);
@@ -112,13 +147,28 @@ test("the Album opened on a year-size save renders and lays out within the 50 ms
     }
     assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
   } finally {
+    // A failure above propagates as it is; only a clean run reports its teardown.
     try {
       host.dispose();
-    } catch {
-      // DESIGN R13 open risk: this wasm build can fail JS_FreeRuntime after a
-      // large save; creaseworks.test.mjs reports it. Not this test's subject.
+    } catch (e) {
+      leak = e;
     }
   }
+  return { leak, RuntimeFreeError, headroom: host.headroom };
+}
+
+let year = null;
+
+test("the Album opened on a year-size save renders and lays out within the 50 ms render budget", { timeout: 180000 }, async () => {
+  year = await yearSave();
+  assert.equal(year.n, DAYS * PER_DAY);
+  const r = await albumYear(year, "album-open");
+  console.log(`# album-open year teardown as the engine runs: ${teardownFault(r, "Album year")}`);
+});
+
+test("the Album year run frees the QuickJS runtime cleanly with the engine's collector held back (R13, r4-17)", { timeout: 180000 }, async () => {
+  const r = await albumYear(year ?? (await yearSave()), "album-open-q", HEADROOM);
+  strictTeardown(r, "Album year");
 });
 
 // ---------------------------------------------------------------------------
@@ -167,8 +217,8 @@ function liveRoster(n, off) {
 }
 
 /** Opens the Album on `text` with 64 live agents, then swaps one agent per tick; returns the timings. */
-async function albumRoster(text, clock, tag) {
-  const { createHost, BUDGETS } = await import(`../../tools/qjs/harness.mjs?${tag}`);
+async function albumRoster(text, clock, tag, gcHeadroom = 0) {
+  const { createHost, BUDGETS, RuntimeFreeError } = await import(`../../tools/qjs/harness.mjs?${tag}`);
   const host = await createHost({
     modRoot: MOD,
     scenario: {
@@ -176,7 +226,10 @@ async function albumRoster(text, clock, tag) {
       window: { visible: true, active: true, platform: "linux" }, theme: "graphite",
       ...liveRoster(64, 0), now: clock + 1000, files: { [SAVE]: text },
     },
+    gcHeadroom,
   });
+  let leak = null;
+  let out;
   try {
     await host.load();
     for (let i = 0; i < 20; i++) host.advance(500); // the stepped load, then the first observations
@@ -199,18 +252,23 @@ async function albumRoster(text, clock, tag) {
       assert.ok(out.ms < BUDGETS.render && out.layoutMs < BUDGETS.layout, `render ${out.ms.toFixed(1)} / layout ${out.layoutMs.toFixed(1)} ms`);
     }
     assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
-    return { click: click.ms, open: Math.max(...opened.stepMs), steps, rows: list.args[1] };
+    out = { click: click.ms, open: Math.max(...opened.stepMs), steps, rows: list.args[1] };
   } finally {
+    // never swallowed (r4-17): returned for teardownFault / strictTeardown
     try {
       host.dispose();
-    } catch {
-      // DESIGN R13 open risk (see the first test)
+    } catch (e) {
+      leak = e;
     }
   }
+  return { ...out, leak, RuntimeFreeError, headroom: host.headroom };
 }
 
 // Well under the 500 ms budget, so a return of the old full rebuild (≈ 430+ ms at this size) fails here.
 const ROSTER_MS = 300;
+
+let roster1000 = null;
+let rosterLegacy = null;
 
 test("r3-02: about 1000 days (20,000 Album helpers): opening the Album and agents coming and going with it open stay in budget", { timeout: 300000 }, async () => {
   const { engine, s, n } = await churned(1000, 20);
@@ -220,16 +278,18 @@ test("r3-02: about 1000 days (20,000 Album helpers): opening the Album and agent
   const recs = Object.values(s.helpers).filter((h) => h.gone && h.kind === "pane");
   assert.equal(recs.reduce((a, h) => a + (h.archive > 0 ? h.archive : 1), 0), n);
   assert.ok(recs.length <= K.albumCompactKeep + K.albumArchiveBatch + K.albumKeep + 64, `${recs.length} Album records`);
-  const r = await albumRoster(engine.serialize(s), s.clock, "album-roster-1000");
+  roster1000 = { text: engine.serialize(s), clock: s.clock };
+  const r = await albumRoster(roster1000.text, roster1000.clock, "album-roster-1000");
   console.log(`# r3-02 1000 days: click ${r.click.toFixed(0)} ms, open step ${r.open.toFixed(0)} ms, roster-change steps ${r.steps.map((x) => x.toFixed(0)).join(",")} ms, ${r.rows} rows`);
+  console.log(`# r3-02 1000 days teardown as the engine runs: ${teardownFault(r, "Album 1000 days")}`);
   assert.ok(r.rows >= recs.length, `${r.rows} rows`);
   assert.ok(r.click + r.open < ROSTER_MS * 2, `open: click ${r.click.toFixed(0)} + step ${r.open.toFixed(0)} ms`);
   for (const ms of r.steps) assert.ok(ms < ROSTER_MS, `roster change with the Album open: ${ms.toFixed(0)} ms`);
 });
 
-test("r3-02/r3-04: a save from before archiving with 25,000 compact Album records archives on load and stays in budget with the Album open", { timeout: 300000 }, async () => {
+/** The legacy save: 400 days of play with its archives unpacked again, and the record count. */
+async function legacySave() {
   const { engine, s } = await churned(400, 20);
-  const K = engine.CONTENT.K;
   // An older build's save: every archive entry written back out as the compact
   // records it stands for (fresh hex ids), so 25,000 gone pane records in all (near 1 MiB).
   const hs = s.helpers;
@@ -254,12 +314,37 @@ test("r3-02/r3-04: a save from before archiving with 25,000 compact Album record
   assert.equal(before, 25000);
   const text = engine.serialize(s);
   assert.ok(text.length < 1024 * 1024, `${(text.length / 1024).toFixed(0)} KiB`);
+  return { engine, s, text, before };
+}
+
+test("r3-02/r3-04: a save from before archiving with 25,000 compact Album records archives on load and stays in budget with the Album open", { timeout: 300000 }, async () => {
+  const { engine, s, text, before } = await legacySave();
+  const K = engine.CONTENT.K;
+  rosterLegacy = { text, clock: s.clock };
   const r = await albumRoster(text, s.clock, "album-roster-legacy");
   console.log(`# r3-02 legacy 25,000: click ${r.click.toFixed(0)} ms, open step ${r.open.toFixed(0)} ms, roster-change steps ${r.steps.map((x) => x.toFixed(0)).join(",")} ms, ${r.rows} rows`);
+  console.log(`# r3-02 legacy 25,000 teardown as the engine runs: ${teardownFault(r, "Album legacy 25,000")}`);
   assert.ok(r.rows < before, `archived on load: ${r.rows} rows for ${before} records`);
   assert.ok(r.rows <= K.albumCompactKeep + K.albumKeep + 200, `${r.rows} rows`);
   for (const ms of r.steps) assert.ok(ms < ROSTER_MS, `roster change with the Album open: ${ms.toFixed(0)} ms`);
 });
+
+// The same two Album roster runs with the collector held back: they must free
+// the runtime cleanly (r4-17: a leaked handle on the Album path fails here).
+const rebuild1000 = async () => {
+  const { engine, s } = await churned(1000, 20);
+  return { text: engine.serialize(s), clock: s.clock };
+};
+const rebuildLegacy = async () => {
+  const { text, s } = await legacySave();
+  return { text, clock: s.clock };
+};
+for (const [what, tag, saved, rebuild] of [["1000-day", "album-roster-1000q", () => roster1000, rebuild1000], ["legacy 25,000", "album-roster-legacyq", () => rosterLegacy, rebuildLegacy]]) {
+  test(`the Album roster run (${what}) frees the QuickJS runtime cleanly with the engine's collector held back (R13, r4-17)`, { timeout: 300000 }, async () => {
+    const save = saved() ?? (await rebuild());
+    strictTeardown(await albumRoster(save.text, save.clock, tag, HEADROOM), `Album roster ${what}`);
+  });
+}
 
 /** A compact Album record as unpackAlbum makes it (an older build's packed entry). */
 function unpackedLike(engine, id, missingSince) {

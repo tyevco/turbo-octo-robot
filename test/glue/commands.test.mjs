@@ -28,6 +28,7 @@ afterEach(() => w && w.dispose());
 
 const byAddr = (slot, addr) => Object.values(slot.state.helpers).find((h) => h.addr === addr);
 const runsOf = (ctl, name) => ctl.runs.filter((r) => r.name === name);
+const layoutNode = (n, id) => (n.id === id ? n : (n.children ?? []).map((c) => layoutNode(c, id)).find(Boolean) ?? null);
 
 const LAYOUT = (over = {}) => ({
   id: "root", type: "row", children: [
@@ -35,9 +36,9 @@ const LAYOUT = (over = {}) => ({
       { id: "work-body", type: "row", children: [
         { id: "main", type: "block" },
         { id: "panel", type: "column", hidden: over.files !== true, size: { px: 368 } },
-        { id: "cw-panel", type: "block", size: over.panelSize ?? { weight: 0.39 }, hidden: over.panelHidden === true },
+        { id: "cw-panel", type: "block", content: { mod: "creaseworks", props: { role: "panel" } }, size: over.panelSize ?? { weight: 0.39 }, hidden: over.panelHidden === true },
       ] },
-      { id: "cw-ribbon", type: "block", size: { px: 30 }, hidden: over.ribbonHidden === true },
+      { id: "cw-ribbon", type: "block", content: { mod: "creaseworks", props: { role: "ribbon" } }, size: { px: 30 }, hidden: over.ribbonHidden === true },
     ] },
   ],
 });
@@ -128,8 +129,7 @@ test("group keys pick the longest waiting and cycle on repeat; answer with nobod
   w.ctl.setTerminals([term(3, "idle", { turn: 1 })]);
   await w.advance(1000);
   const runs = w.ctl.runs.length;
-  w.ctl.sendCommand("answer");
-  w.ctl.sendCommand("answer");
+  assert.equal(w.ctl.sendCommand("answer"), 2, "both shown copies get it");
   await w.flush();
   assert.equal(w.ctl.runs.length, runs);
   assert.equal(w.slot.flash.text, "Nobody needs you");
@@ -137,17 +137,17 @@ test("group keys pick the longest waiting and cycle on repeat; answer with nobod
 });
 
 test("each command acts once: the ribbon handles it; the panel only while the ribbon is hidden", async () => {
-  const { ribbon } = await game();
-  // herdr delivers a command to every shown copy: once to each.
-  w.ctl.sendCommand("answer");
-  w.ctl.sendCommand("answer");
+  const { panel, ribbon } = await game();
+  // herdr delivers a command to every shown copy, each into its own channel
+  // (src/mods.rs:785-799): one key press, both copies, one action.
+  assert.equal(w.ctl.sendCommand("answer"), 2, "into the panel's and the ribbon's channels");
+  assert.deepEqual([w.ctl.pendingCommands(panel), w.ctl.pendingCommands(ribbon)], [["answer"], ["answer"]]);
   await w.flush();
   assert.equal(runsOf(w.ctl, "pane.focus").length, 1);
-  // Ribbon hidden (layout.set): herdr delivers to shown copies only, so only
-  // the panel copy gets it (the mock has one queue: stop the ribbon's loop).
-  w.ctl.layoutValue = LAYOUT({ ribbonHidden: true });
-  w.ctl.closeOwner(ribbon);
-  w.ctl.sendCommand("answer");
+  // Ribbon hidden: herdr delivers to shown copies only, so only the panel
+  // copy gets it (the ribbon copy is still loaded, but not on screen).
+  assert.deepEqual(w.ctl.runAsPerson("layout.hide", { id: "cw-ribbon" }), { ok: true });
+  assert.equal(w.ctl.sendCommand("answer"), 1, "the panel copy alone");
   await w.flush();
   assert.equal(runsOf(w.ctl, "pane.focus").length, 2);
   w.ctl.sendCommand("answer");
@@ -176,15 +176,16 @@ test("fold: layout.resize to the rail weight and back to the last weight (never 
   await w.handler(panel, "click", "sheet", null, null); // nothing to do with folding
   w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 262, height: 784 }, cx));
   w.ctl.sendCommand("fold");
-  w.ctl.sendCommand("fold");
   await w.flush();
   assert.deepEqual(runsOf(w.ctl, "layout.resize").map((r) => r.args), [{ id: "cw-panel", weight: RAIL_WEIGHT }]);
-  w.ctl.layoutValue = LAYOUT({ panelSize: { weight: RAIL_WEIGHT } });
+  // The window applied it (f32, as herdr stores a weight).
+  assert.deepEqual(layoutNode(w.ctl.layoutValue, "cw-panel").size, { weight: Math.fround(RAIL_WEIGHT) });
   await w.advance(1000);
   w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 64, height: 784 }, cx));
   await w.handler(ribbon, "fold");
   assert.deepEqual(runsOf(w.ctl, "layout.resize").at(-1).args, { id: "cw-panel", weight: 0.3 }, "the last unfolded weight");
-  w.ctl.layoutValue = LAYOUT({ panelHidden: true, panelSize: { weight: RAIL_WEIGHT } });
+  // The player hides the panel (a key or the palette).
+  assert.deepEqual(w.ctl.runAsPerson("layout.hide", { id: "cw-panel" }), { ok: true });
   await w.advance(1000);
   await w.handler(ribbon, "fold");
   assert.deepEqual(w.ctl.runs.slice(-2).map((r) => [r.name, r.args]), [["layout.show", { id: "cw-panel" }], ["layout.resize", { id: "cw-panel", weight: 0.3 }]]);
@@ -202,16 +203,14 @@ test("unfold with nothing remembered: the layout's own weight, even from a px-si
 
 test("the panel a fold/unfold leaves stays on screen, Files open, zoom 1 and 1.5 (herdr's geometry)", async () => {
   // The real layout with Files open (r1-32): the copies fold, unfold, hide and show
-  // it; every layout.* they run is applied the way herdr's window applies it, then
-  // laid out with herdr's shares() at 1100 x 700 and 1440 x 900, zoom 1 and 1.5.
-  const tree = JSON.parse(JSON.stringify(SHIPPED));
+  // it; the mock window applies every layout.* they run the way herdr's window
+  // does (tools/mock/commands.js applyLayoutCommand), then it is laid out with
+  // herdr's shares() at 1100 x 700 and 1440 x 900, zoom 1 and 1.5.
+  let tree = JSON.parse(JSON.stringify(SHIPPED));
   applyLayoutCommand(tree, "layout.show", { id: "panel" });
   const { panel, ribbon } = await game({ layout: tree });
-  let applied = 0;
   const sync = async (width) => {
-    for (const r of w.ctl.runs.slice(applied)) if (r.name.startsWith("layout.")) assert.equal(applyLayoutCommand(tree, r.name, r.args), null, r.name);
-    applied = w.ctl.runs.length;
-    w.ctl.layoutValue = JSON.parse(JSON.stringify(tree));
+    tree = w.ctl.layoutValue;
     await w.advance(1000);
     const b = layoutBoxes(tree, { width: 1100, height: 700 });
     if (!b["cw-panel"]) return; // hidden: its copy is not measured
@@ -236,7 +235,7 @@ test("the panel a fold/unfold leaves stays on screen, Files open, zoom 1 and 1.5
   await w.handler(ribbon, "fold");
   await sync();
   check("unfolded");
-  applyLayoutCommand(tree, "layout.hide", { id: "cw-panel" });
+  assert.deepEqual(w.ctl.runAsPerson("layout.hide", { id: "cw-panel" }), { ok: true }, "the player hides it");
   await sync();
   await w.handler(ribbon, "fold");
   await sync();
@@ -250,13 +249,19 @@ test("the panel a fold/unfold leaves stays on screen, Files open, zoom 1 and 1.5
 test("dragging the rail open keeps weights (drag_to); the dragged width is remembered and stays on screen", async () => {
   // herdr's drag_to keeps a {px} side as px, so a px rail dragged open would never
   // shrink again. The rail is a weight: the drag stores two weights.
-  const tree = JSON.parse(JSON.stringify(SHIPPED));
+  // The mock window applies the copies' layout.* runs; the player's edits (a
+  // drag, a reset) are made to a copy of its tree and handed back to it.
+  let tree = JSON.parse(JSON.stringify(SHIPPED));
   const { panel, ribbon } = await game({ layout: tree });
-  let applied = 0;
+  const edit = (fn) => {
+    tree = JSON.parse(JSON.stringify(w.ctl.layoutValue));
+    const out = fn(tree);
+    w.ctl.layoutValue = tree;
+    return out;
+  };
+  const node = (id) => tree.children[1].children[1].children.find((n) => n.id === id);
   const sync = async () => {
-    for (const r of w.ctl.runs.slice(applied)) if (r.name.startsWith("layout.")) assert.equal(applyLayoutCommand(tree, r.name, r.args), null, r.name);
-    applied = w.ctl.runs.length;
-    w.ctl.layoutValue = JSON.parse(JSON.stringify(tree));
+    tree = w.ctl.layoutValue;
     await w.advance(1000);
     const b = layoutBoxes(tree, { width: 1440, height: 900 });
     w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: Math.round(b["cw-panel"].inner.width), height: 784 }, cx));
@@ -269,12 +274,12 @@ test("dragging the rail open keeps weights (drag_to); the dragged width is remem
   assert.equal(Math.round(b["cw-panel"].width), 64, "folded: the rail");
   // The player drags the divider between main and the rail 236 px to the left.
   const drag = { la: b.main.width, lb: b["cw-panel"].width, start: b.main.x, p: b.main.x + b.main.width - 236 };
-  assert.equal(applyDrag(tree, "work-body", 0, drag), null);
-  const cw = tree.children[1].children[1].children.find((n) => n.id === "cw-panel");
+  assert.equal(edit((t) => applyDrag(t, "work-body", 0, drag)), null);
+  const cw = node("cw-panel");
   assert.equal(typeof cw.size.weight, "number", `still a weight: ${JSON.stringify(cw.size)}`);
   b = await sync();
   assert.ok(Math.abs(b["cw-panel"].width - 300) < 1, `dragged to ${b["cw-panel"].width}`);
-  const main = tree.children[1].children[1].children.find((n) => n.id === "main");
+  const main = node("main");
   const share = Math.round((cw.size.weight / main.size.weight) * 1000) / 1000;
   assert.equal(w.slot.widths.lastWeight, share, "remembered as a share of main's weight");
   // Fold and unfold: back to the dragged width.
@@ -284,14 +289,14 @@ test("dragging the rail open keeps weights (drag_to); the dragged width is remem
   b = await sync();
   assert.ok(Math.abs(b["cw-panel"].width - 300) < 2, `unfolded to ${b["cw-panel"].width}`);
   // The dragged panel still gives way: a narrow window or zoom 1.5 with Files open keeps it on screen.
-  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  const files = JSON.parse(JSON.stringify(tree));
+  assert.equal(applyLayoutCommand(files, "layout.show", { id: "panel" }), null);
   for (const [width, height, zoom] of [[1100, 700, 1], [1100, 700, 1.5]]) {
-    const z = layoutBoxes(tree, { width, height, zoom })["cw-panel"];
+    const z = layoutBoxes(files, { width, height, zoom })["cw-panel"];
     assert.ok(Math.abs(z.visible.width - z.width) < 0.5 && z.width >= 64 * zoom - 0.01, `${width} zoom ${zoom}: ${z.visible.width} of ${z.width}`);
   }
   // A layout reset puts main back to weight 1: the share keeps the dragged proportion.
-  delete main.size;
-  applyLayoutCommand(tree, "layout.hide", { id: "panel" });
+  edit(() => delete node("main").size);
   await w.handler(ribbon, "fold");
   await sync();
   await w.handler(ribbon, "fold");
@@ -312,8 +317,7 @@ test("envelope command opens the oldest envelope", async () => {
   const env = w.slot.state.envelopes;
   assert.equal(Object.keys(env).length, 2);
   const oldest = Object.keys(env).sort((a, b) => env[a].landedAt - env[b].landedAt)[0];
-  w.ctl.sendCommand("envelope");
-  w.ctl.sendCommand("envelope");
+  assert.equal(w.ctl.sendCommand("envelope"), 2, "both shown copies get it");
   await w.flush();
   assert.equal(Object.keys(w.slot.state.envelopes).length, 1, "opened once");
   assert.equal(oldest in w.slot.state.envelopes, false);
@@ -723,7 +727,7 @@ test("r3-06: clicking a notification unfolds a folded panel; with the ribbon and
   // The toast's click (defaults/mods/toast/main.js: run(action.name, action.args)).
   const before = runsOf(w.ctl, "layout.resize").length;
   w.ctl.hostCall("run", [n.action.name, n.action.args]);
-  w.ctl.commandQueue.push("show"); // herdr delivers it to every shown copy: the mock's queue once per copy (as above)
+  assert.deepEqual([w.ctl.pendingCommands(panel), w.ctl.pendingCommands(ribbon)], [["show"], ["show"]], "herdr delivers it to every shown copy");
   await w.flush();
   const resizes = runsOf(w.ctl, "layout.resize").slice(before);
   assert.deepEqual(resizes.map((r) => r.args), [{ id: "cw-panel", weight: 0.3 }], "unfolded to the remembered weight, once (one copy acts)");

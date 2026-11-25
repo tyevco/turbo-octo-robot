@@ -113,10 +113,17 @@ const slot = () => getSlot();
 const state = () => getSlot().state;
 const act = (view, action) => S(view).dispatch(action, undefined);
 
-/** Load, first tick (observe + first save), size the copy, and a few Sheet hits so the first-run hint is gone. */
+/**
+ * Load, first tick (observe + first save), size the copy, and a few Sheet hits
+ * so the first-run hint is gone. The size goes in as the shell reports it, in
+ * zoomed px (the rig's `tools.zoom`), so the copy is `size` logical px wide at
+ * every zoom for the whole of setup (r4-16: at 1.5 it was 2/3 of that until the
+ * rig resized it afterwards).
+ */
 async function begin(view, tools, size, hits = 3) {
   await tools.flush();
-  if (size) S(view).onSize(size, undefined);
+  const zoom = typeof tools.zoom === "number" && tools.zoom > 0 ? tools.zoom : 1;
+  if (size) S(view).onSize({ width: size.width * zoom, height: size.height * zoom }, undefined);
   await tools.advance(1000);
   await sheetHits(view, tools, hits);
 }

@@ -9,14 +9,16 @@
 // only titles coalesce in the unconfirmed log; every one that moves a turn
 // counter stays (the engine pays one finish per observation).
 //
-// Run with: npm run test:qjs (about 30 s).
+// Every teardown is judged (r4-17, DESIGN R13): see backlog() below.
+//
+// Run with: npm run test:qjs (about 60 s: the run again with the collector held back).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createHost } from "../../tools/qjs/harness.mjs";
+import { createHost, RuntimeFreeError } from "../../tools/qjs/harness.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MOD = join(repo, "mods", "creaseworks");
@@ -37,11 +39,22 @@ function roster(n, turn = 0, tag = 0) {
   return { agents, terminals };
 }
 
-test("a 15-minute backlog of failed saves merges within the 500 ms task budget", { timeout: 600000 }, async () => {
+// Teardown (DESIGN R13, review r4-17): this wasm build's JS_FreeRuntime leak
+// check fires both for a leaked VM handle and for an engine fault that depends
+// only on when the collector runs. The run as the engine runs must free
+// cleanly or fail with exactly that check (nothing else); the same run with
+// the collector held back (gcHeadroom: only WHEN garbage is collected
+// changes) must free cleanly, which a leaked handle cannot.
+const HEADROOM = 96 * 1024 * 1024;
+
+/** The outage, the backlog and the merge; returns the dispose error (null when freed cleanly). */
+async function backlog(gcHeadroom = 0) {
   const host = await createHost({
     modRoot: MOD,
     scenario: { appHome: HOME, home: "/home/player", props: { role: "panel" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite", ...roster(30) },
+    gcHeadroom,
   });
+  let leak = null;
   try {
     await host.load();
     host.advance(0);
@@ -108,12 +121,27 @@ test("a 15-minute backlog of failed saves merges within the 500 ms task budget",
     assert.equal(host.evalInVm(`JSON.stringify({ tasks: ${SLOT}.state.stats.tasks, units: ${SLOT}.state.stats.units })`), live, "and in memory: no rollback");
     assert.ok(maxPending <= 4500 + 2 * turn + 25, `bounded log (${maxPending})`);
   } finally {
+    // Never swallowed (r4-17): a failure above propagates as it is; a clean run returns its teardown.
     try {
       host.dispose();
     } catch (e) {
-      // The wasm runtime sometimes cannot free a heap this size (a harness limit, not the mod's;
-      // the same JS_FreeRuntime TODO as test/qjs/harness.test.mjs and store-merge.test.mjs).
-      if (!/could not be freed cleanly/.test(String(e && e.message))) throw e;
+      leak = e;
     }
   }
+  return { leak, headroom: host.headroom };
+}
+
+test("a 15-minute backlog of failed saves merges within the 500 ms task budget", { timeout: 600000 }, async () => {
+  const { leak } = await backlog();
+  if (leak === null) return console.log("# backlog teardown as the engine runs: freed cleanly");
+  assert.ok(leak instanceof RuntimeFreeError, `dispose failed in another way: ${leak?.stack ?? leak}`);
+  assert.equal(leak.gcObjList, true, `not the JS_FreeRuntime leak check: ${leak.message}`);
+  console.log("# backlog teardown as the engine runs: JS_FreeRuntime leak check (engine collector timing; the held-back replay decides)");
+});
+
+test("the backlog run frees the QuickJS runtime cleanly with the engine's collector held back (R13, r4-17)", { timeout: 600000 }, async () => {
+  const { leak, headroom } = await backlog(HEADROOM);
+  assert.equal(headroom.length, 1, "one VM booted with the headroom");
+  assert.ok(headroom[0].peak >= HEADROOM, "the headroom was reached");
+  if (leak) throw leak;
 });

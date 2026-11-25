@@ -53,7 +53,7 @@ const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creasework
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
 const { renderAway, awayLines, AWAY_CLOSE } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
-const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, CHIP_GLYPH, ENV_MARKER, HINT_FOLD } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, fitLevelC, CHIP_GLYPH, ENV_MARKER, HINT_FOLD } = await import("../../mods/creaseworks/ui/ribbon.js");
 const { statusColor, statusDisc, contrast } = await import("../../mods/creaseworks/ui/color.js");
 const { spritePath } = await import("../../mods/creaseworks/ui/art.js");
 
@@ -235,6 +235,35 @@ test("mat chips pulse only when the vm says so; calm drops crane glide, storm an
   const withPops = ids(renderMat(crane.vm, ui, makeCtx("graphite", crane)).toJSON());
   assert.ok(withPops.includes("cw-pop-p1"));
   assert.ok(!ids(renderMat(crane.vm, ui, makeCtx("graphite", crane, { calm: true })).toJSON()).includes("cw-pop-p1"));
+});
+
+test("calm mode: no transition over 150 ms in any copy; running boost countdowns snap (r4-13, DESIGN §11.1 item 4)", () => {
+  for (const s of SCENARIOS) {
+    for (const th of THEME_NAMES) {
+      walk(renderScenario(s, makeCtx(th, s, { calm: true })).toJSON(), (n) => {
+        for (const t of n.transitions || []) assert.ok(t.duration <= 150, `${s.name} ${th} ${n.id}: ${t.property} ${t.duration} ms in calm`);
+      });
+    }
+  }
+  const s = F.scenario("storm");
+  assert.ok(s.vm.boosts.length > 0, "storm runs a boost");
+  const bars = (vm, ctx) => {
+    const out = [];
+    walk(renderPanel(vm, s.ui, ctx).toJSON(), (n) => {
+      if (/^cw-boostbar-.*-bar-fill$/.test(n.id)) out.push(n);
+    });
+    return out;
+  };
+  const moving = bars(s.vm, makeCtx("graphite", s));
+  assert.equal(moving.length, s.vm.boosts.length);
+  for (const n of moving) assert.equal(n.transitions[0].duration, 1000, "outside calm the bar eases over one tick");
+  // Calm from ctx, and calm from the vm's settings alone, both snap.
+  const calmVm = { ...s.vm, settings: { ...s.vm.settings, calm: true } };
+  for (const [vm, ctx] of [[s.vm, makeCtx("graphite", s, { calm: true })], [calmVm, makeCtx("graphite", s)]]) {
+    const snapped = bars(vm, ctx);
+    assert.equal(snapped.length, s.vm.boosts.length);
+    for (const n of snapped) assert.deepEqual(n.transitions, [], `${n.id} snaps in calm`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -497,7 +526,90 @@ test("ribbon: a lead chip (narrow hint, save chip, welcome pill) is subtracted b
   const big = F.scenario("ribbon-130", { window: 1100 });
   const bl = ribbonLayout(big.vm, makeCtx("graphite", big, { narrowHint: true }), big.width);
   assert.equal(bl.level, "C");
-  assert.deepEqual(bl.tallies, big.vm.ribbon.tallies);
+  const key = (ts) => ts.map((t) => [t.status, t.count, t.label]);
+  assert.deepEqual(key(bl.tallies), key(big.vm.ribbon.tallies));
+});
+
+test("r4-07: level C never loses a helper: finished past the edge fold into '+N', then needs-you; tallies always drawn", () => {
+  const leads = [{}, { narrowHint: true }, { save: "Save problem" }, { narrowHint: true, save: "Save problem", pill: "Welcome back +12.4M" }];
+  for (const name of Object.keys(F.RIBBON_STRESS)) {
+    const n = Object.values(F.RIBBON_STRESS[name]).reduce((a, v) => a + (typeof v === "number" && v >= 1 ? v : 0), 0);
+    for (const window of [1100, 1440]) {
+      const s = F.scenario(name, { window });
+      for (const l of leads) {
+        for (const th of THEME_NAMES) {
+          const vm = { ...s.vm, ribbon: { ...s.vm.ribbon, save: l.save ?? null, pill: l.pill ?? null } };
+          const ctx = makeCtx(th, s, { narrowHint: Boolean(l.narrowHint), panelShown: false });
+          const ly = ribbonLayout(vm, ctx, s.width);
+          const tag = `${name}@${window} ${JSON.stringify(l)} ${th}`;
+          assert.ok(ly.lead + ly.need <= ly.w, `${tag}: ${ly.lead} + ${ly.need} > ${ly.w}`);
+          const json = renderRibbon(vm, s.ui, ctx).toJSON();
+          const shown = ids(json).filter((id) => id.startsWith("cw-rib-m-"));
+          assert.equal(shown.length, ly.marks.length, `${tag}: every planned mark drawn`);
+          assert.equal(shown.length + ly.tallies.reduce((a, t) => a + t.count, 0), n, `${tag}: every helper is a mark or counted`);
+          for (const t of ly.tallies) {
+            assert.ok(ids(json).includes(`cw-rib-tally-${t.status}`), `${tag}: tally ${t.status} drawn`);
+            assert.ok(t.count > 0, `${tag}: no empty tally`);
+          }
+          // Needs-you outrank finished: a needs tally means no finished pip is left.
+          const statuses = new Set(ly.marks.map((m) => m.status));
+          if (ly.tallies.some((t) => t.status === "blocked")) assert.ok(!statuses.has("done"), `${tag}: finished fold first`);
+          if (ly.level === "C") assert.ok(ly.marks.every((m) => m.status === "blocked" || m.status === "done"), tag);
+          // A "+N" tally only when some of that status still has its own pip.
+          for (const t of ly.tallies) {
+            if (t.status !== "blocked" && t.status !== "done") continue;
+            assert.equal(String(t.label).startsWith("+"), statuses.has(t.status), `${tag}: ${t.status} label ${t.label}`);
+          }
+        }
+      }
+    }
+  }
+  // The finding's case: 130 helpers, 100 finished or waiting, the 1100 window (W 832), panel shown.
+  const s = F.scenario("ribbon-130-done", { window: 1100 });
+  const ly = ribbonLayout(s.vm, makeCtx("graphite", s), s.width);
+  assert.equal(ly.level, "C");
+  assert.equal(ly.marks.filter((m) => m.status === "blocked").length, 10, "every needs-you helper keeps its own pip");
+  assert.ok(ly.need <= ly.avail && ly.avail - ly.need < 2 * 14 + 40, `the pips fill the middle (${ly.need} of ${ly.avail})`);
+  assert.deepEqual(ly.tallies.map((t) => t.status), ["done", "working", "idle"]);
+  assert.match(ly.tallies[0].label, /^\+\d+$/);
+  assert.match(ly.tallies[0].tooltip, /finished/);
+  // Needs-you alone overflowing: the ones past the edge become '+N' (ringed like a needs-you mark), opening Needs you.
+  const nd = F.scenario("ribbon-130-needs", { window: 1100 });
+  const ctx = makeCtx("graphite", nd);
+  const nl = ribbonLayout(nd.vm, ctx, nd.width);
+  const more = nl.tallies.find((t) => t.status === "blocked");
+  assert.ok(more && more.label.startsWith("+") && nl.marks.length > 0, JSON.stringify(nl.tallies));
+  assert.equal(nl.marks.length + more.count, 110);
+  const tree = renderRibbon(nd.vm, nd.ui, ctx);
+  const pill = findNode(tree.toJSON(), "cw-rib-tally-blocked-pill");
+  assert.equal(styleOf(pill, "border_color"), statusColor(ctx.T, "blocked", "chrome"));
+  assert.ok((pill.styles || []).some((x) => x[0] === "border_dashed"));
+  fire(tree, "cw-rib-tally-blocked", "on_click", {}, fakeCx());
+  assert.deepEqual(ctx.calls, [["showGroup", "needs"]]);
+});
+
+test("r4-07: the engine's level C and the ribbon's fit agree (no lead), at every width and mix", async () => {
+  const { engine, seeded, writer, agent, observeAction, T0 } = await import("../engine/_util.mjs");
+  const mixes = [[10, 90, 20, 10], [120, 4, 4, 2], [3, 60, 100, 37], [0, 140, 0, 0], [7, 5, 64, 54]];
+  for (const [nb, nd, nw, ni] of mixes) {
+    const st = (i) => (i < nb ? "blocked" : i < nb + nd ? "done" : i < nb + nd + nw ? "working" : "idle");
+    const n = nb + nd + nw + ni;
+    const s = seeded(4);
+    writer(s, "wA").act(observeAction(T0, Array.from({ length: n }, (_, i) => agent(i, st(i)))));
+    for (const W of [700, 832, 1172, 1652]) {
+      const vm = engine.view(s, T0 + 1000, { role: "ribbon", width: W, writer: "wA" });
+      const ly = ribbonLayout(vm, makeCtx("graphite", { width: W, height: 30 }), W);
+      const tag = `${[nb, nd, nw, ni]} W ${W}`;
+      assert.ok(ly.need <= ly.avail, `${tag}: ${ly.need} > ${ly.avail}`);
+      assert.equal(vm.ribbon.marks.length + vm.ribbon.tallies.reduce((a, t) => a + t.count, 0), n, `${tag}: the view counts everyone`);
+      if (vm.ribbon.level !== "C") continue;
+      assert.deepEqual(ly.marks.map((m) => m.helperId), vm.ribbon.marks.map((m) => m.helperId), tag);
+      const key = (ts) => ts.map((t) => [t.status, t.count, t.label, t.tooltip]);
+      assert.deepEqual(key(ly.tallies), key(vm.ribbon.tallies), tag);
+      // And the layout refits the view's own fit unchanged at the same width.
+      assert.deepEqual(key(fitLevelC(vm.ribbon.marks, vm.ribbon.tallies, ly.avail).tallies), key(vm.ribbon.tallies), tag);
+    }
+  }
 });
 
 test("ribbon: the envelope marker is the envelope glyph on a sheet disc inside its chip", () => {

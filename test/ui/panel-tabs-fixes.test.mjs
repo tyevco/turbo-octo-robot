@@ -29,7 +29,7 @@ import * as F from "../fixtures/vm-fixtures.mjs";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "../engine/_util.mjs";
 import { graphemes, cellWidth } from "../../mods/creaseworks/engine/index.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
-import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, TILE_BUDGET_BAND, KID_FLAG_LEFT, tileCost, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids } from "../../mods/creaseworks/ui/flock.js";
+import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, TILE_BUDGET_BAND, KID_FLAG_LEFT, tileLayout, tileCost, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids, foldedWaiting } from "../../mods/creaseworks/ui/flock.js";
 import { statusColor, statusDisc, contrast } from "../../mods/creaseworks/ui/color.js";
 import { renderString, WISH_RISE, KEEPS, CLEARS } from "../../mods/creaseworks/ui/string.js";
 import { renderSettings } from "../../mods/creaseworks/ui/settings.js";
@@ -475,8 +475,11 @@ test("r3-16: the 64-dense Flock with 80 working tiles (and their fledgling pips)
     const k = working.tiles.length;
     working.tiles.push({ ...base[k % base.length], helperId: `v${k.toString(16).padStart(7, "0")}` });
   }
-  assert.deepEqual(keysOf(virtualGroups(vm, s.ui)), [], "the rule of §5.5 item 8: 80 in a group stay tiles");
-  const json = renderFlock(vm, s.ui, makeCtx()).toJSON();
+  // Resting folded (by the player: the fixture's resting parents have waiting
+  // fledglings, so it no longer folds by itself, r4-12).
+  const ui = { ...s.ui, folded: { resting: true } };
+  assert.deepEqual(keysOf(virtualGroups(vm, ui)), [], "the rule of §5.5 item 8: 80 in a group stay tiles");
+  const json = renderFlock(vm, ui, makeCtx()).toJSON();
   assert.ok(findById(json, "cw-flock-grid-working"));
   assert.ok(drawnCost(vm, json) <= TILE_BUDGET);
   // Unfolding resting (26 more, fledgling-heavy) is past the budget: working, the biggest, goes.
@@ -555,6 +558,94 @@ test("r3-17: a parent whose fledgling waits gets a badge-size needs-you flag tha
   const json = renderFlock(vm, {}, makeCtx()).toJSON();
   assert.equal(findById(json, `cw-flock-kidflag-${tileId(3)}`), null);
   assert.equal(findById(json, `cw-flock-kidflag-${tileId(2)}`), null);
+});
+
+test("r4-12: every waiting helper has a visible needs-you cue in the Flock tab, folded groups included", () => {
+  const s = seeded(9);
+  const me = writer(s, "wA");
+  // 13 resting (Resting would fold), 2 working, 1 waiting; one fledgling waits under resting 5, one under working 13.
+  const list = Array.from({ length: 16 }, (_, i) => agent(i, i < 13 ? "idle" : i < 15 ? "working" : "blocked"));
+  me.act(observeAction(T0, [...list, kid(40, 5, "working"), kid(41, 13, "working")]));
+  me.act(observeAction(T0 + 5000, [...list, kid(40, 5, "blocked"), kid(41, 13, "blocked")]));
+  const vm = engine.view(s, T0 + 6000, { role: "panel", width: 320, writer: "wA" });
+  assert.equal(vm.header.counts.needs, 3);
+  const cues = (json) => {
+    let n = 0;
+    walk(json, (node) => {
+      const id = typeof node.id === "string" ? node.id : "";
+      const tm = id.match(/^cw-flock-tile-(.+)$/);
+      if (tm) {
+        const t = vm.helpers.groups.flatMap((g) => g.tiles).find((x) => x.helperId === tm[1]);
+        if (t && t.status === "blocked") n++;
+      }
+      const fm = id.match(/^cw-flock-kidflag-(.+)$/);
+      if (fm) n += waitingKids(vm.helpers.groups.flatMap((g) => g.tiles).find((x) => x.helperId === fm[1])).length;
+      if (/^cw-flock-grp-.+-waiting$/.test(id)) n += Number(texts(node).find((w) => /^\d+$/.test(w)));
+    });
+    return n;
+  };
+  // Default: Resting stays open (the engine does not fold over a waiting fledgling).
+  assert.equal(vm.helpers.groups.find((g) => g.key === "resting").folded, false);
+  assert.equal(cues(renderFlock(vm, {}, makeCtx()).toJSON()), 3);
+  // Folded by the player: the header carries the cue, and its flag opens the fledgling.
+  const kidId = engine.helperId("t40", 1040);
+  for (const theme of ["graphite", "paper", "win98"]) {
+    const ctx = makeCtx(theme);
+    const tree = renderFlock(vm, { folded: { resting: true, working: true } }, ctx);
+    const json = tree.toJSON();
+    assert.equal(cues(json), 3, `${theme}: folded headers count their waiting fledglings`);
+    const flag = findById(json, "cw-flock-grp-resting-waiting");
+    assert.ok(flag, `${theme}: Resting's header flag`);
+    assert.match(styleVal(flag, "tooltip"), /fledgling in here needs you/);
+    assert.equal(styleVal(flag, "border_color"), statusColor(ctx.T, "blocked", "chrome"));
+    assert.ok(contrast(styleVal(flag, "border_color"), ctx.T.chrome) >= 3, `${theme}: the ring reads on chrome`);
+    const cx = fakeCx();
+    fire(tree, "cw-flock-grp-resting-waiting", "on_click", {}, cx);
+    assert.deepEqual(ctx.calls, [["openHelper", kidId]]);
+    assert.equal(cx.stopped, 1, "the header does not also unfold");
+  }
+  // An open group, or a folded one with nobody waiting, has no header flag.
+  assert.equal(findById(renderFlock(vm, {}, makeCtx()).toJSON(), "cw-flock-grp-resting-waiting"), null);
+  assert.equal(foldedWaiting(vm.helpers.groups.find((g) => g.key === "needs").tiles), null);
+  assert.equal(foldedWaiting([]), null);
+  const two = foldedWaiting(vm.helpers.groups.flatMap((g) => g.tiles));
+  assert.equal(two.count, 2);
+  assert.match(two.tip, /^2 fledglings in here need you/);
+});
+
+test("r4-14: the needs-you flag never covers the species figure; the name and pips step clear, dense or not", () => {
+  const { vm } = flockVm();
+  const overlap = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+  for (const dense of [false, true]) {
+    vm.helpers.dense = dense;
+    const g = dense ? TILE.dense : TILE.normal;
+    const json = renderFlock(vm, {}, makeCtx()).toJSON();
+    for (const [i, flagged] of [[1, true], [2, false], [3, false]]) {
+      const tile = findById(json, `cw-flock-tile-${tileId(i)}`);
+      const figure = tile.children[0];
+      const lay = tileLayout(g, flagged);
+      assert.equal(styleVal(figure, "top"), lay.figureTop, `dense ${dense} tile ${i}: figure top`);
+      assert.equal(styleVal(figure, "left"), lay.figureLeft, `dense ${dense} tile ${i}: figure left`);
+      if (!flagged) {
+        assert.equal(lay.figureTop, dense ? 4 : 6, "unflagged tiles keep the §3.3 layout");
+        continue;
+      }
+      const flag = findById(json, `cw-flock-kidflag-${tileId(i)}`);
+      const fx = styleVal(flag, "left");
+      const fy = styleVal(flag, "top");
+      const fBox = { x0: fx, x1: fx + styleVal(flag, "w"), y0: fy, y1: fy + styleVal(flag, "h") };
+      const gBox = { x0: lay.figureLeft, x1: lay.figureLeft + g.glyph, y0: lay.figureTop, y1: lay.figureTop + g.glyph };
+      assert.ok(!overlap(fBox, gBox), `dense ${dense}: flag ${JSON.stringify(fBox)} clear of figure ${JSON.stringify(gBox)}`);
+      const pipsTop = g.h - lay.pipsBottom - g.pip;
+      assert.ok(gBox.y1 <= pipsTop, `dense ${dense}: figure clear of the pips`);
+      assert.ok(pipsTop + g.pip <= g.h - 1 - 2, `dense ${dense}: pips clear of the rest bar (bottom 1, 2 px)`);
+      if (!dense) {
+        // The 11 px name in its 120 % line box: text clear of the figure, box above the pips.
+        assert.ok(lay.nameTop + 1.1 >= gBox.y1, "name text below the figure");
+        assert.ok(lay.nameTop + 13.2 <= pipsTop, "name above the pips");
+      }
+    }
+  }
 });
 
 test("r3-17: in a virtual list, a row whose fledgling waits is dashed, shows the count, and opens that fledgling", () => {

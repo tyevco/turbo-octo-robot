@@ -5,7 +5,8 @@
 // The data tick (cx.timer.every: 1000 ms visible, 5000 ms while
 // window()?.visible === false), per copy: heartbeat; if this copy is the
 // ticker: layout(), agents() + terminals() once (observe only on change),
-// advance(now, writerId), notifications, save cadence; every copy re-renders
+// advance(now, writerId), notifications, save cadence (a herdr read that
+// throws keeps its last good reading and says so once: r4-01); every copy re-renders
 // (cx.notify()) when the slot's rev or the clock bucket (5 s in calm mode)
 // changed. Handlers dispatch B5 actions or change this copy's `ui`.
 
@@ -38,6 +39,18 @@ export const SHORT_BELOW = 640;
 export const LOAD_STALL_MS = 15000;
 export const LOADING_TEXT = "Opening the workshop…";
 export const LOAD_RETRY_TEXT = "Opening the save stopped partway; trying again…";
+/**
+ * A herdr read that throws (r4-01: herdr builds a host result with ordinary
+ * assignment under the frozen Object.prototype, so a terminal label or report
+ * key named `constructor`, `toString`, … throws "'<key>' is read-only" at the
+ * call site; ARCHITECTURE A7) keeps the last good reading, and the game goes
+ * on earning, notifying and saving. It says so once per spell, for this long.
+ */
+export const READ_FAIL_MS = 12000;
+export const READ_FAIL_TEXT = Object.freeze({
+  agents: "herdr's agent list could not be read: helpers keep their last known state.",
+  layout: "herdr's layout could not be read: the panel keeps its last known place.",
+});
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
 const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };
 
@@ -298,7 +311,9 @@ export class Session {
 
   tickerWork(cx, t, visible, active) {
     const slot = this.slot;
-    const L = layoutInfo(layout());
+    // Each herdr read on its own: a throw keeps the last good reading (r4-01).
+    const lay = readHost(slot, "layout", layout, t);
+    const L = lay.ok ? layoutInfo(lay.value) : slot.layout;
     slot.layout = L;
     const stale = staleFor(this.interval);
     const panelAlive = roleAlive(slot, "panel", t, stale);
@@ -310,20 +325,34 @@ export class Session {
     if (L.filesShown && !slot.narrow.filesWas) slot.narrow.filesEpoch += 1;
     slot.narrow.filesWas = L.filesShown;
 
-    // Observe: agents() once + terminals() once, never panes() (§5.1).
-    const obs = buildObservation(agents(), terminals());
-    const live = map();
-    for (const a of obs.live.keys()) live[a] = true;
-    const panes = map();
-    for (const [a, p] of obs.panes) panes[a] = p;
-    slot.live = live;
-    slot.panes = panes;
+    // Observe: agents() once + terminals() once, never panes() (§5.1). When
+    // either read throws, the last good observation stands (no observe of
+    // helpers; liveness and pane ids as last read) and the tick goes on.
+    const ag = readHost(slot, "agents", agents, t);
+    const tm = ag.ok ? readHost(slot, "agents", terminals, t) : ag;
+    let obs = null;
+    if (ag.ok && tm.ok) {
+      try {
+        obs = buildObservation(ag.value, tm.value);
+      } catch (e) {
+        readFailed(slot, "agents", t, e);
+      }
+    }
+    if (obs) {
+      readOk(slot, "agents");
+      const live = map();
+      for (const a of obs.live.keys()) live[a] = true;
+      const panes = map();
+      for (const [a, p] of obs.panes) panes[a] = p;
+      slot.live = live;
+      slot.panes = panes;
+    }
     const day = localDay(t);
     // A panel too narrow for the full view draws the rail: no mat on screen.
     const matShown = visible && panelShown && pst === "full";
-    const sig = signature(obs.list);
+    const sig = obs ? signature(obs.list) : slot.obs.sig;
     const pres = `${visible}|${active}|${matShown}|${day}`;
-    if (sig !== slot.obs.sig) {
+    if (obs && sig !== slot.obs.sig) {
       slot.obs.sig = sig;
       slot.obs.presence = pres;
       liveDispatch(slot, { type: "observe", helpers: obs.list, visible, active, matShown, day }, t);
@@ -489,7 +518,9 @@ export class Session {
     const slot = this.slot;
     if (!slot || !slot.state) return;
     const t = clockNow();
-    const L = layoutInfo(layout());
+    // (a layout() that throws: the last good layout; keys still act, r4-01)
+    const lay = readHost(slot, "layout", layout, t);
+    const L = lay.ok ? layoutInfo(lay.value) : slot.layout;
     if (!actsOnCommands(slot, this.role, L, t, staleFor(this.interval || VISIBLE_MS))) return;
     slot.layout = L;
     runCommand(slot, name, t);
@@ -1055,6 +1086,51 @@ export class Session {
       },
     };
   }
+}
+
+/**
+ * One herdr read (layout(), agents(), terminals()): { ok, value }. A throw is
+ * noted (readFailed) and gives { ok: false }; a read that works ends the
+ * spell for "layout" (the agent reads end theirs once both work: tickerWork).
+ */
+function readHost(slot, what, fn, t) {
+  try {
+    const value = fn();
+    if (what === "layout") readOk(slot, what);
+    return { ok: true, value };
+  } catch (e) {
+    readFailed(slot, what, t, e);
+    return { ok: false, value: undefined };
+  }
+}
+
+/** The slot's read-failure spells (made on first use; a hot reload hands them over with the slot). */
+function readSpells(slot) {
+  if (!slot.readFail || typeof slot.readFail !== "object") slot.readFail = map();
+  return slot.readFail;
+}
+
+/**
+ * A herdr read threw: the first throw of a spell flashes READ_FAIL_TEXT[what]
+ * for READ_FAIL_MS (never silent), later ones only count, so a failure on
+ * every tick shows one notice, not one a second.
+ */
+function readFailed(slot, what, t, e) {
+  const spells = readSpells(slot);
+  const sp = spells[what];
+  if (sp) {
+    sp.count += 1;
+    sp.last = t;
+    return;
+  }
+  spells[what] = { since: t, last: t, count: 1, message: e && typeof e.message === "string" ? e.message : String(e) };
+  flash(slot, READ_FAIL_TEXT[what], t, READ_FAIL_MS);
+}
+
+/** A read worked again: its spell is over (a later failure says so again). */
+function readOk(slot, what) {
+  const spells = slot.readFail;
+  if (spells && spells[what]) delete spells[what];
 }
 
 /** A task cx's sleep for the store's sliced replays (null when the cx has none). */

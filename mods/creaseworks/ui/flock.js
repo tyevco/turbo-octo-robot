@@ -17,7 +17,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, v_virtual_list, ScrollHandle } from "gpui-base";
 import { clip, clipCells, crowd } from "../engine/index.js";
-import { statusColor, statusDisc, contrast, hex6, isHex } from "./color.js";
+import { statusColor, statusDisc, contrast, hex6, isHex, mix } from "./color.js";
 import { ASSETS, FACETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
 import { HUE_NAMES, hueOf, pickHues } from "./palette.js";
 import { button, glyph, hoverOn, iconButton, sectionHeader, text } from "./widgets.js";
@@ -157,6 +157,33 @@ function hues(ctx) {
   return Array.isArray(ctx.hues) && ctx.hues.length === 8 ? ctx.hues : pickHues(Boolean(ctx.dark));
 }
 
+/** The contrast floor for tile text (DESIGN §14.2: text ≥ 4.5:1). */
+export const TEXT_CONTRAST = 4.5;
+
+/**
+ * The lowest opacity, in 0.05 steps from 0.3, at which `fg` text faded onto
+ * each of `bgs` still reaches TEXT_CONTRAST (1 when even full opacity does
+ * not, or a colour is not hex). A faded tile's name never drops below it
+ * (r4-15: Elsewhere names at 50 % were 3.2 to 4.2:1 in every theme). Tested.
+ */
+export function nameOpacityFloor(fg, bgs) {
+  if (!isHex(fg)) return 1;
+  for (const bg of bgs) if (!isHex(bg)) return 1;
+  for (let k = 6; k < 20; k++) {
+    const a = k / 20;
+    let ok = true;
+    for (const bg of bgs) {
+      const b = hex6(bg);
+      if (contrast(mix(b, hex6(fg), a), b) < TEXT_CONTRAST) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return a;
+  }
+  return 1;
+}
+
 /**
  * Colours and handlers every tile of one render shares, computed once (the
  * contrast guard is not cheap in QuickJS and 64 tiles would repeat it).
@@ -168,13 +195,16 @@ export function tileLook(ctx) {
   const disc = statusDisc(T);
   const onPopover = Object.create(null);
   for (const st of STATUS_ORDER) onPopover[st] = statusColor(T, st, disc);
+  const hover = hoverOn(T, T.raised);
   return {
     chromeHover: hoverOn(T, T.chrome),
     blockedOnChrome: statusColor(T, "blocked", "chrome"),
     T,
     S,
     hues: hues(ctx),
-    hover: hoverOn(T, T.raised),
+    hover,
+    // A faded tile's name stays at or above this opacity, on the tile and on its hover/selected fill.
+    nameFloor: nameOpacityFloor(T.foreground, [T.raised, hover]),
     blocked: statusColor(T, "blocked", "raised"),
     // The envelope marker's cream disc vanishes on a light tile: give it a real edge there.
     envRing: isHex(S.sheet) && isHex(T.raised) && contrast(S.sheet, hex6(T.raised)) < 1.5 ? T.muted : T.border,
@@ -195,9 +225,9 @@ export const PIP_HIT = 4;
  * (§5.2): clicking it opens that sub-agent (`openHelper(kidId)`: pane.focus,
  * or terminal.peek for one without a pane, §5.6) and stops the click there.
  */
-function pipsRow(pips, kids, g, hue, look) {
+function pipsRow(pips, kids, g, hue, look, bottom) {
   const T = look.T;
-  const row = h_flex().absolute().left(4).bottom(g === TILE.dense ? 3 : 5).gap(2);
+  const row = h_flex().absolute().left(4).bottom(bottom).gap(2);
   const n = Math.min(4, pips.length);
   for (let i = 0; i < n; i++) {
     const p = pips[i];
@@ -292,6 +322,26 @@ function firstWaiting(waiting) {
  * left neighbour's badge by 2 or 4 px and never reads as that tile's (tested).
  */
 export const KID_FLAG_LEFT = 2;
+/** The flag's top: level with the status badge (−4, px from the tile's top edge). */
+export const KID_FLAG_TOP = -4;
+
+/**
+ * Where a tile's content sits (px from the tile's top-left; tested). A tile
+ * whose fledgling waits drops its figure below the needs-you flag (r4-14:
+ * the flag covered the top-left of the species sprite, the fox's ear and
+ * head), and at normal density the name and the pips step down with it so
+ * nothing overlaps. Other tiles keep the §3.3 layout.
+ */
+export function tileLayout(g, flagged) {
+  const dense = g === TILE.dense;
+  const figureLeft = (g.w - g.glyph) / 2 - 1;
+  if (!flagged) return { figureTop: dense ? 4 : 6, figureLeft, nameTop: 40, pipsBottom: dense ? 3 : 5 };
+  const figureTop = KID_FLAG_TOP + g.badge;
+  // The name's 120 % line box (13.2 px) holds 1.1 px of leading above the
+  // 11 px text, so a line box starting 1 px above the figure's foot keeps the
+  // text clear of it and ends above the pips (bottom 3).
+  return { figureTop, figureLeft, nameTop: Math.max(40, figureTop + g.glyph - 1), pipsBottom: 3 };
+}
 
 /**
  * The parent tile's needs-you flag for its waiting fledglings (r3-17): a
@@ -311,7 +361,7 @@ function kidFlag(id, waiting, g, look) {
   const el = h_flex()
     .id(`cw-flock-kidflag-${id}`)
     .absolute()
-    .top(-4)
+    .top(KID_FLAG_TOP)
     .left(KID_FLAG_LEFT)
     .w(g.badge)
     .h(g.badge)
@@ -374,24 +424,26 @@ export function tileElement(tile, opts, ctx) {
   // wrapper element: 64 tiles are rendered every frame).
   const opacity = Math.max(0.3, Math.min(1, num(tile.opacity, 1)));
   const fade = opacity < 1 ? (x) => x.opacity(opacity) : (x) => x;
+  const pips = Array.isArray(tile.pips) ? tile.pips : [];
+  // A waiting fledgling's needs-you flag (another window's helpers are not ours to open).
+  const waiting = pips.length && !opts.elsewhere ? waitingKids(tile) : [];
+  const lay = tileLayout(g, waiting.length > 0);
   const sp = speciesOf(tile.species);
   const figure = FACETS === "alpha" ? svg(spritePath("folk", sp)).size(g.glyph).text_color(hue) : speciesSprite(sp, g.glyph, hue, { surface: T.raised });
-  el.child(fade(figure.absolute().top(opts.dense ? 4 : 6).left((g.w - g.glyph) / 2 - 1)));
+  el.child(fade(figure.absolute().top(lay.figureTop).left(lay.figureLeft)));
   if (!opts.dense) {
-    el.child(
-      fade(
-        text(clip(str(tile.name), FLOCK_CLIP.name), { size: 11, color: T.foreground, truncate: true }, T)
-          .absolute()
-          .top(40)
-          .left(3)
-          .right(3)
-          .text_center()
-          .line_height("120%"),
-      ),
-    );
+    // The name fades with the tile only as far as text stays ≥ 4.5:1 (r4-15).
+    const nameOpacity = Math.max(opacity, num(look.nameFloor, 1));
+    const name = text(clip(str(tile.name), FLOCK_CLIP.name), { size: 11, color: T.foreground, truncate: true }, T)
+      .absolute()
+      .top(lay.nameTop)
+      .left(3)
+      .right(3)
+      .text_center()
+      .line_height("120%");
+    el.child(nameOpacity < 1 ? name.opacity(nameOpacity) : name);
   }
-  const pips = Array.isArray(tile.pips) ? tile.pips : [];
-  if (pips.length) el.child(fade(pipsRow(pips, Array.isArray(tile.kids) ? tile.kids : [], g, hue, look)));
+  if (pips.length) el.child(fade(pipsRow(pips, Array.isArray(tile.kids) ? tile.kids : [], g, hue, look, lay.pipsBottom)));
   const withEnvelope = tile.envelope === true && !opts.elsewhere;
   if (status === "idle" && typeof tile.rest === "number") {
     const k = Math.max(0, Math.min(1, tile.rest));
@@ -436,11 +488,7 @@ export function tileElement(tile, opts, ctx) {
   if (!opts.calm && tile.pulse === true && status === "blocked") badge.loop("opacity", { from: 0.55, to: 1, period: 1200 });
   el.child(badge);
 
-  // A waiting fledgling's needs-you flag (another window's helpers are not ours to open).
-  if (pips.length && !opts.elsewhere) {
-    const waiting = waitingKids(tile);
-    if (waiting.length) el.child(kidFlag(id, waiting, g, look));
-  }
+  if (waiting.length) el.child(kidFlag(id, waiting, g, look));
 
   // Envelope marker at the bottom right: its own target (stops propagation).
   if (withEnvelope) {
@@ -967,10 +1015,15 @@ export function flockParts(vm, ui, ctx) {
       const folded = gk !== "all" && isFolded(vm, ui, gk);
       el = v_flex().id(`cw-flock-sec-${gk}`).w_full();
       if (gk !== "all") {
+        const w = folded ? foldedWaiting(tiles) : null;
+        const openHelper = handler(ctx, "openHelper");
         el.child(
           sectionHeader(`cw-flock-grp-${gk}`, gk, clip(str(g && g.title) || gk, FLOCK_CLIP.group), clip(String(num(g && g.count, tiles.length)), FLOCK_CLIP.count), {
             folded,
             onToggle: (cx) => toggleGroup(gk, cx),
+            waiting: w ? w.count : 0,
+            waitingTip: w ? clip(w.tip, FLOCK_CLIP.tooltip) : undefined,
+            onWaiting: w && w.first ? (cx) => openHelper(w.first.helperId, cx) : undefined,
           }, T),
         );
       }
@@ -980,6 +1033,27 @@ export function flockParts(vm, ui, ctx) {
     if (el) out.push(el.flex_none());
   }
   return out;
+}
+
+/**
+ * The waiting fledglings a folded group hides (r4-12): `{ count, first, tip }`
+ * (`first`: the first one with an id, which the header's flag opens), or
+ * null when none waits. Tested.
+ */
+export function foldedWaiting(tiles) {
+  let count = 0;
+  let first = null;
+  for (const t of tiles) {
+    if (!t || typeof t !== "object") continue;
+    for (const k of waitingKids(t)) {
+      count++;
+      if (!first && k) first = k;
+    }
+  }
+  if (!count) return null;
+  const who = first ? str(first.name) || "the first" : "the first";
+  const tip = count === 1 ? `A fledgling in here needs you: click to open ${who}` : `${count} fledglings in here need you: click to open ${who}`;
+  return { count, first, tip };
 }
 
 /** The Flock tab content as one element (`#cw-flock`, its parts as children). Pure (B11). */

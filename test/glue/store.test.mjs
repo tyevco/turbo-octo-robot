@@ -883,3 +883,214 @@ test("r3-09: save.json deleted under a running game is said and written again; n
 test("r3 notices fit the banner (NOTICE_MAX graphemes)", () => {
   for (const text of [store.MISSING_TEXT, store.LOAD_RETRIED_TEXT]) assert.ok(engine.graphemes(text).length <= store.NOTICE_MAX, text);
 });
+
+const HUGE = `{"pad":"${"x".repeat(1100000)}"}`;
+const CHANGED = "The file changed outside Herdr. Reload before saving; your draft is still here.";
+/** A save text whose check no longer matches (damaged), for `hits` hits. */
+const damagedText = (n) => {
+  const s = freshState(3);
+  s.stats.hits = n;
+  return saveText(s).replace(`"hits":${n}`, `"hits":${n + 1}`);
+};
+
+test("r4-03: save.json turning unreadable during play: progress goes to save.recovery.json in that same save and survives a restart", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.hits(v, 3);
+  await w.advance(16000);
+  assert.equal(hits(parsed(w.ctl).state), 3);
+  // Another writer (or the player) leaves save.json over 1 MiB mid-game.
+  w.ctl.externalWrite(SAVE, HUGE);
+  await w.hits(v, 5);
+  await w.advance(16000);
+  assert.equal(w.slot.save.unreadable, "Text file exceeds 1 MiB");
+  assert.equal(w.slot.save.status, "error");
+  assert.equal(w.slot.notice.kind, "error");
+  assert.match(w.slot.notice.text, /^Can't read save\.json: Text file exceeds 1 MiB\. Move or delete it \(path in Details\); until then progress is kept in save\.recovery\.json\./);
+  assert.equal(hits(parsed(w.ctl, RECOVERY).state), 8, "the hits made after it went bad are in the recovery file");
+  assert.equal(w.ctl.readFile(SAVE), HUGE, "save.json is never touched");
+  const files = Object.fromEntries([...w.ctl.files].filter(([p]) => p.startsWith(DIR)));
+  w.dispose();
+  w = win({ files });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.state.stats.hits, 8, "nothing lost across a restart");
+});
+
+test("r4-03: unreadable found by a merge's read (a folder in its place): recovery file, and a damaged one there is kept aside first", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.hits(v, 2);
+  await w.advance(16000);
+  const badRec = damagedText(77);
+  w.ctl.externalWrite(RECOVERY, badRec);
+  // The write is rejected as a conflict, then the merge's read finds a folder.
+  w.ctl.externalWrite(SAVE, null);
+  w.ctl.mkdir(SAVE);
+  w.ctl.failNextWrite(CHANGED, SAVE);
+  await w.hits(v, 2);
+  await w.advance(16000);
+  assert.equal(w.slot.save.unreadable, "Not a regular file");
+  assert.equal(w.slot.notice.kind, "error");
+  assert.match(w.slot.notice.text, /^Can't read save\.json: Not a regular file\./);
+  assert.equal(w.ctl.readFile(damaged(1)), badRec, "the damaged recovery file was kept aside, not overwritten unseen");
+  assert.ok(w.slot.save.damaged.includes("save.damaged-1.json"), "and listed in Details");
+  assert.equal(hits(parsed(w.ctl, RECOVERY).state), 4);
+});
+
+test("r4-03: Check save now on an unreadable save.json keeps a damaged recovery file aside too", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  const badRec = damagedText(12);
+  w.ctl.externalWrite(RECOVERY, badRec);
+  w.ctl.externalWrite(SAVE, HUGE);
+  await w.handler(v, "checkSave");
+  await w.flush();
+  assert.equal(w.slot.save.unreadable, "Text file exceeds 1 MiB");
+  assert.equal(w.ctl.readFile(damaged(1)), badRec);
+  await w.advance(3000);
+  assert.ok(parsed(w.ctl, RECOVERY).ok, "the game written to the recovery file");
+});
+
+test("r4-04: a shared save gone with its backup during play: this window's own save, said, nothing created at the shared path", async () => {
+  const SH = "/mnt/usb/cw/save.json";
+  const SHB = "/mnt/usb/cw/save.bak.json";
+  const st = freshState(5);
+  st.stats.hits = 40;
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: SH }), [SH]: saveText(st), [SHB]: saveText(st) } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  assert.equal(w.slot.paths.save, SH);
+  // The drive is unmounted: the whole folder goes.
+  w.ctl.externalWrite(SH, null);
+  w.ctl.externalWrite(SHB, null);
+  await w.hits(v, 3);
+  await w.advance(16000);
+  assert.equal(w.ctl.readFile(SH), null, "nothing created at the shared path");
+  assert.equal(w.slot.paths.save, SAVE, "this window's own save");
+  assert.equal(hits(parsed(w.ctl).state), 43, "the running game saved there, nothing rolled back");
+  assert.equal(w.slot.notice.kind, "recovered");
+  assert.match(w.slot.notice.text, /^Shared save not found: \/mnt\/usb\/cw\/save\.json\. Using this window's own; share again in Settings/);
+  // The drive comes back: the game goes on from where it was, with no false "another window" notice.
+  w.ctl.externalWrite(SH, saveText(st));
+  await w.hits(v, 1);
+  await w.advance(16000);
+  assert.equal(w.slot.state.stats.hits, 44);
+  assert.equal(hits(parsed(w.ctl).state), 44);
+  assert.doesNotMatch(w.slot.notice.text, /Another window/);
+  assert.equal(hits(parsed(w.ctl, SH).state), 40, "the shared file is left as it was");
+});
+
+test("r4-04: with a local save there, the switch merges onto it as a load would; Check save now switches too; a lone missing save.json is still written again", async () => {
+  const SH = "/mnt/usb/cw/save.json";
+  const SHB = "/mnt/usb/cw/save.bak.json";
+  const st = freshState(5);
+  st.stats.hits = 40;
+  const local = freshState(6);
+  local.bank = 555555;
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: SH }), [SH]: saveText(st), [SHB]: saveText(st), [SAVE]: saveText(local) } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.externalWrite(SH, null);
+  w.ctl.externalWrite(SHB, null);
+  await w.hits(v, 2);
+  await w.advance(16000);
+  assert.equal(w.ctl.readFile(SH), null);
+  assert.ok(parsed(w.ctl).state.bank >= 555555, "this window's own save, as a load loads it");
+  assert.match(w.slot.notice.text, /^Shared save not found/);
+  assert.doesNotMatch(w.slot.notice.text, /Another window/);
+  w.dispose();
+
+  // Check save now finds it gone: the same switch.
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: SH }), [SH]: saveText(st), [SHB]: saveText(st) } });
+  const v2 = await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.externalWrite(SH, null);
+  w.ctl.externalWrite(SHB, null);
+  let r;
+  await w.ctl.dispatch("task", null, () => {
+    r = store.checkSave(w.slot, { now: () => Date.now() });
+  });
+  await w.flush();
+  assert.equal(await r, "missing");
+  assert.equal(w.slot.paths.save, SAVE);
+  await w.advance(3000);
+  assert.equal(w.ctl.readFile(SH), null);
+  assert.equal(hits(parsed(w.ctl).state), 40);
+  w.dispose();
+
+  // Only the shared save.json deleted (its backup still there): written again in place (r3-09).
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: SH }), [SH]: saveText(st), [SHB]: saveText(st) } });
+  const v3 = await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.externalWrite(SH, null);
+  await w.hits(v3, 1);
+  await w.advance(16000);
+  assert.equal(w.slot.paths.save, SH);
+  assert.equal(hits(parsed(w.ctl, SH).state), 41);
+  assert.equal(w.slot.notices.load.text, store.MISSING_TEXT);
+  void v2;
+});
+
+test("r4-05: an unreadable save.json beside a damaged backup: the backup is kept aside, the fresh start is said", async () => {
+  const badBak = damagedText(500);
+  w = win({ files: { [SAVE]: HUGE, [BAK]: badBak } });
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.state.stats.hits, 0);
+  assert.equal(w.slot.notice.kind, "error", "the unreadable banner first");
+  assert.equal(w.slot.notices.load.kind, "fresh");
+  assert.equal(w.slot.notices.load.text, "Save can't be read and the backup was damaged. Started fresh; the damaged file was kept.");
+  assert.equal(w.ctl.readFile(damaged(1)), badBak);
+  assert.deepEqual(w.slot.save.damaged, ["save.damaged-1.json"]);
+  // The player moves save.json away: the fresh notice shows, and the backup rotation loses nothing.
+  w.ctl.externalWrite(SAVE, null);
+  await w.hits(v, 2);
+  await w.advance(16000);
+  assert.equal(w.slot.notice.kind, "fresh");
+  await w.advance(6 * 60000);
+  assert.notEqual(w.ctl.readFile(BAK), badBak, "the backup rotated");
+  assert.equal(w.ctl.readFile(damaged(1)), badBak, "its damaged copy is still kept");
+});
+
+test("r4-05: an unreadable save.json beside a damaged recovery file: kept aside before the recovery write replaces it", async () => {
+  const badRec = damagedText(900);
+  w = win({ files: { [SAVE]: HUGE, [RECOVERY]: badRec } });
+  await w.copy("panel");
+  await w.advance(3000);
+  assert.equal(w.slot.state.stats.hits, 0);
+  assert.equal(w.ctl.readFile(damaged(1)), badRec, "kept aside");
+  assert.ok(parsed(w.ctl, RECOVERY).ok, "then replaced by this game");
+  assert.equal(w.slot.notices.load.kind, "fresh");
+  assert.equal(w.slot.notices.load.text, "Save can't be read and the recovery file was damaged and there was no backup. Started fresh; the damaged file was kept.");
+  w.dispose();
+  // Neither file at all: still never a silent fresh start.
+  w = win({ files: { [SAVE]: HUGE } });
+  await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.notices.load.text, "Save can't be read and there was no backup. Started fresh.");
+  w.dispose();
+  // A good backup beside a damaged recovery file loads, the recovery file kept aside, no fresh notice.
+  const good = freshState(4);
+  good.stats.hits = 33;
+  w = win({ files: { [SAVE]: HUGE, [RECOVERY]: badRec, [BAK]: saveText(good) } });
+  await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.state.stats.hits, 33);
+  assert.equal(w.ctl.readFile(damaged(1)), badRec);
+  assert.equal(w.slot.notices.load, null);
+});
+
+test("r4-05: every unreadable fresh-start notice fits the banner, alone and after a missing shared save", () => {
+  for (const hadRec of [false, true])
+    for (const hadBak of [false, true])
+      for (const kr of [null, "save.damaged-1.json"])
+        for (const kb of [null, "save.damaged-2.json"]) {
+          const text = store.unreadableFreshText(hadRec, kr, hadBak, kb);
+          assert.ok(engine.graphemes(text).length <= store.NOTICE_MAX, text);
+          assert.ok(engine.graphemes(store.goneJoined(text)).length <= store.NOTICE_MAX, store.goneJoined(text));
+        }
+});

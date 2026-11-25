@@ -780,3 +780,105 @@ test("a fledgling whose parent is gone keeps its own reward (never the parent's 
   assert.equal(s.envelopes[id1], undefined);
   assert.equal(s.envelopes[id3].units, engine.CONTENT.K.unitKid);
 });
+
+test("r4-10: an agent that leaves and comes back in the same terminal keeps its unit budget and its wait", () => {
+  // Sixty one-minute tasks in an hour, one terminal: the agent stays, or it
+  // exits between tasks (a one-shot agent run in a loop) and is observed again
+  // with the same address and created_ms.
+  const unitsOver = (leave) => {
+    const s = seeded(41);
+    const me = writer(s);
+    let t = T0;
+    for (let i = 0; i < 60; i++) {
+      me.act(observeAction((t += 1000), [agent(7, "working", i)]));
+      me.act(observeAction((t += 50000), [agent(7, "idle", i + 1)]));
+      if (leave) me.act(observeAction((t += 9000), []));
+      else t += 9000;
+    }
+    return s;
+  };
+  const stay = unitsOver(false).stats.units.created;
+  const flap = unitsOver(true);
+  assert.ok(stay <= 1 + 60 / 12, `${stay} units`);
+  assert.equal(flap.stats.units.created, stay, "leaving between tasks does not refill the budget");
+  assert.ok(flap.stats.units.created <= 1 + 60 / 12);
+  const h = flap.helpers[engine.helperId("t7", 1007)];
+  assert.equal(h.gone, true);
+  assert.equal(typeof h.unitAt, "number", "a full Album record keeps its budget");
+  assert.equal(typeof h.lastFinishAt, "number");
+  // A wait that began before the agent left still earns its thanks on return.
+  const s = seeded(42);
+  const me = writer(s);
+  const id = engine.helperId("t8", 1008);
+  me.act(observeAction(T0, [agent(8, "working", 0)]));
+  me.act(observeAction(T0 + 1000, [agent(8, "blocked", 0)]));
+  me.act(observeAction(T0 + 2000, []));
+  assert.equal(s.helpers[id].gone, true);
+  assert.equal(s.helpers[id].blockedAt, T0 + 1000);
+  me.act(observeAction(T0 + 60000, [agent(8, "blocked", 0)]));
+  assert.equal(s.helpers[id].blockedAt, T0 + 1000, "the wait shows from when it began");
+  me.act(observeAction(T0 + 90000, [agent(8, "working", 0)]));
+  assert.ok(s.helpers[id].thanksUntil > T0 + 90000, "the thanks bonus is not lost");
+  // Null budget fields are not saved, and a save round trip keeps the kept ones.
+  const r = engine.parseSave(engine.serialize(flap));
+  assert.equal(r.ok, true);
+  const back = r.state.helpers[engine.helperId("t7", 1007)];
+  assert.equal(back.unitAt, h.unitAt);
+  assert.equal("kidUnitAt" in back, false);
+});
+
+test("r4-10: only compaction forgets a gone helper's budget; a compact record rejoins with a fresh one", () => {
+  const s = seeded(43);
+  const me = writer(s);
+  let t = T0;
+  me.act(observeAction((t += 1000), [agent(1, "working", 0)]));
+  me.act(observeAction((t += 61000), [agent(1, "idle", 1)]));
+  me.act(observeAction((t += 1000), []));
+  const id = engine.helperId("t1", 1001);
+  assert.equal(typeof s.helpers[id].unitAt, "number");
+  // push it past the K.albumKeep most recent full records
+  for (let b = 0; b < Math.ceil((K.albumKeep + 1) / 50); b++) {
+    const list = Array.from({ length: 50 }, (_, i) => agent(1000 + b * 50 + i, "working", 0));
+    me.act(observeAction((t += 1000), list));
+    me.act(observeAction((t += 1000), []));
+  }
+  assert.equal(s.helpers[id].compact, true);
+  assert.equal("unitAt" in s.helpers[id], false);
+  me.act(observeAction((t += 1000), [agent(1, "working", 5)]));
+  assert.equal(s.helpers[id].gone, false);
+  assert.equal(s.helpers[id].unitAt, null);
+  assert.equal(s.helpers[id].blockedAt, null);
+});
+
+test("r4-11: a fledgling folded into its parent carries the fledglings already folded into its own record", () => {
+  const s = seeded(44);
+  const me = writer(s);
+  const DAY = 86400000;
+  const pid = engine.helperId("t1", 1001);
+  const xid = engine.helperId("t2", 1002);
+  let t = T0;
+  // X (t2) is a sub-agent in its own pane; its parent's agent (t1) is away, so X is a pane helper
+  me.act(observeAction((t += 1000), [agent(1), agent(2)]));
+  me.act(observeAction((t += 1000), [agent(2)]));
+  assert.equal(s.helpers[xid].kind, "pane");
+  // X spawns fledglings that leave and, 30 days on, fold into X's record
+  me.act(observeAction((t += 1000), [agent(2), kid(10, 2), kid(11, 2), kid(12, 2)]));
+  me.act(observeAction((t += 60000), [agent(2)]));
+  [10, 11, 12].forEach((i, k) => { s.helpers[engine.helperId(`t${i}`, 1000 + i)].stats.folds = 100 * (k + 1); });
+  me.act(observeAction((t += 31 * DAY), [agent(2)]));
+  assert.equal(s.helpers[xid].stats.kidsPast, 3);
+  const xKidFolds = s.helpers[xid].stats.kidsFolds;
+  close(xKidFolds, 600);
+  // the parent's agent returns: X is a fledgling again; then X quits for 31 days
+  me.act(observeAction((t += 1000), [agent(1), agent(2, "working", 0, { kind: "kid", parent: "t1" })]));
+  assert.equal(s.helpers[xid].kind, "kid");
+  assert.equal(s.helpers[xid].parent, pid);
+  me.act(observeAction((t += 60000), [agent(1)]));
+  const xFolds = s.helpers[xid].stats.folds;
+  const pPast = s.helpers[pid].stats.kidsPast || 0;
+  const pFolds = s.helpers[pid].stats.kidsFolds || 0;
+  me.act(observeAction((t += 31 * DAY), [agent(1)]));
+  assert.equal(s.helpers[xid], undefined, "X folded into its parent");
+  assert.equal(s.helpers[pid].stats.kidsPast, pPast + 1 + 3, "X and the 3 fledglings it held");
+  close(s.helpers[pid].stats.kidsFolds, pFolds + xFolds + xKidFolds);
+});

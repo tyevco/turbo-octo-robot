@@ -3,12 +3,13 @@
 
 import { K, WORKSHOPS, UPGRADES, AUTOMATIONS } from "./content.js";
 import { credit, crowd, itemInfo } from "./economy.js";
-import { freshness } from "./helpers.js";
+import { unseenLeftMs } from "./helpers.js";
 import { pushNotice } from "./envelopes.js";
 
 /**
  * Credit an away segment (clock, now] in closed form:
- * away = f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk) · a, a = min(gap, cap left).
+ * away = f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk) · a, a = min(gap, cap left);
+ * a helper whose unseen allowance runs out first earns for less (awayHelpers).
  * Boost timers, afterglow, spawns and the rhythm are frozen; rest charges by a.
  */
 export function awaySegment(state, ctx, t0, t1, ev) {
@@ -26,16 +27,8 @@ export function awaySegment(state, ctx, t0, t1, ev) {
   if (bo.stormEnd > t0) bo.stormEnd += gap;
   const sec = a / 1000;
 
-  // Present pane helpers whose window was seen within 8 h, whatever their status.
-  const panes = ctx.idx.panes.filter((h) => freshness(state, h, t0, ctx.writer) !== 0);
-  const N = panes.length;
-  const base = (K.helperFlat * E.G + K.helperRw * E.Rw) * E.folk;
   const works = E.awayF * E.Rw * sec;
-  const helpers = E.gather ? E.awayF * crowd(N) * base * N * sec : 0;
-  if (N > 0 && helpers > 0) {
-    const each = helpers / N;
-    for (const h of panes) { h.stats.folds += each; h.stats.run += each; }
-  }
+  const helpers = E.gather ? awayHelpers(state, ctx, t0, a) : 0;
   let rested = 0;
   const add = a / E.restFullMs;
   for (const h of ctx.idx.present) {
@@ -80,6 +73,45 @@ export function awaySegment(state, ctx, t0, t1, ev) {
   p.at = t1;
   p.liveMs = 0;
   aw.pot = p;
+}
+
+/**
+ * Credit present pane helpers for an away segment from `t0` with `a` ms of
+ * the shared cap, whatever their status (§10.2). Each helper earns for
+ * d = min(a, what is left of its unseen allowance, unseenLeftMs): the whole
+ * cap when its window just closed, less (or nothing) when another window
+ * already credited it at the stale rate, so a helper never earns away-rate
+ * time for more than 8 h after it was last seen (review r4-06). Closed form in
+ * pieces between the distinct d: while m helpers still earn, the rate is
+ * f · crowd(m) · m · base. With every d equal (the usual case) that is one
+ * piece, f · crowd(N) · N · base · a. Returns the folds credited (each helper's
+ * share goes to its stats).
+ */
+function awayHelpers(state, ctx, t0, a) {
+  const E = ctx.E;
+  if (!(a > 0)) return 0;
+  const base = (K.helperFlat * E.G + K.helperRw * E.Rw) * E.folk;
+  const ds = [];
+  for (const h of ctx.idx.panes) {
+    const d = Math.min(a, unseenLeftMs(state, h, t0, ctx.writer));
+    if (d > 0) ds.push([d, h]);
+  }
+  ds.sort((x, y) => x[0] - y[0] || (x[1].id < y[1].id ? -1 : x[1].id > y[1].id ? 1 : 0));
+  let total = 0;
+  let prev = 0;
+  for (let i = 0; i < ds.length; i++) {
+    const d = ds[i][0];
+    if (d <= prev) continue;
+    const m = ds.length - i;
+    const piece = E.awayF * crowd(m) * base * m * ((d - prev) / 1000);
+    if (piece > 0) {
+      total += piece;
+      const each = piece / m;
+      for (let j = i; j < ds.length; j++) { const h = ds[j][1]; h.stats.folds += each; h.stats.run += each; }
+    }
+    prev = d;
+  }
+  return total;
 }
 
 /**

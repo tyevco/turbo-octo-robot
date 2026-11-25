@@ -430,15 +430,19 @@ export function progressBar(id, fraction, opts = {}, T, S) {
  * A boost countdown bar (DESIGN §6.2, 48×3). Default: the width of the time
  * left, eased linearly over one data tick (`opts.tickMs`, 1000), the §17 R2
  * fallback. With `opts.native` the fill targets 0 with one linear transition
- * of `msLeft` (render it once at the current width first).
+ * of `msLeft` (render it once at the current width first). With `opts.calm`
+ * the fill snaps (no transition), native or not.
  */
 export function countdownBar(id, msLeft, msTotal, opts = {}, T, S) {
   const left = Math.max(0, msLeft || 0);
   const total = msTotal > 0 ? msTotal : 1;
-  if (opts.native) {
-    return progressBar(id, 0, { width: opts.width ?? 48, height: opts.height ?? 3, fill: opts.fill ?? T.foreground, track: opts.track ?? T.input, ms: Math.max(1, left), easing: "linear" }, T, S);
-  }
-  return progressBar(id, left / total, { width: opts.width ?? 48, height: opts.height ?? 3, fill: opts.fill ?? T.foreground, track: opts.track ?? T.input, ms: opts.tickMs ?? 1000, easing: "linear" }, T, S);
+  const calm = Boolean(opts.calm);
+  const box = { width: opts.width ?? 48, height: opts.height ?? 3, fill: opts.fill ?? T.foreground, track: opts.track ?? T.input };
+  // Calm mode (§11.1 item 4, r4-13): no glide at all; the bar snaps to the
+  // time left on each data tick (the native glide to 0 would jump to empty).
+  if (calm) return progressBar(id, left / total, { ...box, ms: 0, calm }, T, S);
+  if (opts.native) return progressBar(id, 0, { ...box, ms: Math.max(1, left), easing: "linear" }, T, S);
+  return progressBar(id, left / total, { ...box, ms: opts.tickMs ?? 1000, easing: "linear" }, T, S);
 }
 
 /**
@@ -446,7 +450,10 @@ export function countdownBar(id, msLeft, msTotal, opts = {}, T, S) {
  * on `opts.surface`, default T.chrome), title 11/600 (upper-case while open;
  * "● Working 9" when folded), count, and a fold arrow. `key` is the group key
  * (`needs finished working resting elsewhere album`). Clickable when
- * `opts.onToggle(cx)` is given (id required).
+ * `opts.onToggle(cx)` is given (id required). While folded, `opts.waiting`
+ * (a count) adds a needs-you flag for waiting fledglings inside, with
+ * `opts.waitingTip`; `opts.onWaiting(cx)` makes it a target (`${id}-waiting`,
+ * stops propagation so the group does not also unfold).
  */
 export function sectionHeader(id, key, title, count, opts = {}, T, _S = undefined) {
   if (opts.onToggle) requireId(id, "sectionHeader");
@@ -460,6 +467,33 @@ export function sectionHeader(id, key, title, count, opts = {}, T, _S = undefine
   const words = folded ? String(title) : String(title).toUpperCase();
   el.child(text(words, { size: 11, weight: 600, color: folded ? T.foreground : T.muted }, T));
   el.child(text(String(count), { size: 11, weight: 600, color: T.foreground }, T));
+  // A folded group hiding waiting fledglings says so (r4-12): the needs-you
+  // pennant and how many, its own target opening the first of them.
+  const waiting = folded && typeof opts.waiting === "number" && opts.waiting > 0 ? Math.floor(opts.waiting) : 0;
+  if (waiting) {
+    const red = statusColor(T, "blocked", surface);
+    const flag = h_flex()
+      .h(18)
+      .px(4)
+      .gap(2)
+      .flex_none()
+      .rounded(9)
+      .border(1)
+      .border_dashed()
+      .border_color(red)
+      .tooltip(String(opts.waitingTip || (waiting === 1 ? "A fledgling here needs you" : `${waiting} fledglings here need you`)))
+      .child(sprite(statusGlyphPath("blocked"), 11, red))
+      .child(text(String(waiting), { size: 11, weight: 600, color: T.foreground }, T));
+    if (opts.onWaiting) {
+      requireId(id, "sectionHeader");
+      const openFirst = opts.onWaiting;
+      flag.id(`${id}-waiting`).cursor_pointer().on_click((e, cx) => {
+        if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+        return openFirst(cx, e);
+      });
+    }
+    el.child(flag);
+  }
   el.child(div().flex_1());
   el.child(text(folded ? "▸" : "▾", { size: 11, color: T.muted }, T));
   if (opts.onToggle) {

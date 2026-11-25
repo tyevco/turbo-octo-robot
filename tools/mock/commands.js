@@ -261,13 +261,31 @@ export function unknownCommand(name) {
   return `unknown command ${debugString(name)}: see \`herdr-app commands\`; a mod's are <mod>.<command> and need the mod loaded`;
 }
 
+/** The id a layout.* command names ("" when missing, as `Self::arg(a, "id").unwrap_or_default()`). */
+function layoutId(args) {
+  return isPlainObject(args) && typeof args.id === "string" ? args.id : "";
+}
+
+/**
+ * The window's error when layout.* names no node: layout.resize looks the id
+ * up anywhere (find_node_mut), toggle / show / hide only in the shown layout
+ * (src/window.rs:3640-3652).
+ */
+export function noNodeError(name, args) {
+  const id = debugString(layoutId(args));
+  return name === "layout.resize" ? `no node ${id}` : `no node ${id} in the shown layout`;
+}
+
 /**
  * What the window does to the shown layout tree for layout.toggle / show / hide /
- * resize (src/window.rs:3640-3656): `px` wins over `weight`; a missing node is an
- * error. Changes `tree` in place; returns null, or the error text.
+ * resize (src/window.rs:3640-3656): `px` wins over `weight`, both stored as f32
+ * (Span::Px / Span::Weight, so layout() reads Math.fround of the number); a
+ * missing node is an error. Nodes are found the way layout.rs Node::find_mut
+ * walks (children only: a floating window is not a node). Changes `tree` in
+ * place; returns null, or the error text.
  */
 export function applyLayoutCommand(tree, name, args) {
-  const id = isPlainObject(args) && typeof args.id === "string" ? args.id : "";
+  const id = layoutId(args);
   const findIn = (n) => {
     if (!isPlainObject(n)) return null;
     if (n.id === id) return n;
@@ -275,19 +293,70 @@ export function applyLayoutCommand(tree, name, args) {
       const f = findIn(c);
       if (f) return f;
     }
-    for (const f of Array.isArray(n.floating) ? n.floating : []) if (isPlainObject(f) && f.id === id) return f;
     return null;
   };
+  if (!["layout.toggle", "layout.show", "layout.hide", "layout.resize"].includes(name)) return `${name} is not a layout command`;
   const node = findIn(tree);
-  if (!node) return `no node ${debugString(id)}`;
+  if (!node) return noNodeError(name, args);
   if (name === "layout.toggle") node.hidden = !node.hidden;
   else if (name === "layout.show") node.hidden = false;
   else if (name === "layout.hide") node.hidden = true;
-  else if (name === "layout.resize") {
-    if (typeof args.px === "number") node.size = { px: args.px };
-    else if (typeof args.weight === "number") node.size = { weight: args.weight };
-  } else return `${name} is not a layout command`;
+  else if (typeof args.px === "number") node.size = { px: Math.fround(args.px) };
+  else if (typeof args.weight === "number") node.size = { weight: Math.fround(args.weight) };
   return null;
+}
+
+/** JSON with sorted keys: serde Value equality (key order never matters). */
+function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (isPlainObject(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  return JSON.stringify(v ?? null);
+}
+
+/**
+ * layout.rs Node::visible_blocks: nothing under a hidden node, a stack's
+ * active child (its `active` id among the shown children, else the first
+ * shown one), every child of a row or column; plus the shown floats of
+ * visible nodes (window.rs visible()).
+ */
+export function visibleBlocks(tree) {
+  const out = [];
+  const visit = (n) => {
+    if (!isPlainObject(n) || n.hidden === true) return;
+    for (const f of Array.isArray(n.floating) ? n.floating : []) if (isPlainObject(f) && f.hidden !== true) out.push(f);
+    const children = Array.isArray(n.children) ? n.children.filter((c) => isPlainObject(c) && c.hidden !== true) : null;
+    if (n.type === "stack") {
+      const c = children && (children.find((x) => typeof n.active === "string" && x.id === n.active) ?? children[0]);
+      if (c) visit(c);
+    } else if (children && n.type !== "block") {
+      for (const c of children) visit(c);
+    } else out.push(n);
+  };
+  visit(tree);
+  return out;
+}
+
+/**
+ * Whether a copy of `mod` with `props` is on screen in `tree` (window.rs
+ * publish_shown_copies: a visible block whose content is that {mod, props}).
+ * A copy no block of the tree describes is not the tree's to hide (an
+ * overlay, a tab's mod, a test layout without contents): true.
+ */
+export function layoutShowsCopy(tree, mod, props) {
+  if (!isPlainObject(tree)) return true;
+  const want = canonical(props ?? null);
+  const describes = (n) => isPlainObject(n) && isPlainObject(n.content) && typeof n.content.mod === "string"
+    && (mod === null || mod === undefined || n.content.mod === mod) && canonical(n.content.props ?? null) === want;
+  const all = [];
+  const walk = (n) => {
+    if (!isPlainObject(n)) return;
+    if (describes(n)) all.push(n);
+    for (const f of Array.isArray(n.floating) ? n.floating : []) if (describes(f)) all.push(f);
+    for (const c of Array.isArray(n.children) ? n.children : []) walk(c);
+  };
+  walk(tree);
+  if (all.length === 0) return true;
+  return visibleBlocks(tree).some(describes);
 }
 
 /**
