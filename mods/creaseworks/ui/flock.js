@@ -15,7 +15,7 @@
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, v_virtual_list } from "gpui-base";
-import { clip, crowd } from "../engine/index.js";
+import { clip, clipCells, crowd } from "../engine/index.js";
 import { statusColor, contrast, hex6, isHex } from "./color.js";
 import { ASSETS, FACETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
 import { HUE_NAMES, hueOf, pickHues } from "./palette.js";
@@ -154,17 +154,55 @@ export function tileLook(ctx) {
     onPopover,
     select: handler(ctx, "select"),
     open: handler(ctx, "open"),
+    openHelper: handler(ctx, "openHelper"),
   };
 }
 
-function pipsRow(pips, g, hue, look) {
+/** Extra px around a needs-you pip's hit area on each side (the pip itself is 6 or 4 px). */
+export const PIP_HIT = 4;
+
+/**
+ * The fledgling pips. A needs-you pip is the fledgling's own needs-you mark
+ * (§5.2): clicking it opens that sub-agent (`openHelper(kidId)`: pane.focus,
+ * or terminal.peek for one without a pane, §5.6) and stops the click there.
+ */
+function pipsRow(pips, kids, g, hue, look) {
   const T = look.T;
   const row = h_flex().absolute().left(4).bottom(g === TILE.dense ? 3 : 5).gap(2);
   const n = Math.min(4, pips.length);
   for (let i = 0; i < n; i++) {
     const p = pips[i];
     const st = p === "blocked" || p === "error" ? "blocked" : p === "working" ? "working" : "idle";
-    row.child(svg(pipPath(st)).w(g.pip).h(g.pip).flex_none().text_color(st === "blocked" ? look.blocked : hue));
+    const mark = svg(pipPath(st)).w(g.pip).h(g.pip).flex_none().text_color(st === "blocked" ? look.blocked : hue);
+    const kid = kids[i];
+    const kidId = kid && typeof kid.helperId === "string" ? kid.helperId : "";
+    if (st !== "blocked" || !kidId) {
+      row.child(mark);
+      continue;
+    }
+    row.child(
+      div()
+        .relative()
+        .flex_none()
+        .w(g.pip)
+        .h(g.pip)
+        .child(mark)
+        .child(
+          div()
+            .id(`cw-flock-kid-${kidId}`)
+            .absolute()
+            .left(-PIP_HIT)
+            .top(-PIP_HIT)
+            .w(g.pip + 2 * PIP_HIT)
+            .h(g.pip + 2 * PIP_HIT)
+            .cursor_pointer()
+            .tooltip(clip(str(kid.tooltip) || "A fledgling needs you: click to open it", FLOCK_CLIP.tooltip))
+            .on_click((e, cx) => {
+              if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+              look.openHelper(kidId, cx);
+            }),
+        ),
+    );
   }
   if (pips.length > 4) row.child(text(`+${clip(String(pips.length - 4), FLOCK_CLIP.count)}`, { size: 11, color: T.muted }, T).line_height("100%"));
   return row;
@@ -183,7 +221,9 @@ export function tileElement(tile, opts, ctx) {
   const hue = hueOf(look.hues, tile.hue);
   const select = look.select;
   const open = look.open;
+  const openHelper = look.openHelper;
   const selected = Boolean(opts.selected);
+  const needsYou = tile.dashed === true || status === "blocked";
 
   const el = div()
     .id(`cw-flock-tile-${id}`)
@@ -196,8 +236,11 @@ export function tileElement(tile, opts, ctx) {
     .cursor_pointer()
     .hover((s) => s.bg(look.hover))
     .tooltip(clip(str(tile.tooltip) || `${str(tile.name)} · ${str(tile.statusWord)}`, FLOCK_CLIP.tooltip))
-    .on_click((e, cx) => select(selected ? null : id, cx));
-  if (tile.dashed === true || status === "blocked") el.border(2).border_dashed().border_color(look.blocked);
+    // A needs-you tile is a needs-you mark: a click opens the agent (§5.6);
+    // every other tile, and any tile another window sees, selects (its
+    // detail card has "Open pane ›").
+    .on_click((e, cx) => (needsYou && !opts.elsewhere ? openHelper(id, cx) : select(selected ? null : id, cx)));
+  if (needsYou) el.border(2).border_dashed().border_color(look.blocked);
   else if (selected) el.border(2).border_color(T.accent);
   else el.border(1).border_color(T.border);
 
@@ -224,18 +267,23 @@ export function tileElement(tile, opts, ctx) {
     );
   }
   const pips = Array.isArray(tile.pips) ? tile.pips : [];
-  if (pips.length) el.child(fade(pipsRow(pips, g, hue, look)));
+  if (pips.length) el.child(fade(pipsRow(pips, Array.isArray(tile.kids) ? tile.kids : [], g, hue, look)));
+  const withEnvelope = tile.envelope === true && !opts.elsewhere;
   if (status === "idle" && typeof tile.rest === "number") {
     const k = Math.max(0, Math.min(1, tile.rest));
+    const bar = restBar(g, withEnvelope);
+    // The T.border track shows the bar's full extent, so a low store reads as
+    // "a little of this" rather than a stray speck.
+    el.child(fade(div().id(`cw-flock-rest-track-${id}`).absolute().bottom(1).left(bar.left).h(2).w(bar.w).rounded(1).bg(T.border)));
     el.child(
       fade(
         div()
           .id(`cw-flock-rest-${id}`)
           .absolute()
           .bottom(1)
-          .left(Math.round((g.w - g.rest) / 2))
+          .left(bar.left)
           .h(2)
-          .w(Math.round(g.rest * k * 10) / 10)
+          .w(Math.round(bar.w * k * 10) / 10)
           .rounded(1)
           .bg(T.muted)
           .transition("width", opts.calm ? 150 : 600),
@@ -264,10 +312,10 @@ export function tileElement(tile, opts, ctx) {
   el.child(badge);
 
   // Envelope marker at the bottom right: its own target (stops propagation).
-  if (tile.envelope === true && !opts.elsewhere) {
+  if (withEnvelope) {
     // The marker's centre sits near the corner (it pokes 2 px out, like the
     // badge at the top) so it never covers the name.
-    const off = opts.dense ? -4 : -9;
+    const off = envOffset(g);
     el.child(
       h_flex()
         .id(`cw-flock-env-${id}`)
@@ -297,6 +345,22 @@ export function tileElement(tile, opts, ctx) {
     );
   }
   return el;
+}
+
+/** The envelope marker's offset from the tile's bottom-right corner (px, negative: it pokes out). */
+function envOffset(g) {
+  return g === TILE.dense ? -4 : -9;
+}
+
+/**
+ * The rest bar's box: `g.rest` px wide, centred; with an envelope marker it
+ * stops 2 px short of the marker's disc so the disc never hides its end.
+ */
+export function restBar(g, withEnvelope) {
+  const left = Math.round((g.w - g.rest) / 2);
+  if (!withEnvelope) return { left, w: g.rest };
+  const discLeft = g.w - envOffset(g) - g.envHit + (g.envHit - g.env) / 2;
+  return { left, w: Math.max(4, Math.min(g.rest, discLeft - 2 - left)) };
 }
 
 function tileGrid(tiles, opts, ctx, key) {
@@ -347,6 +411,10 @@ function listRow(t, look, selectedId) {
 function virtualGroup(key, tiles, look, selectedId) {
   const list = tiles.filter((t) => t && typeof t.helperId === "string");
   const select = look.select;
+  const openHelper = look.openHelper;
+  const needs = Object.create(null);
+  // Needs-you rows open their agent; Elsewhere rows (another window's) select.
+  if (key !== "elsewhere") for (const t of list) if (t.dashed === true || statusOf(t.status) === "blocked") needs[t.helperId] = true;
   const rows = Math.min(list.length, VLIST.rows);
   return v_virtual_list(
     `cw-flock-vl-${key}`,
@@ -362,14 +430,35 @@ function virtualGroup(key, tiles, look, selectedId) {
   )
     .w_full()
     .h(rows * VLIST.row)
-    .on_item_click((helperId, cx) => select(helperId === selectedId ? null : helperId, cx));
+    .on_item_click((helperId, cx) => (needs[helperId] === true ? openHelper(helperId, cx) : select(helperId === selectedId ? null : helperId, cx)));
 }
 
 // ---------------------------------------------------------------------------
 // Sections
 
+/**
+ * Display cells that fit `px` at `size` px text (clipCells: emoji count 2).
+ * 0.64 em per cell (0.68 for semibold) errs wide for proportional fonts, so
+ * a string clipped to this never reaches gpui's own `.truncate()`, which
+ * cuts by code point and can split an emoji (§13.4, A2 rule 8).
+ */
+export function cellsFor(px, size, bold) {
+  return Math.max(4, Math.floor(Math.max(0, px) / (size * (bold ? 0.68 : 0.64))));
+}
+
+/**
+ * The detail card's text column width in px for a panel `width` wide: the
+ * content's 8 px sides and a scrollbar's 8 px, the card's 8 px padding and
+ * 1 px border, the 40 px sprite, two 8 px gaps and the 28 px close button.
+ */
+export function detailTextPx(width) {
+  return Math.max(120, num(width, 320) - 16 - 8 - 16 - 2 - 40 - 16 - 28);
+}
+
 function detailCard(t, vm, ctx) {
   const T = ctx.T;
+  const colPx = detailTextPx(ctx.width);
+  const fit = (s, size, bold, minus = 0) => clipCells(s, cellsFor(colPx - minus, size, bold));
   const id = str(t.helperId);
   const d = t.detail && typeof t.detail === "object" ? t.detail : {};
   const parts = str(t.tooltip).split(" · ");
@@ -387,17 +476,32 @@ function detailCard(t, vm, ctx) {
     .flex_1()
     .min_w(0)
     .gap(1)
-    .child(text(clip(`${str(t.name)} · ${speciesOf(t.species)} · ${hueName}`, FLOCK_CLIP.head), { size: 12, weight: 600, color: T.foreground, truncate: true }, T));
+    .child(text(fit(clip(`${str(t.name)} · ${speciesOf(t.species)} · ${hueName}`, FLOCK_CLIP.head), 12, true), { size: 12, weight: 600, color: T.foreground, truncate: true }, T));
   const titleLine = [title, where].filter(Boolean).join("   ");
-  if (titleLine) info.child(text(clip(titleLine, FLOCK_CLIP.title), { size: 11, color: T.muted, truncate: true }, T));
+  if (titleLine) info.child(text(fit(clip(titleLine, FLOCK_CLIP.title), 11, false), { size: 11, color: T.muted, truncate: true }, T));
   info.child(
     h_flex()
       .gap(4)
       .min_w(0)
       .child(svg(statusGlyphPath(statusOf(t.status))).w(11).h(11).flex_none().text_color(statusColor(T, statusOf(t.status), "raised")))
-      .child(text(clip(line, FLOCK_CLIP.line), { size: 11, color: T.foreground, truncate: true }, T)),
+      .child(text(fit(clip(line, FLOCK_CLIP.line), 11, false, 15), { size: 11, color: T.foreground, truncate: true }, T)),
   );
-  if (rest) info.child(text(clip(rest, FLOCK_CLIP.rest), { size: 11, color: T.muted, truncate: true }, T));
+  if (rest) info.child(text(fit(clip(rest, FLOCK_CLIP.rest), 11, false), { size: 11, color: T.muted, truncate: true }, T));
+  // Fledglings that need you, each with its own open button (§5.6: pane.focus,
+  // or terminal.peek when it has no pane).
+  const waitingKids = (Array.isArray(t.kids) ? t.kids : []).filter((k) => k && k.status === "blocked" && typeof k.helperId === "string");
+  for (const k of waitingKids.slice(0, 3)) {
+    info.child(
+      button(`cw-flock-detail-kid-${k.helperId}`, fit(`Open ${clip(str(k.name), FLOCK_CLIP.name)} (fledgling) ›`, 11, false, 12), {
+        variant: "ghost",
+        h: 24,
+        size: 11,
+        px: 4,
+        tooltip: clip(str(k.tooltip) || "A fledgling needs you", FLOCK_CLIP.tooltip),
+        onClick: (e, cx) => openHelper(k.helperId, cx),
+      }, T),
+    );
+  }
 
   const actions = h_flex().gap(6).pt(2);
   if (t.envelope === true) {
@@ -469,15 +573,18 @@ function emptyState(ctx) {
 function albumSection(vm, ui, ctx) {
   const T = ctx.T;
   const album = Array.isArray(vm.helpers.album) ? vm.helpers.album : [];
-  if (!album.length) return null;
+  // The engine leaves the rows out while the section is folded (view opts
+  // `album: false`); `albumCount` still counts them for the header.
+  const total = Math.max(album.length, Math.round(num(vm.helpers.albumCount)));
+  if (!total) return null;
   const folded = isFolded(vm, ui, "album");
   const toggleGroup = handler(ctx, "toggleGroup");
   const box = v_flex().id("cw-flock-album").w_full();
   box.child(
-    sectionHeader("cw-flock-grp-album", "album", "Album", album.length, {
+    sectionHeader("cw-flock-grp-album", "album", "Album", total, {
       folded,
       onToggle: (cx) => toggleGroup("album", cx),
-    }, T).tooltip(clip(`${plural(album.length, "helper", "helpers")} who have left`, FLOCK_CLIP.tooltip)),
+    }, T).tooltip(clip(`${plural(total, "helper", "helpers")} who have left`, FLOCK_CLIP.tooltip)),
   );
   if (folded) return box;
   const row = (a) =>

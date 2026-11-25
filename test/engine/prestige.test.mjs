@@ -110,3 +110,28 @@ test("a later wish needs gain ≥ max(5, ceil(0.25·W)) and adds to W", () => {
   assert.equal(s.wishes, 40 + info.gain);
   assert.equal(engine.wishInfo(s).can, false);
 });
+
+test("r1-18: a wish records the wish moment; the vm draws it (rise, then settle, then nothing)", () => {
+  const { s, me } = ready(0);
+  const full = engine.stringInfo(s);
+  const fill = Math.min(1, full.cranes / full.of);
+  me.act({ t: T0 + 60000, type: "wish" });
+  assert.equal(s.ui.lastWish.at, T0 + 60000);
+  close(s.ui.lastWish.fill, fill, 1e-3);
+  const at = (dt) => engine.view(s, T0 + 60000 + dt, { role: "panel", width: 320, tab: "string" }).string.wishMoment;
+  const rise = at(0);
+  assert.equal(rise.phase, "rise");
+  assert.equal(rise.strands.length, 20);
+  // the String as it was wished away: shares from the recorded fill
+  rise.strands.forEach((k, i) => close(k, Math.max(0, Math.min(1, s.ui.lastWish.fill * 20 - i)), 1e-9));
+  assert.equal(at(999).phase, "rise");
+  assert.equal(at(1000).phase, "settle");
+  assert.equal(at(2999).phase, "settle");
+  assert.equal(at(3000), null);
+  assert.equal(at(-1), null, "a clock before the wish shows nothing");
+  // survives the save round trip; older saves default to null
+  const back = engine.parseSave(engine.serialize(s));
+  assert.deepEqual(back.state.ui.lastWish, s.ui.lastWish);
+  delete s.ui.lastWish;
+  assert.equal(engine.parseSave(engine.serialize(s)).state.ui.lastWish, null);
+});

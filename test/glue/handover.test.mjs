@@ -167,3 +167,100 @@ test("checking(): a static demo, no timers, writes or run", async () => {
   const r = await w.copy("ribbon");
   assert.equal(w.render(r).tree.id, "root");
 });
+
+// ---------------------------------------------------------------------------
+// r1-01: herdr cancels the old generation's tasks without settling them, so a
+// reload during ANY save step (not only the main write) must not leave
+// save.writing held: saving goes on, the footer does not say "Saving…"
+// forever, and close(cx) still writes.
+
+/** Steps until `cond()` (≤ 100 × 50 ms). */
+async function until(cond, what) {
+  for (let i = 0; i < 100 && !cond(); i++) await w.advance(50);
+  assert.ok(cond(), what);
+}
+
+async function savingGoesOn(hitsBefore) {
+  assert.equal(w.slot.save.writing, null, "the old generation's claim is released at init");
+  assert.notEqual(w.slot.save.status, "saving");
+  await w.hits(w.copies[0], 2);
+  await w.advance(20000);
+  assert.equal(w.slot.save.writing, null);
+  assert.equal(w.slot.save.status, "ok");
+  assert.equal(parsed(w.ctl).state.stats.hits, hitsBefore + 2, "saved after the reload, nothing lost or doubled");
+  assert.doesNotMatch(w.copies[0].session.ctx().save.text, /Saving/);
+  // close(cx) from the ticker still starts its final write.
+  await w.hits(w.copies[0], 1);
+  const ticker = w.copies.find((c) => c.session.copyId === w.slot.ticker);
+  const p = w.ctl.within("event", ticker, (cx) => ticker.close(cx));
+  assert.notEqual(p, null, "close(cx) writes");
+  await w.advance(1000);
+  assert.equal(parsed(w.ctl).state.stats.hits, hitsBefore + 3);
+}
+
+test("r1-01: reload during the backup rotation", async () => {
+  w = win({ latency: { write: 300, read: 0 } });
+  const v = await w.copy("panel");
+  await w.copy("ribbon");
+  await w.advance(3000);
+  await w.hits(v, 3);
+  await w.handler(v, "buy", "paper-stack", 1);
+  await until(() => w.slot.save.writing !== null && !w.slot.inflight, "the backup write is under way (no main write yet)");
+  const hits = w.slot.state.stats.hits;
+  await w.reload();
+  await savingGoesOn(hits);
+});
+
+test("r1-01: reload during the merge read after a CAS rejection", async () => {
+  w = win({ latency: { write: 0, read: 400 } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  const disk = engine.parseSave(w.ctl.readFile(SAVE)).state;
+  for (let i = 1; i <= 3; i++) engine.apply(disk, { w: "B", s: i, t: Date.now() + i * 300, type: "click", target: "sheet" });
+  w.ctl.externalWrite(SAVE, engine.serialize(disk));
+  await w.hits(v, 2);
+  await w.handler(v, "buy", "paper-stack", 1);
+  await until(() => w.slot.save.writing !== null && w.slot.notice && w.slot.notice.kind === "conflict", "the merge read is under way");
+  assert.equal(w.slot.inflight, null);
+  await w.reload();
+  await savingGoesOn(5);
+  assert.equal(parsed(w.ctl).state.applied.B, 3, "the other writer's hits merged once");
+});
+
+test("r1-01: reload during a Settings save tool (check save now)", async () => {
+  w = win({ latency: { read: 400 } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 1);
+  await w.handler(v, "checkSave");
+  assert.notEqual(w.slot.save.writing, null, "the check holds the claim");
+  await w.reload();
+  await savingGoesOn(1);
+});
+
+test("r1-01: a claim made by an older code generation is released by the next init", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 2);
+  Object.assign(w.slot.save, { writing: 99, writingBy: null, writingGen: "an-older-build", writingAt: Date.now(), status: "saving" });
+  await w.copy("ribbon"); // herdr re-evaluates the modules on a reload: a new token
+  assert.equal(w.slot.save.writing, null);
+  await w.advance(4000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 2);
+});
+
+test("r1-01: a claim that never settles is released after WRITE_STALL_MS, with the save made due", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 2);
+  const { codeGeneration } = await import("../../mods/creaseworks/glue/live.js");
+  const { WRITE_STALL_MS } = await import("../../mods/creaseworks/glue/store.js");
+  Object.assign(w.slot.save, { writing: 99, writingBy: v.session.copyId, writingGen: codeGeneration(), writingAt: Date.now(), status: "saving" });
+  await w.advance(WRITE_STALL_MS - 5000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 0, "a live-looking claim is waited for");
+  await w.advance(10000);
+  assert.equal(w.slot.save.writing, null);
+  assert.equal(parsed(w.ctl).state.stats.hits, 2);
+});

@@ -160,3 +160,55 @@ test("cleanTitle fuzz: no controls, no lone surrogates, no double spaces, no edg
     assert.equal(cleanTitle(t), t, "idempotent");
   }
 });
+
+// ---------------------------------------------------------------------------
+// clipCells / cellWidth (review r1-04: fit a px box so gpui never truncates)
+
+test("clusterCells / cellWidth: emoji, flags, keycaps and wide characters count 2", () => {
+  const { clusterCells, cellWidth } = text;
+  assert.equal(clusterCells("a"), 1);
+  assert.equal(clusterCells("é"), 1);
+  assert.equal(clusterCells("👨‍💻"), 2);
+  assert.equal(clusterCells("🇯🇵"), 2);
+  assert.equal(clusterCells("1️⃣"), 2);
+  assert.equal(clusterCells("👩🏽‍🔬"), 2);
+  assert.equal(clusterCells("日"), 2);
+  assert.equal(clusterCells("✳"), 2, "errs wide on text-style pictographs");
+  assert.equal(cellWidth("fix 👨‍💻 tests"), 12);
+  assert.equal(cellWidth(""), 0);
+});
+
+test("clipCells: never cuts inside a cluster, fits the cell budget, ellipsis and whitespace rules of clip", () => {
+  const { clipCells, cellWidth } = text;
+  assert.equal(clipCells("abcdef", 4), "abc…");
+  assert.equal(clipCells("abc", 3), "abc");
+  assert.equal(clipCells("ab", 1), "a");
+  assert.equal(clipCells("fix the bug", 9), "fix the…", "no space before the ellipsis");
+  assert.equal(clipCells("fix 👨‍💻 tests", 6), "fix…", "the emoji does not fit whole: it is dropped, not cut");
+  assert.equal(clipCells("fix 👨‍💻 tests", 7), "fix 👨‍💻…");
+  assert.equal(clipCells("日本語テキスト", 7), "日本語…");
+  assert.equal(clipCells("anything", 0), "");
+  assert.equal(clipCells("anything", Infinity), "anything");
+  // Every herdr title emoji at every cut point, and fuzz.
+  for (const e of HERDR_EMOJI) {
+    for (let pad = 0; pad < 12; pad++) {
+      const s = "x".repeat(pad) + e + " tail";
+      for (let max = 1; max <= pad + 8; max++) {
+        const out = clipCells(s, max);
+        assert.ok(cellWidth(out) <= max, `${hex(s)} @${max}: ${hex(out)}`);
+        const head = out.endsWith("…") && !s.startsWith(out) ? out.slice(0, -1) : out;
+        assert.ok(s.startsWith(head), `${hex(s)} @${max}: ${hex(out)}`);
+        assert.equal(graphemes(head).join(""), head);
+        assert.deepEqual(graphemes(head), graphemes(s).slice(0, graphemes(head).length), `${hex(s)} @${max}`);
+      }
+    }
+  }
+  const r = rng(7);
+  for (let i = 0; i < 300; i++) {
+    const s = fixSurrogates(fuzzString(r));
+    const max = 1 + Math.floor(r() * 30);
+    const out = clipCells(s, max);
+    assert.ok(cellWidth(out) <= max);
+    assert.ok(!hasLoneSurrogate(out));
+  }
+});

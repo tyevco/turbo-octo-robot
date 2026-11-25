@@ -183,3 +183,16 @@ test("Fresh Ream: from the second day, once a day, gone when the day ends", () =
   engine.advance(s, T0 + 86400000 + 9000);
   assert.equal(s.spawn.ream, null);
 });
+
+test("r1-19: the first gilded crane carries its one-time line until a crane is caught", () => {
+  const s = seeded(11);
+  const me = writer(s);
+  s.ui.hints.fold = true;
+  s.spawn.crane = { id: "gX", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  const vm = engine.view(s, T0, { role: "panel", width: 320 });
+  assert.equal(vm.mat.crane.hint, "A gilded crane! Click it before it flies off.");
+  me.act({ t: T0 + 10, type: "click", target: "crane", id: "gX" });
+  assert.equal(s.ui.hints.crane, true);
+  s.spawn.crane = { id: "gY", slot: 1, born: s.spawn.shownMs, outcome: "song" };
+  assert.equal(engine.view(s, T0 + 20, { role: "panel", width: 320 }).mat.crane.hint, null, "once: never again after the first catch");
+});

@@ -448,7 +448,10 @@ test("widgets: switch is Switch.new(id) with a 32×18 track and a knob that tran
   assert.equal(st(track, "bg"), T.accent);
   const knob = track.children[0];
   assert.equal(knob.id, "cw-calm-knob");
-  assert.equal(st(knob, "left"), 16);
+  assert.equal(st(knob, "left"), 15); // 1 px inside the 1 px edge: 2 px from the outside
+  assert.equal(st(knob, "top"), 1);
+  assert.equal(st(track, "border"), 1);
+  assert.equal(st(track, "border_color"), T.accent);
   assert.equal(st(knob, "w"), 14);
   // on the accent track the knob is whichever of foreground / accent_foreground stands out more
   assert.equal(st(knob, "bg"), W.knobOn(T));
@@ -457,8 +460,29 @@ test("widgets: switch is Switch.new(id) with a 32×18 track and a knob that tran
   assert.equal(row.children[1].children[0].text, "On");
   const off = W.toggle("cw-calm", false, {}, T, P.S_DARK).toJSON();
   assert.equal(st(off.children[0].children[0], "bg"), T.input);
-  assert.equal(st(off.children[0].children[0].children[0], "left"), 2);
+  assert.equal(st(off.children[0].children[0].children[0], "left"), 1);
   assert.equal(off.children[0].children[1].children[0].text, "Off");
+});
+
+test("widgets: an off switch has a 1 px edge reaching 3:1 on chrome and popover in every theme (win98 T.input is white on near-white)", () => {
+  const st = (n, k) => n.styles.find((s) => s[0] === k)?.[1];
+  // The defect: win98's off track (T.input #ffffff) on its chrome (#f1f1ee) is 1.13:1 and had no edge.
+  assert.ok(C.contrast(THEMES.win98.input, THEMES.win98.chrome) < 1.2);
+  for (const name of ALL) {
+    const T = THEMES[name];
+    const track = W.toggle("cw-calm", false, {}, T, isDark(name) ? P.S_DARK : P.S_LIGHT).toJSON().children[0].children[0];
+    assert.equal(st(track, "border"), 1, name);
+    const edge = st(track, "border_color");
+    assert.equal(edge, W.trackEdge(T));
+    for (const surface of ["chrome", "popover"]) {
+      assert.ok(C.contrast(edge, T[surface]) >= C.GUARD_MIN, `${name}: off-switch edge ${edge} on ${surface} ${T[surface]} is ${r2(C.contrast(edge, T[surface]))}:1`);
+    }
+    // An explicit surface is guarded on that surface alone.
+    assert.ok(C.contrast(W.trackEdge(T, "raised"), T.raised) >= C.GUARD_MIN, `${name} raised`);
+  }
+  // T.border is kept where it already passes; win98's #808080 fails on its #c0c0c0 popover, so T.muted.
+  assert.equal(W.trackEdge(THEMES.win98, "chrome"), THEMES.win98.border);
+  assert.equal(W.trackEdge(THEMES.win98), THEMES.win98.muted);
 });
 
 test("widgets: radio fires onSelect only when not chosen; group ids are id-value", () => {

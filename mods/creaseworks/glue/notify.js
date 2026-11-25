@@ -82,6 +82,7 @@ export function check(slot, t, env, save) {
       if (sentOn(s, claim.day) <= DAILY_CAP && claim.day === env.day) return send(claim) ? "sent" : null;
       return "capped";
     }
+    if (claim.at > t) claim.at = t; // the wall clock moved back: count the 10 min from now
     if (t - claim.at > 10 * 60000) N.claim = null; // never confirmed (read-only, failing saves): give up
     return null;
   }

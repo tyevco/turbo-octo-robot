@@ -180,7 +180,13 @@ export function tooltipWrap(id, tooltip, child, _T = undefined, _S = undefined) 
  * A switch (DESIGN §3.6): `Switch.new(id)` drawn here as a 32×18 track
  * (T.accent on, T.input off) with a 14 px T.foreground knob that moves with
  * `.transition("left", 120)`, then the word "On"/"Off" (11, T.muted).
- * `opts`: `onChange(on, cx)`, `disabled`, `word` (default true).
+ * The track has a 1 px edge: the accent when on, and when off `trackEdge`
+ * (T.border, else T.muted, guarded to 3:1 against the surface: T.input is
+ * white on win98's near-white chrome, 1.13:1, so the off track vanished).
+ * The knob sits 1 px inside the edge (2 px from the outside, as before).
+ * `opts`: `onChange(on, cx)`, `disabled`, `word` (default true), `surface`
+ * (a theme key or colour the switch sits on; default both T.chrome and
+ * T.popover must pass).
  */
 export function toggle(id, on, opts = {}, T, _S = undefined) {
   requireId(id, "toggle");
@@ -189,8 +195,8 @@ export function toggle(id, on, opts = {}, T, _S = undefined) {
   const knob = div()
     .id(`${id}-knob`)
     .absolute()
-    .top(2)
-    .left(checked ? 16 : 2)
+    .top(1)
+    .left(checked ? 15 : 1)
     .w(14)
     .h(14)
     .rounded(7)
@@ -203,6 +209,8 @@ export function toggle(id, on, opts = {}, T, _S = undefined) {
     .h(18)
     .rounded(9)
     .bg(checked ? T.accent : T.input)
+    .border(1)
+    .border_color(checked ? T.accent : trackEdge(T, opts.surface))
     .child(knob);
   const row = h_flex().gap(6).min_h(MIN_HIT).child(track);
   if (opts.word !== false) row.child(text(checked ? "On" : "Off", { size: 11, color: T.muted }, T));
@@ -212,6 +220,21 @@ export function toggle(id, on, opts = {}, T, _S = undefined) {
   if (opts.onChange && !disabled) el.on_change(opts.onChange);
   if (opts.label) el.accessibility_label(String(opts.label));
   return el.child(row);
+}
+
+/**
+ * The off switch's edge: the first of T.border, T.muted, T.foreground that
+ * reaches 3:1 (DESIGN §14.2 graphics) on every surface it may sit on
+ * (`surface`, a theme key or colour; default T.chrome and T.popover).
+ */
+export function trackEdge(T, surface = undefined) {
+  const surfaces = (surface !== undefined && surface !== null ? [surface] : ["chrome", "popover"])
+    .map((s) => (isHex(s) ? s : T && typeof s === "string" && Object.hasOwn(T, s) ? T[s] : null))
+    .filter(isHex);
+  for (const c of [T.border, T.muted, T.foreground]) {
+    if (isHex(c) && surfaces.every((bg) => contrast(c, bg) >= GUARD_MIN)) return c;
+  }
+  return T.muted;
 }
 
 /**
@@ -321,7 +344,8 @@ export function checkbox(id, checked, label, opts = {}, T, _S = undefined) {
  * the mat), optional status glyph (`opts.status`, 12 px, colour guarded on
  * T.popover) or ui glyph (`opts.icon`), label 11/600 T.foreground.
  * `opts`: `onClick` (then `id` is required), `stop`, `tooltip`, `dashed`,
- * `pulse` (needs-you loop, DESIGN §13.5), `bg`.
+ * `pulse` (needs-you loop, DESIGN §13.5), `bg`, `maxW` (px: the pill never
+ * grows past it and its label truncates).
  */
 export function chip(id, label, opts = {}, T, S) {
   const clickable = Boolean(opts.onClick);
@@ -337,11 +361,15 @@ export function chip(id, label, opts = {}, T, S) {
     .border(1)
     .border_color(opts.border ?? (S ? S.sheet : T.border));
   if (id) el.id(clickable ? `${id}-pill` : id);
+  // `maxW` bounds the pill (the label truncates inside it), so a caller that
+  // reserves that width knows the chip never takes more (the ribbon's lead).
+  const bounded = typeof opts.maxW === "number" && opts.maxW > 0;
+  if (bounded) el.max_w(opts.maxW).overflow_hidden();
   if (opts.dashed) el.border_dashed();
   if (opts.status) el.child(sprite(statusGlyphPath(opts.status), 12, statusColor(T, opts.status, bg)));
   else if (opts.icon) el.child(icon(opts.icon, 12, opts.iconColor ?? T.muted));
   if (label !== null && label !== undefined && label !== "") {
-    el.child(text(label, { size: 11, weight: 600, color: opts.color ?? T.foreground }, T));
+    el.child(text(label, { size: 11, weight: 600, color: opts.color ?? T.foreground, truncate: bounded }, T));
   }
   if (opts.pulse) el.loop("opacity", { from: 0.55, to: 1, period: 1200 });
   if (!clickable) {

@@ -659,3 +659,92 @@ test("view() with 64 helpers and 500 in the Album takes < 3 ms (median)", () => 
   console.log(`# view 64 + 500 album: median ${m.toFixed(3)} ms`);
   assert.ok(m < 3, `median ${m.toFixed(3)} ms`);
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes r1-03 (Album cost), r1-14 (fledgling ids on the pips)
+
+/** A state with `n` Album helpers (left in batches of 50, one minute apart) and `live` present agents. */
+function withAlbum(n, live = 34) {
+  const s = seeded(21);
+  const me = writer(s, "wA");
+  let t = T0;
+  for (let batch = 0; batch < n / 50; batch++) {
+    me.act(observeAction((t += 60000), Array.from({ length: 50 }, (_, i) => agent(9000 + batch * 50 + i, "working", 0))));
+    me.act(observeAction((t += 1000), []));
+  }
+  me.act(observeAction((t += 1000), Array.from({ length: live }, (_, i) => agent(i, ["working", "idle", "blocked", "done"][i % 4], 0))));
+  return { s, me, t };
+}
+
+test("r1-03: Album rows are memoised and always equal a fresh build", () => {
+  const { s, me, t } = withAlbum(300);
+  const times = [t, t + 10, t + 999, t + 1000, t + 59000, t + 61000, t + 3600000, t + 86400000 + 5, t + 5000, t];
+  for (const at of times) {
+    const ours = v(s, at).helpers.album;
+    const fresh = v(engine.cloneState(s), at).helpers.album;
+    assert.deepEqual(ours, fresh, `at +${at - t}`);
+    assert.equal(ours.length, 300);
+  }
+  // Unchanged Album, same text: the very same (frozen) array comes back.
+  const a = v(s, t + 86400000 + 10).helpers.album;
+  assert.equal(v(s, t + 86400000 + 20).helpers.album, a);
+  assert.ok(Object.isFrozen(a) && Object.isFrozen(a[0]));
+  // Number style is part of the key.
+  assert.deepEqual(v(s, t + 86400000 + 30, { style: "sci" }).helpers.album, v(engine.cloneState(s), t + 86400000 + 30, { style: "sci" }).helpers.album);
+  // A helper leaving changes the roster: it is first in the Album at once.
+  const gone = engine.helperId("t0", 1000);
+  me.act(observeAction(t + 2000, Array.from({ length: 33 }, (_, i) => agent(i + 1, "working", 0))));
+  const after = v(s, t + 2000).helpers.album;
+  assert.equal(after.length, 301);
+  assert.equal(after[0].helperId, gone);
+  assert.equal(after[0].leftAgo, "0 s");
+  // Only the panel's Flock tab draws the Album.
+  assert.deepEqual(v(s, t + 2000, { tab: "shop" }).helpers.album, []);
+  assert.deepEqual(engine.view(s, t + 2000, { role: "ribbon", width: 832, writer: "wA" }).helpers.album, []);
+  assert.deepEqual(v(s, t + 2000, { width: 100 }).helpers.album, [], "the rail");
+});
+
+test("r1-03: view() cost does not grow with the Album (2,500 helpers, warm median < 3 ms)", () => {
+  const { s, t } = withAlbum(2500);
+  assert.equal(Object.values(s.helpers).filter((h) => h.gone).length, 2500);
+  const run = (state) => {
+    const times = [];
+    for (let k = 0; k < 120; k++) {
+      const a = performance.now();
+      engine.view(state, t + 1000 + k * 1000, { role: "panel", width: 320, writer: "wA" });
+      times.push(performance.now() - a);
+    }
+    times.sort((x, y) => x - y);
+    return times[Math.floor(times.length / 2)];
+  };
+  const m = run(s);
+  console.log(`# view 34 + 2500 album (1 s ticks): median ${m.toFixed(3)} ms`);
+  assert.ok(m < 3, `median ${m.toFixed(3)} ms`);
+});
+
+test("r1-14: a tile's fledglings carry their helper ids, in pip order, with a needs-you tooltip", () => {
+  const s = seeded(5);
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "working"), kid(20, 1, "working"), kid(21, 1, "blocked")]));
+  s.ui.hints.fold = true;
+  s.stats.hits = 10;
+  const vm = v(s, T0 + 60000);
+  const parent = tiles(vm).find((x) => x.helperId === id(1, 1001));
+  assert.equal(tiles(vm).length, 1, "fledglings with a present parent are pips, not tiles");
+  assert.deepEqual(parent.pips, ["working", "blocked"]);
+  assert.deepEqual(parent.kids.map((k) => [k.helperId, k.status, k.pane]), [
+    [engine.helperId("t20", 1020), "working", null],
+    [engine.helperId("t21", 1021), "blocked", null],
+  ]);
+  assert.match(parent.kids[1].tooltip, /fledgling.*Needs you 1 m: click to open it$/);
+  assert.match(parent.kids[0].name, /^[\x20-\x7e]+$/);
+});
+
+test("r1-03: opts.album false (the Album folded) builds no rows; albumCount always counts", () => {
+  const { s, t } = withAlbum(100);
+  const folded = v(s, t, { album: false });
+  assert.deepEqual(folded.helpers.album, []);
+  assert.equal(folded.helpers.albumCount, 100);
+  assert.equal(v(s, t).helpers.album.length, 100);
+  assert.equal(engine.view(s, t, { role: "ribbon", width: 832 }).helpers.albumCount, 100);
+});

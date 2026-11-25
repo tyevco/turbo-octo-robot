@@ -20,7 +20,7 @@ import { sheetPaths, spritePath, speciesSprite, icon, sprite } from "./art.js";
 import { chip, pop, progressBar, text } from "./widgets.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const MAT_CLIP = Object.freeze({ chip: 10, more: 6, label: 8, pop: 10, hint: 40 });
+export const MAT_CLIP = Object.freeze({ chip: 10, more: 6, label: 8, pop: 10, hint: 40, craneHint: 48 });
 
 const SRC_W = 304;
 const STD = Object.freeze({ h: 232, sheet: 112, sx: 96, sy: 58 });
@@ -32,6 +32,9 @@ const CRANE = Object.freeze({ w: 48, h: 36 });
 const BOAT = Object.freeze({ w: 48, h: 32, x0: 8, x1: 248 });
 const ENV_TYPES = Object.freeze(["bundle", "rush", "storm", "chorus"]);
 const HINT_TEXT = "Click the paper to fold it";
+const CRANE_HINT = "A gilded crane! Click it before it flies off.";
+/** The first gilded crane's callout chip (§3.2): two lines, 11/600. */
+const CRANE_CHIP = Object.freeze({ w: 176, h: 34 });
 
 function handler(ctx, name) {
   const h = ctx && ctx.handlers;
@@ -264,10 +267,48 @@ function ream(r, g, S, click) {
     .child(sprite(spritePath("scene", "ream"), [28, 20], S.sheet));
 }
 
-function crane(c, g, S, click, calm, zoom) {
+function craneBox(c, g) {
   const cx0 = g.mapX(num(c.x) + CRANE.w / 2) - CRANE.w / 2;
   const cy0 = g.mapY(num(c.y) + CRANE.h / 2) - CRANE.h / 2;
-  const [left, top] = g.clear(r1(Math.max(0, Math.min(g.w - CRANE.w, cx0))), r1(Math.max(0, Math.min(g.h - CRANE.h, cy0))), CRANE.w, CRANE.h);
+  return g.clear(r1(Math.max(0, Math.min(g.w - CRANE.w, cx0))), r1(Math.max(0, Math.min(g.h - CRANE.h, cy0))), CRANE.w, CRANE.h);
+}
+
+/**
+ * The first gilded crane's one-time line (§3.2, `vm.mat.crane.hint` while
+ * `ui.hints.crane` is unset): a T.popover chip above the crane (below it when
+ * the top band is in the way), moving with it. No handlers: clicks reach the
+ * mat and the crane as before.
+ */
+function craneHint(c, g, T, calm) {
+  if (!c || typeof c.hint !== "string" || !c.hint) return null;
+  const [left, top] = craneBox(c, g);
+  const w = Math.min(CRANE_CHIP.w, g.w - 8);
+  const x = r1(Math.max(4, Math.min(g.w - w - 4, left + CRANE.w / 2 - w / 2)));
+  const above = top - CRANE_CHIP.h - 4;
+  const y = r1(above >= TOP_BAND ? above : Math.min(g.h - BOTTOM_BAND - CRANE_CHIP.h, top + CRANE.h + 4));
+  const el = div()
+    .id("cw-crane-hint")
+    .absolute()
+    .left(x)
+    .top(y)
+    .w(w)
+    .h(CRANE_CHIP.h)
+    .px(8)
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(8)
+    .bg(T.popover)
+    .border(1)
+    .border_color(T.border)
+    // fixed copy, two lines at most: wraps instead of cutting (§13.4)
+    .child(text(clip(c.hint, MAT_CLIP.craneHint), { size: 11, weight: 600, color: T.foreground }).whitespace_normal().text_center());
+  if (!calm && num(c.x1, c.x) !== num(c.x)) el.transition("left", { duration: 1000, easing: "linear" });
+  return el;
+}
+
+function crane(c, g, S, click, calm, zoom) {
+  const [left, top] = craneBox(c, g);
   const bob = !calm && (c.bob === undefined ? true : Boolean(c.bob));
   const art = div().id("cw-crane-art").absolute().left(4).top(4).w(40).h(28);
   for (const [part, color] of [["outline", S.goldInk], ["body", S.gold], ["shade", S.goldShade]]) {
@@ -507,5 +548,7 @@ export function renderMat(vm, ui, ctx) {
   for (const p of pops(vm, ui, S, calm)) root.child(p);
   const hint = firstRunHint(vm, g, T, calm, zoom);
   if (hint) root.child(hint);
+  const callout = craneHint(mat.crane, g, T, calm);
+  if (callout) root.child(callout);
   return root;
 }

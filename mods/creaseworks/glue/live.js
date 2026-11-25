@@ -19,8 +19,28 @@ const FORGET_MS = 60000;
 export const DEBOUNCE_MS = 2000;
 export const CADENCE_MS = 15000;
 const URGENT = { buy: 1, wish: 1, setting: 1, switch: 1, open: 1, collect: 1, notified: 1 };
+/**
+ * The unconfirmed-action log stays bounded while saves cannot land (A5):
+ * past COALESCE_AT entries a roster observation replaces the previous one
+ * (its turn counters still carry every finished task), and past PENDING_MAX
+ * the log is given up (`save.logLost`): the next save then writes this
+ * window's game whole, keeping any other writer's file aside (store.js).
+ */
+export const COALESCE_AT = 512;
+export const PENDING_MAX = 20000;
 
 const map = () => Object.create(null);
+
+// This code generation's token. Module state is evaluated again on every hot
+// reload, so a slot field holding another token was set by a generation whose
+// tasks herdr cancelled (their promises never settle).
+let generationToken = null;
+
+/** The token of the code generation running now (a plain string; never read at module load). */
+export function codeGeneration() {
+  if (generationToken === null) generationToken = `g${randomId()}`;
+  return generationToken;
+}
 
 /** A random id (writerId, copy ids): 12 base-36 characters from Math.random (glue only). */
 export function randomId() {
@@ -75,10 +95,17 @@ export function newSlot(home, paths) {
     loading: 0, // load generation in progress (0: none)
     readOnly: false,
     save: {
-      status: "ok", baseOk: false, gen: 0, writing: null, savedAt: null, dirtyAt: null, urgentAt: null,
+      status: "ok", baseOk: false, gen: 0, writing: null, writingBy: null, writingGen: null, writingAt: null, savedAt: null, dirtyAt: null, urgentAt: null,
       writtenRev: -1, confirmed: 0, errors: 0, retryAt: 0, damaged: [], problemSince: null,
+      // backup rotation: its own retry time and last error (the main save goes on)
+      bakRetryAt: 0, bakError: null, bakErrors: 0,
+      // save.json can't be read (> 1 MiB, not a file): progress goes to the recovery file
+      unreadable: null, recoveryText: null,
+      // the next write replaces the file instead of merging (reset / restore, or a lost log)
+      overwrite: null, logLost: false,
     },
-    notices: { load: null, write: null },
+    bakState: null, // "ok" | "damaged" | null (unknown) for bakText
+    notices: { load: null, write: null, bak: null },
     flash: null, // { text, until }
     obs: { sig: null, presence: null },
     live: map(), // address → true (latest terminals() read; §5.6 liveness)
@@ -98,10 +125,14 @@ export function touch(slot) {
   slot.rev += 1;
 }
 
-/** Marks the state as changed at `t` (urgent: a 2 s debounce; else the 15 s cadence). */
+/**
+ * Marks the state as changed at `t` (urgent: a 2 s debounce; else the 15 s
+ * cadence). A `dirtyAt` later than `t` means the wall clock moved back: it is
+ * moved to `t`, so the cadence never waits out the jump (A6: ≤ 15 s lost).
+ */
 export function markDirty(slot, t, urgent) {
   const S = slot.save;
-  if (S.dirtyAt === null) S.dirtyAt = t;
+  if (S.dirtyAt === null || S.dirtyAt > t) S.dirtyAt = t;
   if (urgent) S.urgentAt = t + DEBOUNCE_MS;
 }
 
@@ -130,10 +161,30 @@ export function dispatch(slot, partial, t) {
   action.t = t;
   slot.seq = action.s;
   const ev = apply(slot.state, action);
-  slot.pending.push(action);
+  // A read-only game is never written, so nothing needs replaying onto a disk file.
+  if (!slot.readOnly) record(slot, action);
   markDirty(slot, t, URGENT[action.type] === 1);
   touch(slot);
   return ev;
+}
+
+/** Adds `action` to the unconfirmed log, keeping it bounded (COALESCE_AT, PENDING_MAX). */
+export function record(slot, action) {
+  const P = slot.pending;
+  if (P.length >= COALESCE_AT && action.type === "observe" && Array.isArray(action.helpers)) {
+    for (let i = P.length - 1; i >= 0; i--) {
+      if (P[i].type === "observe" && Array.isArray(P[i].helpers)) {
+        P.splice(i, 1);
+        break;
+      }
+    }
+  }
+  P.push(action);
+  if (P.length > PENDING_MAX) {
+    // Too long to replay onto another writer's file: the next save writes this game whole.
+    slot.pending = [];
+    slot.save.logLost = true;
+  }
 }
 
 /** The role part of a copy id ("panel:k3…" → "panel"). */
@@ -149,11 +200,14 @@ export function roleOf(copyId) {
  */
 export function takeOver(slot, copyId) {
   const role = roleOf(copyId);
+  const gone = [];
   for (const id of Object.keys(slot.copies)) {
     if (id === copyId || roleOf(id) !== role) continue;
     if (slot.ticker === id) slot.ticker = copyId;
     delete slot.copies[id];
+    gone.push(id);
   }
+  return gone; // the copies taken over (their tasks died with their generation)
 }
 
 /**

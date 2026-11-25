@@ -89,6 +89,10 @@ export function wish(state, ctx, t, ev) {
     ev.push({ kind: "ignored", reason: "wish" });
     return ev;
   }
+  // How full the String is as it is wished away: the §3.5 wish moment draws
+  // these strands rising and fading (vm string.wishMoment).
+  const before = stringInfo(state);
+  state.ui.lastWish = { at: t, fill: round4(Math.max(0, Math.min(1, before.cranes / before.of))) };
   for (const id of Object.keys(state.envelopes)) {
     if (state.envelopes[id].type === "bundle") openEnvelope(state, ctx, id, t, ev);
   }

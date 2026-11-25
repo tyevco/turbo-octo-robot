@@ -15,6 +15,8 @@
 //   matShown    override of "the mat is on screen" (default: the presence flags)
 //   buyCount    the Works toggle: 1 (default) | 10 | "max"
 //   saveNotice  the glue's save notice: { kind, text?, message?, retryMs?, at? } | null
+//   album       false when the Flock's Album section is folded: its rows are
+//               not built (helpers.album []); helpers.albumCount still counts
 
 import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRESTIGE } from "./content.js";
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
@@ -23,6 +25,7 @@ import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicki
 import { stackFactor } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
 import { rates } from "./engine.js";
+import { bestSince } from "./away.js";
 import { formatCount, formatRate, formatDuration, formatEta, formatInt } from "./format.js";
 import { clip } from "./text.js";
 
@@ -60,6 +63,7 @@ const SAVE_ACTIONS = {
 };
 /** Mat geometry (DESIGN §3.2): play field y 28–200 (short: 28–152); crane hit 48×36, boat 48×32. */
 const MAT = { w: 304, fieldTop: 28, fieldBottom: 200, shortBottom: 152, craneW: 48, craneH: 36, boatW: 48, edge: 8 };
+const CRANE_HINT = "A gilded crane! Click it before it flies off.";
 const CLIP = { name: 8, chip: 10, long: 16, title: 60, agent: 24, notice: 140, row: 32, place: 40, error: 60 };
 
 // ---------------------------------------------------------------------------
@@ -215,9 +219,9 @@ export function view(state, now, opts = undefined) {
     tray: trayVm(state, t, E, r, idx, loops, style),
     streak: streakVm(state, E, t),
     boosts: boostsVm(state, E, live, t),
-    helpers: helpersVm(state, t, roster, loops, o, style),
+    helpers: helpersVm(state, t, roster, loops, o, style, idx, tilesShown),
     shop: shopVm(state, E, r, idx, writer, o, style),
-    string: stringVm(state, style),
+    string: stringVm(state, style, t),
     settings: settingsVm(state),
     away,
     notices: noticesVm(state, t, saveNotice, style),
@@ -337,7 +341,7 @@ function budget(state, E, t, c) {
 // ---------------------------------------------------------------------------
 // Flock tab (§3.3)
 
-function helpersVm(state, t, roster, loops, o, style) {
+function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
   const nTiles = roster.ordered.length + roster.elsewhere.length;
   const density = state.settings.density;
   const dense = typeof o.dense === "boolean" ? o.dense : density === "always" ? true : density === "never" ? false : nTiles >= 21;
@@ -367,7 +371,10 @@ function helpersVm(state, t, roster, loops, o, style) {
     empty: nTiles === 0,
     pace: nWorking > 0 ? `${formatInt(nWorking)} working · bench pace ${Math.round(crowd(nWorking) * 100)} %` : null,
     elsewhere: roster.elsewhere.map((h) => tile(state, t, h, true, roster, loops)),
-    album: albumOf(state, t, style),
+    // Only the panel's Flock tab draws the Album, and only unfolded: rows are
+    // built there (opts.album false = folded: none), counted everywhere.
+    album: tilesShown && o.album !== false ? albumOf(state, t, style, idx) : [],
+    albumCount: albumCount(state, idx),
   };
 }
 
@@ -390,6 +397,9 @@ function tile(state, t, h, elsewhere, roster, loops) {
     statusWord: word,
     envelope: Object.hasOwn(state.envelopes, h.id),
     pips,
+    // The fledglings behind the pips, same order: a needs-you pip opens its
+    // own agent (pane.focus, or terminal.peek when it has no pane, §5.6).
+    kids: kids ? kids.map((k) => kidOf(k, t)) : [],
     rest: status === "idle" && !elsewhere ? Math.max(0, Math.min(1, num(h.rest))) : null,
     pulse: !elsewhere && !loops.chipPulse && loops.pulse[h.id] === true,
     spin: !elsewhere && loops.spin[h.id] === true,
@@ -401,6 +411,14 @@ function tile(state, t, h, elsewhere, roster, loops) {
     kind: h.kind === "kid" ? "kid" : "pane",
     detail: detail(state, t, h, status, title, where, kids ? kids.length : 0),
   };
+}
+
+function kidOf(k, t) {
+  const status = statusOf(k);
+  const word = WORD[status];
+  let tooltip = `${nameOfHelper(k, CLIP.long)} (fledgling) · ${word}`;
+  if (status === "blocked") tooltip += typeof k.blockedAt === "number" ? ` ${ago(t - k.blockedAt)}: click to open it` : ": click to open it";
+  return { helperId: k.id, status, name: nameOfHelper(k, CLIP.chip), pane: k.pane ?? null, tooltip };
 }
 
 /** The Flock detail card's lines (§3.3), for the selected tile. */
@@ -423,27 +441,86 @@ function detail(state, t, h, status, title, where, nKids) {
   };
 }
 
-function albumOf(state, t, style) {
+// The Album grows without limit (§11.1: pane helpers are never dropped), so
+// its rows are memoised: the sorted list per roster (the helper index object,
+// rebuilt on every Album change) and each row per helper until its "left …
+// ago" text would change. A view of an unchanged Album returns the very same
+// frozen array; the output is always what a fresh build would give.
+const ALBUM = new WeakMap(); // helper index → { gone, count, style, items, lo, hi, out }
+
+/** The roster's Album: its gone pane helpers (sorted, most recently left first, when rows are first built). */
+function albumEntry(state, idx) {
+  let c = ALBUM.get(idx);
+  if (c) return c;
   const gone = [];
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
     if (h.gone && h.kind === "pane") gone.push(h);
   }
-  gone.sort((a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b));
-  const rows = new Array(gone.length);
-  for (let i = 0; i < gone.length; i++) {
-    const h = gone[i];
-    rows[i] = {
-      helperId: h.id,
-      name: nameOfHelper(h, CLIP.long),
-      species: h.species,
-      hue: h.hue,
-      leftAgo: ago(t - num(h.missingSince, t)),
-      folds: cnt(num(h.stats && h.stats.folds), style),
-    };
+  c = { gone, sorted: false, count: gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
+  ALBUM.set(idx, c);
+  return c;
+}
+
+function albumCount(state, idx) {
+  return albumEntry(state, idx).count;
+}
+
+/** [lo, hi): the elapsed ms over which ago(ms) prints the same text. */
+function agoSpan(ms) {
+  if (!(ms >= 1000)) return [-Infinity, 1000];
+  const u = ms >= 86400000 ? 86400000 : ms >= 3600000 ? 3600000 : ms >= 60000 ? 60000 : 1000;
+  const k = Math.floor(ms / u);
+  return [k * u, (k + 1) * u];
+}
+
+function albumRow(h, t, style, texts) {
+  const m = h.missingSince;
+  const known = typeof m === "number" && Number.isFinite(m);
+  const span = known ? agoSpan(t - m) : [-Infinity, Infinity];
+  // Rows that left in the same unit step share one "left … ago" text.
+  let left = texts[span[0]];
+  if (left === undefined) left = texts[span[0]] = ago(known ? t - m : 0);
+  const row = Object.freeze({
+    helperId: h.id,
+    name: nameOfHelper(h, CLIP.long),
+    species: h.species,
+    hue: h.hue,
+    leftAgo: left,
+    folds: cnt(num(h.stats && h.stats.folds), style),
+  });
+  return { h, row, lo: known ? m + span[0] : -Infinity, hi: known ? m + span[1] : Infinity };
+}
+
+function albumOf(state, t, style, idx) {
+  const c = albumEntry(state, idx);
+  if (c.items && c.style === style && t >= c.lo && t < c.hi) return c.out;
+  const texts = Object.create(null);
+  if (!c.sorted) {
+    c.gone.sort((a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b));
+    c.sorted = true;
   }
-  return rows;
+  if (!c.items || c.style !== style) {
+    c.style = style;
+    c.items = c.gone.map((h) => albumRow(h, t, style, texts));
+  } else {
+    const items = c.items;
+    for (let i = 0; i < items.length; i++) if (!(t >= items[i].lo && t < items[i].hi)) items[i] = albumRow(items[i].h, t, style, texts);
+  }
+  let lo = -Infinity;
+  let hi = Infinity;
+  const out = new Array(c.items.length);
+  for (let i = 0; i < c.items.length; i++) {
+    const it = c.items[i];
+    if (it.lo > lo) lo = it.lo;
+    if (it.hi < hi) hi = it.hi;
+    out[i] = it.row;
+  }
+  c.lo = lo;
+  c.hi = hi;
+  c.out = Object.freeze(out);
+  return c.out;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +634,8 @@ function matVm(state, t, E, loops, short, calm, roster) {
     const x1 = calm ? x0 : pos.x < MAT.w / 2 ? maxX : MAT.edge;
     const k = life > 0 ? Math.max(0, Math.min(1, 1 - msLeft / life)) : 1;
     crane = { id: sp.crane.id, x: round1(x0 + (x1 - x0) * k), y: round1(pos.y - MAT.craneH / 2), x1: round1(x1), msLeft, bob: loops.crane };
+    // The one-time line (§3.2) until a crane is caught (ui.hints.crane).
+    crane.hint = state.ui.hints.crane === true ? null : CRANE_HINT;
   }
   let boat = null;
   if (sp.boat) {
@@ -774,11 +853,26 @@ function shopVm(state, E, r, idx, writer, o, style) {
 // ---------------------------------------------------------------------------
 // String tab (§3.5)
 
-function stringVm(state, style) {
+/** The §3.5 wish moment: strands rise and fade for `riseMs`, then settle (no motion) until `settleMs`. */
+export const WISH_MOMENT = Object.freeze({ riseMs: 1000, settleMs: 3000 });
+
+function wishMomentOf(state, t) {
+  const lw = state.ui.lastWish;
+  if (!lw || typeof lw.at !== "number") return null;
+  const dt = t - lw.at;
+  if (!(dt >= 0 && dt < WISH_MOMENT.settleMs)) return null;
+  const fill = Math.max(0, Math.min(1, num(lw.fill)));
+  const strands = new Array(20);
+  for (let i = 0; i < 20; i++) strands[i] = Math.max(0, Math.min(1, fill * 20 - i));
+  return { phase: dt < WISH_MOMENT.riseMs ? "rise" : "settle", strands };
+}
+
+function stringVm(state, style, t) {
   const s = stringInfo(state);
   const per = s.of / 20;
   const strands = new Array(20);
   for (let i = 0; i < 20; i++) strands[i] = Math.max(0, Math.min(1, (s.cranes - i * per) / per));
+  const wishMoment = wishMomentOf(state, t);
   const W = state.wishes;
   const gainShown = Math.max(s.gain, s.needed);
   return {
@@ -801,6 +895,9 @@ function stringVm(state, style) {
     next: `Next crane in ${cnt(s.nextIn, style)} folds · lifetime ${cnt(s.lifetime, style)}`,
     at: `At ${formatInt(s.of)}: +${formatInt(gainShown)} Wishes (+${Math.round(PRESTIGE.perWish * 100)} % to everything each, forever)`,
     button: `Make the wish (+${formatInt(gainShown)} Wishes)`,
+    // null, or for 3 s after a wish { phase: "rise" | "settle", strands }:
+    // the String as it was wished away (§3.5 wish moment).
+    wishMoment,
   };
 }
 
@@ -844,8 +941,11 @@ function awayCard(state, E, style) {
       const h = hs[id];
       if (h && !h.gone && h.status === "blocked") needs.push({ helperId: id, name: nameOfHelper(h, CLIP.chip) });
     }
-    const bh = p.best ? hs[p.best] : null;
-    const best = bh ? { helperId: bh.id, name: nameOfHelper(bh, CLIP.long), species: bh.species, tasks: bh.stats.tasks } : null;
+    // Tasks finished since the absence began (the pot's snapshot), never
+    // lifetime totals; no line when nobody finished one (§10.3).
+    const top = bestSince(state, p);
+    const bh = top ? top.helper : null;
+    const best = bh ? { helperId: bh.id, name: nameOfHelper(bh, CLIP.long), species: bh.species, tasks: top.tasks } : null;
     const affordable = (p.affordable || []).map((id) => ({ id, name: itemName(id) }));
     const rested = num(p.rested);
     return {

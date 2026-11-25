@@ -53,7 +53,8 @@ const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creasework
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
 const { renderAway, awayLines } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
-const { renderRibbon, pipArea, densityLevel } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { renderRibbon, pipArea, densityLevel, ribbonLayout, textBound, CHIP_GLYPH, ENV_MARKER } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { spritePath } = await import("../../mods/creaseworks/ui/art.js");
 
 installMockWindow();
 
@@ -426,6 +427,114 @@ test("ribbon density levels A/B/C follow §3.10 and every helper keeps a mark up
   for (const w of [1100, 1440]) assert.notEqual(F.scenario("ribbon-64", { window: w }).vm.ribbon.level, "C");
 });
 
+/** A ribbon VM of the first `n` marks of ribbon-34 (group order), as the view would level it with no lead. */
+function ribbonOf(n, W, extra = {}) {
+  const base = F.scenario("ribbon-34", { window: 1100 }).vm;
+  const marks = base.ribbon.marks.slice(0, n);
+  return { ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: densityLevel(n, pipArea(W)), ...extra } };
+}
+
+const styleOf = (n, k) => (n.styles || []).find((x) => x[0] === k)?.[1];
+function findNode(json, id) {
+  let out = null;
+  walk(json, (node) => {
+    if (!out && node.id === id) out = node;
+  });
+  return out;
+}
+
+test("ribbon: a lead chip (narrow hint, save chip, welcome pill) is subtracted before the density level, so no mark is clipped", () => {
+  // The defect: the window shot (1100×700, 12 agents, W = 832) chose level A
+  // for the full 582 px and the ~340 px narrow hint pushed marks 11 and 12
+  // past the overflow edge.
+  const W = 832;
+  const vm = ribbonOf(12, W);
+  assert.equal(vm.ribbon.level, "A", "the view alone picks chips");
+  const s = { width: W, height: 30 };
+  const ctx = makeCtx("graphite", s, { narrowHint: true, panelShown: true });
+  const lay = ribbonLayout(vm, ctx, W);
+  assert.ok(lay.lead > 0 && lay.avail === lay.w - lay.lead);
+  assert.notEqual(lay.level, "A", "12 chips do not fit beside the narrow hint");
+  assert.ok(lay.lead + lay.need <= lay.w, `lead ${lay.lead} + marks ${lay.need} within ${lay.w}`);
+  const json = renderRibbon(vm, {}, ctx).toJSON();
+  assert.equal(ids(json).filter((id) => id.startsWith("cw-rib-m-")).length, 12, "one mark per helper");
+  assert.ok(ids(json).includes("cw-rib-pips") && !ids(json).includes("cw-rib-chips"));
+  // Every lead element is bounded to the width it reserved.
+  const hint = findNode(json, "cw-rib-hint");
+  const spec = lay.specs.find((x) => x.key === "hint");
+  assert.equal(styleOf(hint, "max_w"), spec.w);
+  assert.equal(styleOf(findNode(json, "cw-rib-hint-fold"), "w"), spec.fold);
+  assert.equal(styleOf(findNode(json, "cw-rib-hint-later"), "w"), spec.later);
+  // The bounds hold the widths the shot rig measured at 11 px (pill 243, Fold 36, Not now 55).
+  assert.ok(spec.pill >= 243 && spec.fold >= 36 && spec.later >= 55, JSON.stringify(spec));
+  assert.ok(textBound("\u{1F600}\u{1F600}", 400) >= 2 * 11, "wide clusters count two cells");
+
+  // Without the hint the same ribbon keeps its chips.
+  assert.equal(ribbonLayout(vm, makeCtx("graphite", s), W).level, "A");
+
+  // Sweep: every helper count up to 64, both widths, every lead combination.
+  const leads = [{}, { narrowHint: true }, { save: "Save problem" }, { pill: "Welcome back +12.4M" },
+    { narrowHint: true, save: "Save problem", pill: "Welcome back +12.4M" }];
+  for (const Wd of [832, 1172]) {
+    for (let n = 1; n <= 34; n++) {
+      for (const l of leads) {
+        const v = ribbonOf(n, Wd, { save: l.save ?? null, pill: l.pill ?? null });
+        const c = makeCtx("paper", { width: Wd, height: 30 }, { narrowHint: Boolean(l.narrowHint) });
+        const ly = ribbonLayout(v, c, Wd);
+        const tag = `n ${n} W ${Wd} ${JSON.stringify(l)}`;
+        assert.ok(ly.lead + ly.need <= ly.w, `${tag}: ${ly.lead} + ${ly.need} > ${ly.w} (level ${ly.level})`);
+        const j = renderRibbon(v, {}, c).toJSON();
+        const shown = ids(j).filter((id) => id.startsWith("cw-rib-m-")).length;
+        const tallied = ly.tallies.reduce((a, t) => a + t.count, 0);
+        assert.equal(shown + tallied, n, `${tag}: every helper has a mark or a tally`);
+        if (ly.level === "C") assert.equal(shown, v.ribbon.marks.filter((m) => m.status === "blocked" || m.status === "done").length);
+      }
+    }
+  }
+  // The view's own level C (64+ at 1100) is kept, its tallies drawn.
+  const big = F.scenario("ribbon-130", { window: 1100 });
+  const bl = ribbonLayout(big.vm, makeCtx("graphite", big, { narrowHint: true }), big.width);
+  assert.equal(bl.level, "C");
+  assert.deepEqual(bl.tallies, big.vm.ribbon.tallies);
+});
+
+test("ribbon: the envelope marker is the envelope glyph on a sheet disc inside its chip", () => {
+  const r = F.scenario("ribbon-4", { window: 1440 });
+  const ctx = makeCtx("paper", r);
+  const json = renderRibbon(r.vm, r.ui, ctx).toJSON();
+  const withEnv = r.vm.ribbon.marks.filter((m) => m.envelope);
+  assert.ok(withEnv.length > 0);
+  for (const m of r.vm.ribbon.marks) {
+    const chipNode = findNode(json, `cw-rib-m-${m.helperId}`);
+    const marker = findNode(json, `cw-rib-env-${m.helperId}`);
+    const glyph = chipNode.children.find((c) => c.kind === "svg");
+    const g = m.envelope ? CHIP_GLYPH.envelope : CHIP_GLYPH.plain;
+    assert.equal(styleOf(glyph, "left"), g.x);
+    assert.equal(styleOf(glyph, "top"), g.y);
+    assert.equal(styleOf(glyph, "w"), g.size);
+    if (!m.envelope) {
+      assert.equal(marker, null);
+      continue;
+    }
+    // Inside the 20 px chip (it used to hang 3 px over the next chip).
+    assert.equal(styleOf(marker, "right"), 0);
+    assert.equal(styleOf(marker, "top"), 0);
+    assert.equal(styleOf(marker, "w"), ENV_MARKER.size);
+    assert.ok(ENV_MARKER.size <= 20 - 2, "leaves the chip's lower-left for the status glyph");
+    assert.equal(styleOf(marker, "bg"), ctx.S.sheet);
+    // The glyph the legend teaches (it used to be a blank dot).
+    const env = (marker.children || []).find((c) => c.kind === "svg");
+    assert.ok(env, "the marker holds a glyph");
+    assert.equal(env.args[0], spritePath("status", "envelope"));
+    assert.equal(styleOf(env, "text_color"), ctx.S.ink);
+    // The disc (centre 15,5; r 5) only grazes the status glyph's box corner.
+    const r5 = ENV_MARKER.size / 2;
+    const dx = 20 - r5 - (g.x + g.size);
+    const dy = g.y - r5;
+    assert.ok(Math.hypot(dx, dy) >= r5 - 0.6, "the marker does not cover the status glyph");
+  }
+});
+
 test("rail: every helper is a pip in 4 columns, the grid scrolls, the save glyph shows only with a notice", () => {
   const s = F.scenario("rail-64");
   const json = renderRail(s.vm, s.ui, makeCtx("graphite", s)).toJSON();
@@ -655,14 +764,16 @@ test("qjs: the frame modules load under the sandbox and render 64 helpers within
       'import { renderRibbon } from "./ui/ribbon.js";',
       `const T = ${JSON.stringify(THEMES.graphite)};`,
       `const VIEWS = ${JSON.stringify(views)};`,
+      // One copy per render, in turn (a real panel or ribbon renders one copy):
+      // five 64-helper copies in one render measured the test, not the game,
+      // and left under 10 ms of the 50 ms budget (it flaked).
       "export default class M extends View {",
       "  render() {",
-      "    const out = v_flex().id(\"m\");",
-      "    for (const s of VIEWS) {",
-      "      const ctx = { T, S: pickScene(true), hues: pickHues(true), zoom: 1, calm: false, width: s.width, height: s.height, handlers: {} };",
-      "      out.child((s.role === \"ribbon\" ? renderRibbon : renderPanel)(s.vm, s.ui, ctx));",
-      "    }",
-      "    return out;",
+      "    const k = this.k ?? 0;",
+      "    this.k = k + 1;",
+      "    const s = VIEWS[k % VIEWS.length];",
+      "    const ctx = { T, S: pickScene(true), hues: pickHues(true), zoom: 1, calm: false, width: s.width, height: s.height, handlers: {} };",
+      "    return v_flex().id(\"m\").child((s.role === \"ribbon\" ? renderRibbon : renderPanel)(s.vm, s.ui, ctx));",
       "  }",
       "}",
       "",
@@ -670,13 +781,26 @@ test("qjs: the frame modules load under the sandbox and render 64 helpers within
     const host = await createHost({ modRoot: dir, scenario: {} });
     try {
       const load = await host.load();
-      const { tree, ms } = host.render();
-      const { ms: again } = host.render();
-      assert.equal(tree.id, "m");
-      assert.equal(tree.children.length, views.length);
+      // First pass: every copy cold (the harness itself throws a BudgetError
+      // past herdr's 50 ms render interrupt). Second pass: warm, each with
+      // real headroom under the budget.
+      const cold = [];
+      const warm = [];
+      for (const pass of [cold, warm]) {
+        for (let k = 0; k < views.length; k++) {
+          const { tree, ms } = host.render();
+          assert.equal(tree.id, "m");
+          assert.equal(tree.children.length, 1);
+          pass.push(ms);
+        }
+      }
       assert.deepEqual(host.errors, []);
-      console.log(`# qjs: module graph ${JSON.stringify(load.ms ?? load)}; render of ${views.length} copies (64 helpers) ${ms.toFixed(1)} ms, then ${again.toFixed(1)} ms`);
-      assert.ok(again < 50, `render ${again} ms`);
+      const fmt = (xs) => xs.map((x) => x.toFixed(1)).join(", ");
+      console.log(`# qjs: module graph ${JSON.stringify(load.ms ?? load)}; one 64-helper copy a render: cold ${fmt(cold)} ms, warm ${fmt(warm)} ms`);
+      for (let k = 0; k < views.length; k++) {
+        assert.ok(cold[k] < 50, `${views[k].name} cold render ${cold[k]} ms`);
+        assert.ok(warm[k] < 35, `${views[k].name} warm render ${warm[k]} ms (wants 15 ms of headroom under the 50 ms budget)`);
+      }
     } finally {
       host.dispose();
     }

@@ -95,11 +95,28 @@ function cardWidth(ctx) {
   return Math.max(200, Math.min(304, num(ctx.width, 320) - 16));
 }
 
+/**
+ * The §3.5 wish moment, from `vm.string.wishMoment` ({ phase, strands } for
+ * 3 s after a wish, else null): "rise" draws the String as it was wished
+ * away and moves each filled strand up 30 px while it fades (900 ms; calm: a
+ * single 300 ms fade, in place); "settle" puts the strands back at the new
+ * shares with no motion at all, so nothing slides back into view.
+ */
+export const WISH_RISE = Object.freeze({ ms: 900, calmMs: 300, dy: -30 });
+
+function moment(s) {
+  const m = s && s.wishMoment;
+  if (!m || typeof m !== "object" || (m.phase !== "rise" && m.phase !== "settle")) return null;
+  return { phase: m.phase, shares: strandShares({ strands: m.strands, of: s.of, cranes: s.cranes }) };
+}
+
 function strands(s, ctx, calm) {
   const S = ctx.S;
   const cw = cardWidth(ctx);
   const sw = Math.max(STRAND.minW, Math.min(STRAND.w, Math.floor((cw - 8 - (STRAND.count - 1) * STRAND.gap) / STRAND.count)));
-  const shares = strandShares(s);
+  const m = moment(s);
+  const rise = m && m.phase === "rise";
+  const shares = rise ? m.shares : strandShares(s);
   const path = spritePath("ui", "garland-strand");
   const row = h_flex().absolute().top(4).left(0).w_full().justify_center().items_start().gap(STRAND.gap);
   shares.forEach((k, i) => {
@@ -111,8 +128,15 @@ function strands(s, ctx, calm) {
       .w(sw)
       .h(Math.round(STRAND.h * k * 10) / 10)
       .overflow_hidden()
-      .transition("height", calm ? 150 : 600)
       .child(svg(path).absolute().bottom(0).left(0).w(sw).h(STRAND.h).text_color(S.sheet));
+    if (!m) fill.transition("height", calm ? 150 : 600);
+    // The fill rides in a full-height "lift" layer: the wish moment moves and
+    // fades the lift (same id every render, so gpui animates the change).
+    const lift = div().id(`cw-string-lift-${i}`).absolute().left(0).top(rise && !calm ? WISH_RISE.dy : 0).w(sw).h(STRAND.h).opacity(rise ? 0 : 1).child(fill);
+    if (rise) {
+      if (calm) lift.transition("opacity", WISH_RISE.calmMs);
+      else lift.transition("top", { duration: WISH_RISE.ms, easing: "ease-out" }).transition("opacity", WISH_RISE.ms);
+    }
     row.child(
       div()
         .relative()
@@ -120,7 +144,7 @@ function strands(s, ctx, calm) {
         .w(sw)
         .h(STRAND.h)
         .child(div().absolute().inset_0().opacity(0.25).child(svg(path).w(sw).h(STRAND.h).text_color(S.sheet)))
-        .child(fill),
+        .child(lift),
     );
   });
   return div().id("cw-string-card").relative().flex_none().w(cw).h(STRAND.card).rounded(8).bg(S.mat).overflow_hidden().child(row);
@@ -133,6 +157,7 @@ function confirmCard(s, L, ui, ctx) {
   const wish = handler(ctx, "wish");
   const wait = typeof ui.armedAt === "number" && typeof ui.now === "number" ? Math.max(0, ARM_MS - (ui.now - ui.armedAt)) : ARM_MS;
   const actions = h_flex()
+    .id("cw-string-confirm-actions")
     .gap(8)
     .pt(4)
     .child(button("cw-string-keep", "Keep folding", { h: 28, size: 12, onClick: (e, cx) => cancel(cx) }, T))
@@ -154,11 +179,13 @@ function confirmCard(s, L, ui, ctx) {
     .bg(T.popover)
     .border(1)
     .border_color(T.accent)
+    // The buttons come right under the question, where the wish button was:
+    // at 784 px the card's end is below the fold (§3.5, review r1-26).
     .child(text("Make the wish?", { size: 13, weight: 600, color: T.foreground }, T))
     .child(text(clip(`+${int(L.gain)} Wishes: +5 % to everything each, forever`, STRING_CLIP.line), { size: 12, weight: 600, color: T.foreground }, T))
-    .child(text(CLEARS, { size: 11, color: T.foreground }, T).whitespace_normal())
-    .child(text(KEEPS, { size: 11, color: T.muted }, T).whitespace_normal())
-    .child(actions);
+    .child(actions)
+    .child(text(CLEARS, { size: 11, color: T.foreground }, T).whitespace_normal().pt(4))
+    .child(text(KEEPS, { size: 11, color: T.muted }, T).whitespace_normal());
 }
 
 function perks(list, T) {

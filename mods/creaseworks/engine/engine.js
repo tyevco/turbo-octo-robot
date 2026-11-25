@@ -8,7 +8,7 @@ import { effects, buy as buyItem, credit, estimateDelta } from "./economy.js";
 import { indexHelpers, flock, helperBreaks, chargeRest, creditHelpers, observe } from "./helpers.js";
 import { openEnvelope } from "./envelopes.js";
 import { click, spawnPiece, inStep, stepMult, songMult } from "./clicking.js";
-import { awaySegment, collect, potLive, rebase, look } from "./away.js";
+import { awaySegment, collect, potLive, rebase, look, skipCounted, raiseHighWater } from "./away.js";
 import { wish } from "./prestige.js";
 import { runAutomations } from "./automations.js";
 import { newGame, cloneState, migrate, VERSION, MAP_FIELDS } from "./state.js";
@@ -177,6 +177,18 @@ function piece(state, ctx, t, dt, ev, earned) {
   potLive(state, dt, t + dt, ev);
 }
 
+/**
+ * Move the clock forward to `now` (> clock): first over any stretch this save
+ * already counted before a clock-back (no credit, §10.1), then step the rest.
+ */
+function forward(state, ctx, now, ev) {
+  skipCounted(state, now);
+  const from = state.clock;
+  if (now > from) step(state, ctx, now, ev);
+  else if (ctx.writer !== undefined && ctx.writer !== null && !(state.writersSeen[ctx.writer] >= now)) state.writersSeen[ctx.writer] = now;
+  raiseHighWater(state, from);
+}
+
 /** Move the clock from state.clock to `now` (> clock): an away segment if the gap is > 60 s. */
 function step(state, ctx, now, ev) {
   const t0 = state.clock;
@@ -221,7 +233,9 @@ function pruneNotices(state, now) {
 /**
  * advance(state, now[, writer]) → Event[]. Moves time forward from state.clock
  * (closed form per segment; an away segment when the gap is > 60 s). A clock
- * more than 5 s behind state.clock is a clock-back: no credit, rebase, notice.
+ * more than 5 s behind state.clock is a clock-back: no credit, rebase, notice;
+ * when the clock comes back, the stretch up to `away.highWater` is not
+ * credited again and the notice goes.
  * `writer` (the glue's writerId) lets helpers another window stopped observing
  * fall back to the away rate (§10.2); without it every helper counts as seen.
  */
@@ -234,7 +248,7 @@ export function advance(state, now, writer) {
     return ev;
   }
   if (now <= state.clock) return ev;
-  step(state, makeCtx(state, writer), now, ev);
+  forward(state, makeCtx(state, writer), now, ev);
   state.rev++;
   return ev;
 }
@@ -296,7 +310,7 @@ export function apply(state, action) {
   const t = typeof action.t === "number" && Number.isFinite(action.t) ? action.t : state.clock;
   const ctx = makeCtx(state, w);
   if (t > state.clock) {
-    step(state, ctx, t, ev);
+    forward(state, ctx, t, ev);
     ctx.cacheT = NaN;
   }
   state.applied[w] = s;

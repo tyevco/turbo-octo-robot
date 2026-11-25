@@ -277,6 +277,75 @@ export function clip(str, maxGraphemes, ellipsis = "\u2026") {
   return (keep > 0 ? s.slice(0, ends[keep - 1]) : "") + tail;
 }
 
+/**
+ * Display cells of one grapheme cluster: 2 for emoji (any Extended_Pictographic
+ * code point, VS16, a keycap or a flag) and East Asian wide or fullwidth
+ * characters, else 1. Errs wide: a text-style pictograph counts 2 as well.
+ */
+export function clusterCells(g) {
+  const s = String(g);
+  for (let i = 0; i < s.length; i++) {
+    const cp = s.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp === 0xfe0f || cp === 0x20e3 || (cp >= 0x1f1e6 && cp <= 0x1f1ff)) return 2;
+    if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || (cp >= 0xac00 && cp <= 0xd7a3)
+      || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60)
+      || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd)) return 2;
+    if (cp >= 0xa9 && RE_PICT.test(String.fromCodePoint(cp))) return 2;
+  }
+  return 1;
+}
+
+/** Display cells of `str` (the sum of its clusters' clusterCells). */
+export function cellWidth(str) {
+  const s = wellFormed(toText(str));
+  const ends = boundaries(s, Infinity);
+  let n = 0;
+  let from = 0;
+  for (let k = 0; k < ends.length; k++) {
+    n += clusterCells(s.slice(from, ends[k]));
+    from = ends[k];
+  }
+  return n;
+}
+
+/**
+ * `str` cut to at most `maxCells` display cells (clusterCells: emoji and wide
+ * characters count 2), the ellipsis included; the same rules as clip(): never
+ * inside a cluster, no whitespace before the ellipsis. For text whose box is
+ * known in px, so gpui's own truncation (which cuts by code point, inside
+ * emoji) never has to engage.
+ */
+export function clipCells(str, maxCells, ellipsis = "…") {
+  const s = wellFormed(toText(str));
+  let max = Number(maxCells);
+  if (!(max > 0)) return "";
+  if (max === Infinity) return s;
+  max = Math.floor(max);
+  if (s.length <= max && !/[^\x20-\x7e]/.test(s)) return s; // ASCII fast path
+  const ends = boundaries(s, Infinity);
+  const cells = new Array(ends.length);
+  let total = 0;
+  let from = 0;
+  for (let k = 0; k < ends.length; k++) {
+    cells[k] = clusterCells(s.slice(from, ends[k]));
+    total += cells[k];
+    from = ends[k];
+  }
+  if (total <= max) return s;
+  const tail = wellFormed(toText(ellipsis));
+  const tailCells = tail === "" ? 0 : cellWidth(tail);
+  let room = max - tailCells;
+  const useTail = room > 0;
+  if (!useTail) room = max;
+  let keep = 0;
+  let used = 0;
+  while (keep < ends.length && used + cells[keep] <= room) used += cells[keep++];
+  if (useTail) while (keep > 0 && RE_SPACE_ONLY.test(s.slice(keep > 1 ? ends[keep - 2] : 0, ends[keep - 1]))) keep--;
+  const head = keep > 0 ? s.slice(0, ends[keep - 1]) : "";
+  return useTail && head !== "" ? head + tail : useTail ? tail : head;
+}
+
 // C0 and C1 controls, DEL, line/paragraph separators and the bidi embedding,
 // override and isolate controls; terminal escape sequences go first (CSI,
 // OSC/DCS/APC/PM/SOS strings, then any other two-byte ESC sequence).

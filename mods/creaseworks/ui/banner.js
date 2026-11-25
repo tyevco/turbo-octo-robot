@@ -2,7 +2,8 @@
 // (ARCHITECTURE B11) → element | null. At least 28 px under the header; text
 // is always T.foreground (never a status colour on a tint), tints go through
 // withAlpha() after hex6(). "Details ▸" expands a 3-line card (path with
-// middle truncation, last good save, backup state and kept damaged files).
+// middle truncation, last good save, backup state) and, when files were kept
+// aside, a wrapping "Kept aside:" line with every name in its tooltip.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -12,7 +13,7 @@ import { icon } from "./art.js";
 import { button, text } from "./widgets.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const BANNER_CLIP = Object.freeze({ text: 140, lead: 60, path: 44, line: 48 });
+export const BANNER_CLIP = Object.freeze({ text: 140, lead: 60, path: 44, line: 48, kept: 120, keptTip: 240 });
 
 /** Kinds shown in the banner (save notices plus the engine's clock notice). */
 export const BANNER_KINDS = Object.freeze(["recovered", "fresh", "conflict", "merged", "error", "newer", "clock"]);
@@ -71,22 +72,52 @@ function split(textStr) {
   return [m[1], m[3]];
 }
 
-function detailsCard(ctx, T) {
+const ACTION_W = Object.freeze({ retry: 72, details: 64, dismiss: 56 });
+const LINE = 14;
+/** Height of the expanded Details card with its 3 one-line rows. */
+export const DETAILS_H = 58;
+/** At most this many wrapped rows of kept file names (the tooltip has them all). */
+export const KEPT_ROWS = 3;
+
+/**
+ * The Details card's text: three one-line rows (file, last good save, backup
+ * state) and the kept file names on their own wrapping row (`kept`, with
+ * `keptTip` for the tooltip and `keptRows` from a width estimate), or null.
+ */
+export function detailsText(ctx) {
   const save = (ctx && ctx.save) || {};
   const lines = [];
   lines.push(save.path ? `File: ${middleClip(save.path, BANNER_CLIP.path)}` : "File: the save in herdr's app home");
   lines.push(clip(save.lastGood ? `Last good save: ${save.lastGood}` : "Last good save: not known yet", BANNER_CLIP.line));
-  const kept = Array.isArray(save.damaged) && save.damaged.length ? ` · kept ${save.damaged.map(String).join(", ")}` : "";
-  lines.push(clip(`Backup: ${save.backup ? String(save.backup) : "see Settings › Save"}${kept}`, BANNER_CLIP.line));
-  const card = v_flex().id("cw-banner-details").mx(8).mb(4).px(6).py(4).gap(0).rounded(6).bg(T.raised).border(1).border_color(T.border);
-  for (const l of lines) card.child(text(l, { size: 11, color: T.muted, truncate: true }, T));
-  return card;
+  lines.push(clip(`Backup: ${save.backup ? String(save.backup) : "see Settings › Save"}`, BANNER_CLIP.line));
+  const names = Array.isArray(save.damaged) ? save.damaged.map(String).filter((x) => x) : [];
+  if (!names.length) return { lines, kept: null, keptTip: null, keptRows: 0 };
+  const all = `Kept aside: ${names.join(", ")}`;
+  const kept = clip(all, BANNER_CLIP.kept);
+  const width = typeof ctx.width === "number" && ctx.width > 0 ? ctx.width : 320;
+  // card: 8 px margins, 6 px padding and a 1 px border each side; 11 px ≈ 6.2 px a grapheme
+  const perLine = Math.max(8, Math.floor((width - 16 - 12 - 2) / 6.2));
+  const keptRows = Math.min(KEPT_ROWS, Math.max(1, Math.ceil(graphemes(kept).length / perLine)));
+  return { lines, kept, keptTip: clip(all, BANNER_CLIP.keptTip), keptRows };
 }
 
-const ACTION_W = Object.freeze({ retry: 72, details: 64, dismiss: 56 });
-const LINE = 14;
-/** Height of the expanded Details card (3 lines). */
-export const DETAILS_H = 58;
+/** Height of the expanded Details card for `ctx` (DETAILS_H plus the kept rows). */
+export function detailsHeight(ctx) {
+  return DETAILS_H + detailsText(ctx).keptRows * LINE;
+}
+
+function detailsCard(ctx, T) {
+  const d = detailsText(ctx);
+  const card = v_flex().id("cw-banner-details").mx(8).mb(4).px(6).py(4).gap(0).rounded(6).bg(T.raised).border(1).border_color(T.border);
+  for (const l of d.lines) card.child(text(l, { size: 11, color: T.muted, truncate: true }, T));
+  if (d.kept) {
+    card.child(
+      div().id("cw-banner-kept").w_full().min_w(0).h(d.keptRows * LINE).overflow_hidden().text_size(11).line_height("127%")
+        .text_color(T.muted).whitespace_normal().tooltip(d.keptTip).child(d.kept),
+    );
+  }
+  return card;
+}
 
 /**
  * The banner's geometry for the panel (it places the away card under it):
@@ -112,7 +143,7 @@ export function bannerLayout(vm, ui, ctx) {
   else lines = Math.ceil(len(lead) / perLine) + (rest ? Math.ceil(len(rest) / perLine) : 0);
   const h = Math.max(28, lines * LINE + 8);
   const actionsH = inline || !actionsW ? 0 : 28;
-  const detailsH = ui && ui.details && actions.includes("details") ? DETAILS_H : 0;
+  const detailsH = ui && ui.details && actions.includes("details") ? detailsHeight(ctx) : 0;
   return { notice, lead, rest, h, inline, actionsH, detailsH, total: h + actionsH + detailsH };
 }
 
@@ -160,6 +191,6 @@ export function renderBanner(vm, ui, ctx) {
   }
   const wrap = v_flex().id("cw-banner-wrap").w_full().h(lay.total).flex_none().bg(bg).border_b(1).border_color(T.border).child(row);
   if (!lay.inline && lay.actionsH) wrap.child(bar);
-  if (details) wrap.child(detailsCard(ctx, T).h(DETAILS_H - 4));
+  if (details) wrap.child(detailsCard(ctx, T).h(lay.detailsH - 4));
   return wrap;
 }

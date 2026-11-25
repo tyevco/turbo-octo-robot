@@ -42,7 +42,7 @@ const isDark = (name) => name !== "paper" && name !== "win98";
 const HANDLER_NAMES = [
   "click", "open", "openHelper", "buy", "setting", "switchAuto", "wish", "collect", "dismiss", "fold", "show", "tab",
   "segment", "select", "toggleGroup", "showGroup", "details", "confirm", "cancel", "retrySave", "checkSave",
-  "restoreBackup", "sharePath", "resetGame",
+  "restoreBackup", "sharePath", "pickSharePath", "resetGame",
 ];
 
 /** A ctx (B11) with recording handlers; `calls` gets `[name, ...args without cx]`. */
@@ -921,7 +921,8 @@ test("settings: §3.6 sections in order, switches and radios wired to setting/sw
     ["setting", "gather", false], ["setting", "nodes", false], ["setting", "pops", false],
     ["setting", "order", "workspace"], ["setting", "density", "always"], ["setting", "style", "sci"],
     ["switchAuto", "mail-sorter", false], ["checkSave"], ["confirm", "restore"],
-    ["sharePath", "/home/me/.herdr/data/creaseworks/save.json"], ["confirm", "reset"],
+    // r1-16: the share button opens the share card; it never sends this window's own path.
+    ["confirm", "share"], ["confirm", "reset"],
   ]);
   // Only owned automations get a switch; "1 of 3 sent today".
   const switches = [];

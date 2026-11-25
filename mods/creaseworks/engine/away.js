@@ -57,9 +57,13 @@ export function awaySegment(state, ctx, t0, t1, ev) {
     pushNotice(state, { kind: "away", at: t1, data: { seconds: sec, folds } });
     return;
   }
+  // A new pot snapshots every pane helper's task count (`tasks0`, [id, n]
+  // pairs) so the card's best helper counts the tasks done since the last
+  // visit, not lifetime totals (§10.3).
   const p = aw.pot || {
     seconds: 0, gap: 0, capped: false, folds: 0, split: { workshops: 0, helpers: 0 },
     envelopes: 0, needs: [], rested: 0, best: null, affordable: [], at: t1, liveMs: 0,
+    tasks0: ctx.idx.panes.map((h) => [h.id, h.stats.tasks]),
   };
   p.seconds += sec;
   p.gap += gap;
@@ -70,13 +74,33 @@ export function awaySegment(state, ctx, t0, t1, ev) {
   p.envelopes = Object.keys(state.envelopes).length;
   p.needs = ctx.idx.present.filter((h) => h.status === "blocked").map((h) => h.id);
   p.rested += rested;
-  let best = null;
-  for (const h of ctx.idx.panes) if (!best || h.stats.tasks > best.stats.tasks) best = h;
-  p.best = best && best.stats.tasks > 0 ? best.id : null;
+  const top = bestSince(state, p);
+  p.best = top ? top.helper.id : null;
   p.affordable = affordableWith(state, state.bank + p.folds);
   p.at = t1;
   p.liveMs = 0;
   aw.pot = p;
+}
+
+/**
+ * The present pane helper with the most tasks finished since the pot's
+ * snapshot (`tasks0`): { helper, tasks } with tasks > 0, or null. A pot
+ * without a snapshot (an older save) or a helper that joined after it has no
+ * known baseline and is left out.
+ */
+export function bestSince(state, p) {
+  if (!p || !Array.isArray(p.tasks0)) return null;
+  const hs = state.helpers;
+  let best = null;
+  for (const pair of p.tasks0) {
+    if (!Array.isArray(pair)) continue;
+    const id = String(pair[0]);
+    const h = Object.hasOwn(hs, id) ? hs[id] : null;
+    if (!h || h.gone || !h.stats) continue;
+    const n = (typeof h.stats.tasks === "number" ? h.stats.tasks : 0) - (typeof pair[1] === "number" ? pair[1] : 0);
+    if (n > 0 && (!best || n > best.tasks || (n === best.tasks && h.id < best.helper.id))) best = { helper: h, tasks: n };
+  }
+  return best;
 }
 
 /** Up to 3 items (most expensive first) the bank plus `funds` would buy that it cannot buy now. */
@@ -116,6 +140,42 @@ export function potLive(state, dtMs, t, ev) {
   if (!p) return;
   p.liveMs += dtMs;
   if (p.liveMs >= K.potAutoMs) collect(state, t, ev, true);
+}
+
+/**
+ * Time forward over a stretch this save already counted (§10.1): after a
+ * clock-back the clock sits below `away.highWater`; a forward jump of more
+ * than 5 s (the clock coming back) credits nothing up to the high-water mark.
+ * The skipped stretch is frozen like a rebase (boost ends move with it) and,
+ * once the clock is back past the mark, the `clock` notice goes. Live ticks
+ * (≤ 5 s) are credited as usual and push the mark on by their length.
+ * Returns the ms skipped (0 when nothing was).
+ */
+export function skipCounted(state, now) {
+  const aw = state.away;
+  const c = state.clock;
+  const hw = aw.highWater;
+  if (!(typeof hw === "number" && hw > c && now - c > K.clockBackMs)) return 0;
+  const to = Math.min(now, hw);
+  const shift = to - c;
+  const bo = state.boosts;
+  if (bo.rushEnd > c) bo.rushEnd += shift;
+  if (bo.stormEnd > c) bo.stormEnd += shift;
+  if (state.spawn.syncedTo < to) state.spawn.syncedTo = to;
+  state.clock = to;
+  if (to >= hw) {
+    const list = state.notices;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].kind === "clock") list.splice(i, 1);
+  }
+  return shift;
+}
+
+/** Keep `away.highWater` after time moved forward from `from` to `state.clock` (credited). */
+export function raiseHighWater(state, from) {
+  const aw = state.away;
+  const hw = typeof aw.highWater === "number" ? aw.highWater : from;
+  const g = Math.max(0, state.clock - from);
+  aw.highWater = hw > from ? hw + g : Math.max(hw, state.clock);
 }
 
 /** The clock moved back: no credit, rebase to `now`, show the `clock` notice. */

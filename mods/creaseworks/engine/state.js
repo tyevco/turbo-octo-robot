@@ -90,7 +90,9 @@ export function newGame({ seed = 1, now = 0, day = "1970-01-01" } = {}) {
     boosts: { rush: 0, storm: 0, chorus: 0, song: 0, tailwind: 0, tailwindMs: 0, rushEnd: 0, stormEnd: 0 },
     helpers: makeMap(),
     envelopes: makeMap(),
-    away: { pot: null, capUsedMs: 0, lastLiveAt: now, lastSegmentEnd: null, last: null, busy: { since: now, folds: 0, tasks: 0 } },
+    // highWater: the latest wall time this save has counted (§10.1): after a
+    // clock-back, the stretch up to it is never credited a second time.
+    away: { pot: null, capUsedMs: 0, lastLiveAt: now, lastSegmentEnd: null, last: null, busy: { since: now, folds: 0, tasks: 0 }, highWater: now },
     notices: [],
     notify: { day, sent: 0, firedFull: false, pileSince: null, pileDay: null, saveEpisode: null },
     garlands: [],
@@ -98,7 +100,9 @@ export function newGame({ seed = 1, now = 0, day = "1970-01-01" } = {}) {
       bySource: makeMap(), runBySource: makeMap(), tasks: 0, hits: 0,
       units: { created: 0, opened: 0, converted: 0 },
     },
-    ui: { hints: { fold: false, crane: false }, narrowHintDay: null },
+    // lastWish { at, fill }: when the last wish was made and how full the
+    // String was (0..1), for the §3.5 wish moment (strands rise and fade).
+    ui: { hints: { fold: false, crane: false }, narrowHintDay: null, lastWish: null },
   };
 }
 

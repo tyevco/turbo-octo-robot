@@ -6,6 +6,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { win, SAVE, BAK, DIR, damaged, saveText, freshState, parsed, engine } from "./_util.mjs";
+import * as store from "../../mods/creaseworks/glue/store.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -263,4 +264,234 @@ test("cadence: a purchase saves 2 s later; steady play saves every 15 s, not eve
   const during = saves().slice(n0 + 1);
   assert.ok(during.length >= 3 && during.length <= 5, `${during.length} saves in 60 s of play`);
   for (let i = 1; i < during.length; i++) assert.ok(during[i] - during[i - 1] >= 14000);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 (r1-06 … r1-13): each defect with the test that catches it.
+
+const LOC = `${DIR}/location.json`;
+const RECOVERY = `${DIR}/save.recovery.json`;
+
+test("r1-06: after sharing stops, {\"path\":null} is no damage; a really damaged pointer still is", async () => {
+  const shared = "/other/home/data/creaseworks/save.json";
+  w = win({ files: { [shared]: saveText(freshState(8)) } });
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.handler(v, "sharePath", shared);
+  await w.flush();
+  await w.handler(v, "sharePath", "");
+  await w.flush();
+  assert.deepEqual(JSON.parse(w.ctl.readFile(LOC)), { path: null });
+  await w.advance(16000);
+  const files = Object.fromEntries([...w.ctl.files].filter(([p]) => p.startsWith(DIR)));
+  for (let restart = 0; restart < 2; restart++) {
+    w.dispose();
+    w = win({ files });
+    await w.copy("panel");
+    await w.flush();
+    assert.equal(w.slot.paths.save, SAVE);
+    assert.equal(w.slot.notice, null, "no false 'damaged pointer' notice on a restart");
+  }
+  for (const bad of ["{{{", '{"path":"relative.json"}', '{"path":5}', "[]"]) {
+    w.dispose();
+    w = win({ files: { ...files, [LOC]: bad } });
+    await w.copy("panel");
+    await w.flush();
+    assert.equal(w.slot.notice && w.slot.notice.kind, "recovered", `pointer ${bad}`);
+    assert.match(w.slot.notice.text, /location\.json/);
+  }
+});
+
+test("r1-07: the wall clock moving back an hour does not stop saving or backup rotation", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 3);
+  await w.advance(20000);
+  const OFF = 3600000;
+  Date.now = () => w.ctl.t - OFF; // clock.js reads Date.now; timers keep virtual time
+  await w.hits(v, 10);
+  const n0 = w.ctl.writes.filter((x) => x.path === SAVE && x.ok).length;
+  await w.advance(20000);
+  assert.ok(w.ctl.writes.filter((x) => x.path === SAVE && x.ok).length > n0, "saved within the 15 s cadence");
+  assert.equal(parsed(w.ctl).state.stats.hits, 13, "every hit on disk");
+  // Backup rotation keeps its 5 min pace on the new clock.
+  const b0 = w.ctl.writes.filter((x) => x.path === BAK && x.ok).length;
+  for (let i = 0; i < 24; i++) {
+    await w.handler(v, "click", "sheet", null, null);
+    await w.advance(15000);
+  }
+  assert.ok(w.ctl.writes.filter((x) => x.path === BAK && x.ok).length > b0, "the backup rotated after the jump");
+  assert.ok(w.slot.save.dirtyAt === null || w.slot.save.dirtyAt <= Date.now());
+});
+
+test("r1-08: a backup that can't be written is shown and retried; Settings never claims a rotation that failed", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  const msg = "Permission denied (os error 13)";
+  for (let i = 0; i < 3; i++) w.ctl.failNextWrite(msg, BAK);
+  await w.handler(v, "click", "sheet", null, null);
+  await w.advance(16000); // second save: rotation is due and fails
+  const slot = w.slot;
+  assert.equal(w.ctl.readFile(BAK), null, "no backup was written");
+  assert.equal(slot.notice && slot.notice.kind, "error", "never silent");
+  assert.match(slot.notice.text, /Can't update the backup \(save\.bak\.json\): Permission denied/);
+  const info = v.session.ctx().save;
+  assert.match(info.backup, /^not updated \(Permission denied/);
+  assert.doesNotMatch(String(info.backup), /rotated/);
+  assert.match(info.text, /^Backup problem · saved/);
+  assert.equal(slot.save.status, "ok", "the main save goes on");
+  const vm = v.session.vm();
+  assert.equal(vm.notices[0].kind, "error");
+  // The main save keeps landing while the backup waits for its retry.
+  await w.hits(v, 2);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 3);
+  // Retry now: the failures are used up and the rotation lands.
+  for (let i = 0; i < 3 && w.ctl.readFile(BAK) === null; i++) {
+    await w.handler(v, "retrySave");
+    await w.handler(v, "click", "sheet", null, null);
+    await w.advance(3000);
+  }
+  assert.ok(engine.parseSave(w.ctl.readFile(BAK)).ok, "rotated once the disk allowed it");
+  assert.equal(slot.notice, null, "the backup notice clears");
+  assert.match(v.session.ctx().save.backup, /^rotated \d\d:\d\d$/);
+});
+
+test("r1-08: another writer's rotation (a CAS rejection on the backup) is caught up quietly", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  w.ctl.externalWrite(BAK, saveText(freshState(9)));
+  await w.handler(v, "click", "sheet", null, null);
+  await w.advance(16000);
+  assert.equal(w.slot.notice, null);
+  assert.equal(w.slot.bakText, w.ctl.readFile(BAK));
+});
+
+test("r1-09: an unreadable save.json: progress goes to save.recovery.json, the banner says what to do, and it recovers", async () => {
+  const huge = `{"pad":"${"x".repeat(1100000)}"}`;
+  w = win({ files: { [SAVE]: huge } });
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  const slot = w.slot;
+  assert.equal(slot.notice.kind, "error");
+  assert.match(slot.notice.text, /Can't read save\.json: Text file exceeds 1 MiB\. Move or delete it \(path in Details\); until then progress is kept in save\.recovery\.json\./);
+  assert.ok(engine.parseSave(w.ctl.readFile(RECOVERY)).ok, "the recovery file is written at once");
+  await w.hits(v, 4);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl, RECOVERY).state.stats.hits, 4, "on the normal cadence");
+  assert.equal(w.ctl.readFile(SAVE), huge, "save.json is never touched");
+  assert.match(v.session.ctx().save.text, /save\.recovery\.json/);
+  // A restart prefers the recovery file to the (older or missing) backup.
+  const files = Object.fromEntries([...w.ctl.files].filter(([p]) => p.startsWith(DIR)));
+  w.dispose();
+  w = win({ files });
+  const v2 = await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.state.stats.hits, 4, "loaded from save.recovery.json");
+  // The player moves save.json away: the next save writes it again and the problem clears.
+  w.ctl.externalWrite(SAVE, null);
+  await w.hits(v2, 1);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 5);
+  assert.equal(w.slot.notice, null);
+  assert.equal(w.slot.save.status, "ok");
+});
+
+test("r1-09: save.json replaced by a readable file while unreadable: it is kept aside, not lost", async () => {
+  w = win({ files: { [SAVE]: `{"pad":"${"x".repeat(1100000)}"}` } });
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.hits(v, 2);
+  const other = saveText(freshState(10));
+  w.ctl.externalWrite(SAVE, other);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 2, "this window's game saved");
+  assert.equal(w.ctl.readFile(damaged(1)), other, "the file found there was kept aside");
+  assert.equal(w.slot.notice.kind, "recovered");
+  assert.match(w.slot.notice.text, /save\.damaged-1\.json/);
+});
+
+test("r1-10: Reset survives another window saving before this window's next write", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.hits(v, 5);
+  await w.advance(16000);
+  await w.handler(v, "resetGame");
+  // (no tick yet) Window B, on the same save, writes its pre-reset game plus a hit.
+  const disk = engine.parseSave(w.ctl.readFile(SAVE)).state;
+  engine.apply(disk, { w: "B", s: 1, t: Date.now(), type: "click", target: "sheet" });
+  w.ctl.externalWrite(SAVE, engine.serialize(disk));
+  await w.advance(3000);
+  assert.equal(w.slot.state.stats.hits, 0, "not merged back in memory");
+  assert.equal(parsed(w.ctl).state.stats.hits, 0, "the new game is on disk");
+  assert.ok(!w.slot.notice || w.slot.notice.kind !== "merged");
+  // Ordinary saving goes on (merging again) afterwards.
+  await w.hits(v, 1);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 1);
+  assert.equal(w.slot.save.overwrite, null);
+});
+
+test("r1-11: Settings save tools say something for every outcome, busy included", async () => {
+  w = win({ latency: { write: 400 } });
+  const v = await w.copy("panel");
+  await w.advance(2000);
+  await w.handler(v, "click", "sheet", null, null);
+  await w.advance(16000); // a second save: the first became the backup
+  await w.handler(v, "restoreBackup");
+  await w.advance(1500); // 400 ms writes: the old save is kept aside first
+  assert.match(w.slot.flash.text, /^Restored the backup\. The old save was kept as save\.damaged-1\.json\.$/);
+  await w.advance(4000);
+  await w.handler(v, "resetGame");
+  await w.advance(1500); // 400 ms writes: the old save is kept aside first
+  assert.match(w.slot.flash.text, /^Started a new game\. The old save was kept as save\.damaged-2\.json\.$/);
+  await w.advance(4000);
+  // A write under way: each tool flashes instead of doing nothing.
+  for (const [name, ...args] of [["checkSave"], ["restoreBackup"], ["resetGame"], ["sharePath", "/x/save.json"]]) {
+    await w.handler(v, "buy", "paper-stack", 1);
+    for (let i = 0; i < 40 && w.slot.save.writing === null; i++) await w.advance(100);
+    assert.notEqual(w.slot.save.writing, null, "a save is being written");
+    w.slot.flash = null;
+    const hitsBefore = w.slot.state.stats.hits;
+    await w.handler(v, name, ...args);
+    assert.match(w.slot.flash && w.slot.flash.text, /try again in a moment/, name);
+    assert.equal(w.slot.state.stats.hits, hitsBefore);
+    await w.advance(2000);
+  }
+});
+
+test("r1-12: the fresh-start notice says what was missing or damaged and what was really kept", async () => {
+  w = win({ files: { [BAK]: "[]" } });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.notice.text, "Save was missing and the backup was damaged. Started fresh; the damaged file was kept.");
+  w.dispose();
+  w = win({ files: { [SAVE]: '"old shape"', [BAK]: "[]" } });
+  w.ctl.failNextWrite("Permission denied (os error 13)", damaged(1));
+  w.ctl.failNextWrite("Permission denied (os error 13)", damaged(1));
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.notice.text, "Save and backup were damaged. Started fresh; neither damaged file could be kept.");
+  assert.deepEqual(w.slot.save.damaged, []);
+  w.dispose();
+  w = win({ files: { [SAVE]: "{{{" } });
+  w.ctl.failNextWrite("Permission denied (os error 13)", damaged(1));
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.notice.text, "Save was damaged and there was no backup. Started fresh; the damaged file could not be kept.");
+  assert.equal(store.freshText(true, "a", true, null), "Save and backup were damaged. Started fresh; one damaged file could not be kept.");
+  assert.equal(store.freshText(true, "a", true, "b"), "Save and backup were damaged. Started fresh; both files kept.");
+});
+
+test("r1-13: a damaged backup is reported as damaged, not 'present'", async () => {
+  w = win({ files: { [SAVE]: '"old shape"', [BAK]: "[]" } });
+  const v = await w.copy("panel");
+  await w.flush();
+  const info = v.session.ctx().save;
+  assert.equal(info.backup, "damaged");
+  assert.deepEqual(info.damaged, ["save.damaged-1.json", "save.damaged-2.json"]);
 });

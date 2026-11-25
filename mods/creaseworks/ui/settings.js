@@ -116,7 +116,7 @@ function saveSection(vm, ui, ctx) {
   const checkSave = handler(ctx, "checkSave");
   const confirm = handler(ctx, "confirm");
   const restoreBackup = handler(ctx, "restoreBackup");
-  const sharePath = handler(ctx, "sharePath");
+  const cancel = handler(ctx, "cancel");
   const box = v_flex().id("cw-set-save").w_full().gap(4);
   box.child(heading("cw-set-h-save", "SAVE", T));
   const path = str(save.path);
@@ -160,17 +160,70 @@ function saveSection(vm, ui, ctx) {
       ctx,
     ));
   }
+  const sharing = ui && ui.confirm === "share";
   box.child(
     button("cw-set-share", "Share a save with another herdr home…", {
       variant: "ghost",
       h: 28,
       size: 12,
       px: 4,
-      tooltip: "Point another herdr home at this save (location.json)",
-      onClick: (e, cx) => sharePath(path || null, cx),
+      tooltip: "Save to another window's save.json (writes only location.json here)",
+      // Opens the share card; it never sends this window's own path (that
+      // would only answer "already saves there").
+      onClick: (e, cx) => (sharing ? cancel(cx) : confirm("share", cx)),
     }, T),
   );
+  if (sharing) box.child(shareCard(save, ctx));
   return box;
+}
+
+/**
+ * The share card (DESIGN §12.5): pick window A's …/data/creaseworks/save.json
+ * (`handlers.pickSharePath`: the glue opens the file picker and hands the
+ * chosen absolute path to `sharePath`), or stop sharing (`sharePath("")`, this
+ * window's own save again; shown unless `ctx.save.shared` is false).
+ */
+function shareCard(save, ctx) {
+  const T = ctx.T;
+  const h = ctx && ctx.handlers;
+  const canPick = Boolean(h && typeof h.pickSharePath === "function");
+  const pickSharePath = handler(ctx, "pickSharePath");
+  const sharePath = handler(ctx, "sharePath");
+  const cancel = handler(ctx, "cancel");
+  const card = v_flex()
+    .id("cw-set-share-card")
+    .w_full()
+    .p(12)
+    .gap(4)
+    .rounded(8)
+    .bg(T.popover)
+    .border(1)
+    .border_color(T.accent)
+    .child(text("Share a save with another herdr home", { size: 12, weight: 600, color: T.foreground }, T))
+    .child(
+      text("Choose the other window's save.json (its path is under Save in that window's Settings). This window then plays and saves that game; only location.json is written here.", { size: 11, color: T.muted }, T)
+        .whitespace_normal(),
+    );
+  const row = h_flex().gap(6).flex_wrap().pt(4);
+  row.child(button("cw-set-share-pick", "Choose save.json…", {
+    variant: "primary",
+    h: 28,
+    size: 12,
+    disabled: !canPick,
+    tooltip: canPick ? "Opens the file picker" : "The file picker is not available in this window",
+    onClick: (e, cx) => pickSharePath(cx),
+  }, T));
+  if (save.shared !== false) {
+    row.child(button("cw-set-share-stop", "Stop sharing", {
+      h: 28,
+      size: 12,
+      tooltip: "Back to this window's own save (location.json cleared)",
+      onClick: (e, cx) => sharePath("", cx),
+    }, T));
+  }
+  row.child(div().flex_1());
+  row.child(button("cw-set-share-cancel", "Close", { variant: "ghost", h: 28, size: 12, px: 6, onClick: (e, cx) => cancel(cx) }, T));
+  return card.child(row);
 }
 
 /** The Settings content. Pure (B11). */

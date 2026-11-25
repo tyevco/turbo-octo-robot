@@ -114,14 +114,16 @@ export class Session {
     if (!slot) slot = installSlot(newSlot(home, store.slotPaths(home)));
     this.slot = slot;
     this.copyId = `${this.role}:${randomId()}`;
-    takeOver(slot, this.copyId);
+    const gone = takeOver(slot, this.copyId);
     if (slot.widths.lastPanel === null) {
       const w = recallWidth();
       if (w !== null) slot.widths.lastPanel = w;
     }
     beat(slot, this.copyId, t);
     if (slot.state === null) this.startLoad(cx);
-    else if (slot.inflight) cx.spawn(() => store.resolveInflight(slot), { owner: null });
+    // A hot reload: release the older generation's save claim (its task never
+    // settles), then settle a main write that may have landed.
+    else if (store.adopt(slot, t, gone)) cx.spawn(() => store.resolveInflight(slot, { now: clockNow, owner: this.copyId }), { owner: null });
     const win = herdrWindow();
     this.retime(cx, !win || win.visible !== false);
     startCommandLoop(cx, (name, tcx) => this.onCommand(name, tcx));
@@ -168,7 +170,8 @@ export class Session {
     if (getSlot() !== slot) return; // a newer slot replaced this one (another app home in tests)
     const ticker = beat(slot, this.copyId, t, staleFor(this.interval));
     if (slot.state && !slot.loading && ticker) this.tickerWork(cx, t, visible, active);
-    if (slot.flash && t >= slot.flash.until) {
+    // (a flash dated far ahead is from before the wall clock moved back)
+    if (slot.flash && (t >= slot.flash.until || slot.flash.until - t > 60000)) {
       slot.flash = null;
       touch(slot);
     }
@@ -231,7 +234,7 @@ export class Session {
 
   startWrite(cx) {
     const slot = this.slot;
-    cx.spawn(() => store.cycle(slot, { now: clockNow }), { owner: null });
+    cx.spawn((tcx) => store.cycle(slot, { now: clockNow, sleep: sleeper(tcx), owner: this.copyId }), { owner: null });
   }
 
   maybeRender(cx, t) {
@@ -282,7 +285,7 @@ export class Session {
     advance(slot.state, t, slot.writerId);
     markDirty(slot, t, true);
     if (slot.save.writing !== null) return null; // the write under way lands; the next load merges
-    return store.cycle(slot, { now: clockNow });
+    return store.cycle(slot, { now: clockNow, sleep: sleeper(_cx), owner: this.copyId });
   }
 
   // -------------------------------------------------------------------------
@@ -486,9 +489,9 @@ export class Session {
     return r;
   }
 
-  env() {
+  env(tcx = null) {
     const slot = this.slot;
-    return { now: clockNow, seed: randomSeed, flash: (text) => flash(slot, text, clockNow()) };
+    return { now: clockNow, seed: randomSeed, sleep: sleeper(tcx), owner: this.copyId, flash: (text) => flash(slot, text, clockNow()) };
   }
 
   /** Runs a store task (Settings tools) in a task that outlives this copy. */
@@ -496,7 +499,7 @@ export class Session {
     const slot = this.slot;
     if (this.demo || !slot || !slot.state) return;
     const run = async (tcx) => {
-      await fn(slot, this.env());
+      await fn(slot, this.env(tcx));
       notifyCx(tcx);
     };
     if (cx && typeof cx.spawn === "function") cx.spawn(run, { owner: null });
@@ -653,9 +656,13 @@ export class Session {
         self.changed(cx);
       },
       checkSave(cx) {
+        // Every outcome says something ("busy" flashes in the store).
         self.storeTask(cx, (slot, env) => store.checkSave(slot, env).then((r) => {
           if (r === "ok") env.flash("Save checked: it reads back fine.");
           else if (r === "newer") env.flash("The save on disk is from a newer Creaseworks.");
+          else if (r === "missing") env.flash("The save file was missing; writing it again now.");
+          else if (r === "damaged") env.flash("The save file was damaged; see the banner.");
+          else if (r === "error") env.flash("The save file can't be read; see the banner.");
         }));
       },
       restoreBackup(cx) {
@@ -671,6 +678,11 @@ export class Session {
       },
     };
   }
+}
+
+/** A task cx's sleep for the store's sliced replays (null when the cx has none). */
+function sleeper(tcx) {
+  return tcx && typeof tcx.sleep === "function" ? (ms) => tcx.sleep(ms) : null;
 }
 
 /** The slot notice as view() takes it (B10 `saveNotice`). */

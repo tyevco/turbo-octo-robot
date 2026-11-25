@@ -157,3 +157,92 @@ test("a live absence of 30 min yields the busy card on the next player action", 
   assert.ok(busy.data.folds > 0);
   assert.ok(busy.data.seconds >= 40 * 60 - 1);
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes r1-20 (best helper since the last visit) and r1-33 (clock-back
+// high-water mark).
+
+test("r1-20: the away card's best helper counts tasks since the absence began, not lifetime", () => {
+  const { s, me } = setup();
+  const id1 = engine.helperId("t1", 1001);
+  s.helpers[id1].stats.tasks = 57; // earlier play
+  engine.advance(s, T0 + 20 * H);
+  assert.ok(Array.isArray(s.away.pot.tasks0) && s.away.pot.tasks0.length === 4, "the pot snapshots every pane helper");
+  let vm = engine.view(s, T0 + 20 * H, { role: "panel", width: 320 });
+  assert.equal(vm.away.kind, "away");
+  assert.equal(vm.away.best, null, "nothing finished while away: no best helper");
+  assert.equal(vm.away.bestText, null);
+  // On return, agent 2 turns out to have finished a task while away.
+  me.act(observeAction(T0 + 20 * H + 1000, [agent(1, "working"), agent(2, "done", 1), agent(3, "idle"), agent(4, "blocked")]));
+  vm = engine.view(s, T0 + 20 * H + 1000, { role: "panel", width: 320 });
+  assert.equal(vm.away.best.helperId, engine.helperId("t2", 1002));
+  assert.equal(vm.away.best.tasks, 1);
+  assert.match(vm.away.bestText, /, 1 task$/);
+  assert.ok(!vm.away.bestText.includes("57"));
+});
+
+test("r1-20: an older pot without a snapshot shows no best-helper line", () => {
+  const { s } = setup();
+  engine.advance(s, T0 + 20 * H);
+  delete s.away.pot.tasks0;
+  s.helpers[engine.helperId("t1", 1001)].stats.tasks = 57;
+  const vm = engine.view(s, T0 + 20 * H, { role: "panel", width: 320 });
+  assert.equal(vm.away.best, null);
+});
+
+test("r1-33: a clock that moves back and then returns credits nothing for time already counted", () => {
+  const { s } = setup();
+  engine.advance(s, T0 + 30000);
+  const L = s.lifetime;
+  engine.advance(s, T0 + 30000 - 10 * 60000); // 10 min back: rebase + notice
+  assert.equal(s.notices.filter((n) => n.kind === "clock").length, 1);
+  const ev = engine.advance(s, T0 + 31000); // the clock is put right again, 1 s later
+  assert.equal(ev.some((e) => e.kind === "away"), false, "no away segment");
+  assert.equal(s.away.pot, null, "no away pot");
+  const r = engine.rates(s);
+  assert.ok(s.lifetime - L <= (r.Rw + r.Hs) * 1.001 + 1e-9, `at most the one live second (${s.lifetime - L})`);
+  assert.equal(s.clock, T0 + 31000);
+  assert.equal(s.notices.some((n) => n.kind === "clock"), false, "the clock notice goes once the clock is back");
+  assert.equal(s.away.highWater, T0 + 31000);
+});
+
+test("r1-33: an 8 h clock-back round trip cannot be farmed for a fresh away cap", () => {
+  const { s } = setup();
+  let t = T0 + 30000;
+  engine.advance(s, t);
+  for (let k = 0; k < 3; k++) {
+    engine.advance(s, t - 8 * H);
+    t += 1000;
+    const ev = engine.advance(s, t);
+    assert.equal(ev.some((e) => e.kind === "away"), false, `round ${k}`);
+    assert.equal(s.away.pot, null, `round ${k}`);
+  }
+});
+
+test("r1-33: live play during a clock-back raises the mark; a real absence after it is still credited", () => {
+  const { s } = setup();
+  engine.advance(s, T0 + 30000);
+  const back = T0 + 30000 - 10 * 60000;
+  engine.advance(s, back);
+  // 3 min of live play on the set-back clock: credited, and the mark moves on with it.
+  let t = back;
+  for (let k = 0; k < 180; k++) engine.advance(s, (t += 1000));
+  assert.equal(s.away.highWater, T0 + 30000 + 180000);
+  // The clock is corrected: real time is now 3 min after the clock-back.
+  const ev = engine.advance(s, T0 + 30000 + 180000);
+  assert.equal(ev.some((e) => e.kind === "away"), false);
+  // Then a real 2 h absence is an ordinary away segment.
+  const ev2 = engine.advance(s, T0 + 30000 + 180000 + 2 * H);
+  assert.equal(ev2.find((e) => e.kind === "away").seconds, 7200);
+});
+
+test("r1-33: older saves get the high-water mark at their clock; a rebase keeps it", () => {
+  const { s } = setup();
+  engine.advance(s, T0 + 30000);
+  delete s.away.highWater;
+  const back = engine.parseSave(engine.serialize(s));
+  assert.ok(back.ok);
+  assert.equal(back.state.away.highWater, back.state.clock);
+  engine.advance(back.state, T0 - H);
+  assert.equal(back.state.away.highWater, T0 + 30000);
+});
