@@ -620,3 +620,185 @@ life, paying half of `V` (no combo or boost) per remaining node and for the fini
 wish's gain is `floor(cranes/100) − W` (exactly 10 at L = 6e9). The notification counter counts
 each `notified` action of the current day and keeps the later day (`max`). Spawn catch-up is
 skipped for lags over 120 s (`K.spawnCatchUpMs`).
+
+### B10. View as built (view builder's additions; B6 still holds)
+
+`engine/view.js` implements B6 with the field names and value kinds of
+`test/fixtures/vm-fixtures.mjs` (checked by `test/engine/view.test.mjs`). Extra fields are
+additive; the UI may ignore them. `engine/index.js` also exports `ribbonLevel(n, W)`,
+`workStart(h)`, `slotPos(slot, short)`, `LOOP_BUDGET`, `RIBBON`.
+
+**opts.** `{ role, width, dense, style }` as B2, plus `writer` (the glue's writerId: Elsewhere
+grouping and stale-helper rates; always pass it), `tab` (`"flock"` default | `"shop"` |
+`"string"` | `"settings"`: needs-you pulses go on Flock tiles when it is `"flock"`, else on the
+mat chips; spins only on Flock tiles), `short` (mat 304×184), `matShown` (override; default from
+`presence`), `buyCount` (`1 | 10 | "max"`, the Works toggle) and `saveNotice` (the slot's
+notice: `{ kind, text?, message?, retryMs?, at? }`). A panel with `width < 140` is the rail (no
+mat, no loops). The glue's vm cache must key on `rev`, `width`, `tab`, `buyCount`,
+`saveNotice` and the clock bucket.
+
+**Statuses.** `Tile.status`, `Mark.status`, tile `pips` and ribbon tallies use herdr's words
+`working blocked done idle` (as the fixtures do); group keys are `needs finished working resting`.
+Tiles are pane helpers; a fledgling is a status word in its parent's `pips` (all of them; the UI
+draws 4 and `+n`), and one whose parent is not present gets its own tile (`kind: "kid"`).
+Counts, chips, marks and pips count tiles only, so a blocked fledgling never lifts its parent.
+
+**Order.** Needs you: longest waiting first (`blockedAt`) in the Flock and the mat chips; every
+other group, and every group in the ribbon and rail, in join order. Workspace order sorts by
+space, tab, pane (natural order: "tab 2" before "tab 10"); its one group is
+`{ key: "all", title: "Workspace order" }` (the UI hides the header for `"all"`). Elsewhere
+tiles/marks come last with opacity 0.5.
+
+**Loop budget.** Computed once per call in priority order with a total of 12 (ribbon and calm:
+0): pulses (≤ 6 most recent waits, < 10 s), crane bob (`mat.crane.bob`), storm stripes
+(`mat.storm`, also false in calm), the newest *drawn* tray envelope (< 10 s since `lastAt`),
+In step spins (first ≤ 6 working tiles) or new-work spins (≤ 4 latest starts, < 20 s), and the
+first-run hint (`sheet.hintBob`; `sheet.firstRunHint` stays true in calm, static).
+The record has no "started working at" field, so `workStart(h)` uses `h.workingSince` when the
+engine adds one, else the latest of `joined`, `warmUntil − 20 min`, `thanksUntil − 5 min` (each
+is set only when work starts, so it never invents a start; a Needs-you → Working change after
+more than 5 min with no rest is the one start it misses).
+
+**Mat coordinates.** Nodes, scraps, the ream and the crease line are slot **centres**; the crane
+(48×36) and boat (48×32) are the **left/top** of their hit box, gliding by `left` from `x` to
+`x1` (crane: towards the far side; boat: 8 → 248; calm: `x1 === x`). `nodes[].i` is the
+**1-based number drawn** on the node; `nodes[].id` is the engine click id (`nodeId`, 0-based).
+Short variant: y is scaled into 28–152 and the middle four columns of the top and bottom rows
+move beside the 96 px Sheet, so nothing overlaps it.
+
+**Shop.** Every item of a segment is a row in table order (workshops: all nine); `revealed`
+false rows are the "???" silhouettes (`name` is still the real name: the UI must not print it),
+owned upgrades stay in their segment with `owned: 1` (the UI collapses them into "Owned (n)").
+Upgrade reveal: owned, or unlocked and (`cost ≤ 3 × max(bank, runFolds)` or its predecessor is
+owned); workshops: the previous one is owned. Tier sub-rows: unlocked and not bought (the
+engine requires the previous tier). `eta` uses `Rp` (`formatEta`, rounded up); `best` marks the
+one affordable row (any segment, tiers included, by `estimate`'s Δ) with the shortest payback and
+gives it `tooltip`. Extra: `count` (workshops), `locked`, `on` (automations).
+`icon`: the workshop id for workshops and tiers, else the ui icon `hand paw ribbon curio cog`.
+
+**Other parts.** `boosts[].msTotal` is the type's remaining-time cap (no start is stored).
+`string.garlands` is the engine's list as is (`stripes: [[colourKey, weight, label]]`).
+`away.split` is `{ workshops, helpers }` (formatted), `away.best` `{ helperId, name, species,
+tasks }`, plus ready lines (`capText splitText envelopesText needsText restedText bestText
+affordableText`); the `busy` card comes from the engine's `busy` notice. `notices` puts the save
+notice first, then engine notices newest first, each with `place` (`banner` | `footer`); `busy`
+is not listed (it is `away`). Album `leftAgo` is a duration ("3 d"). Tiles carry `detail
+{ title, where, line, rest }` for the Flock detail card; the ribbon carries `folds rate
+envelopes save pill empty width`, the rail `count rate needs envelopes crane save`.
+
+### B11. UI render contract (the build plan's "B9 UI render contract"; B6/B10 still hold)
+
+(B9 was already taken by "Engine as built", so this contract is numbered B11.) Every `ui/`
+module that draws a part of a copy exports **one pure render function** with the same signature:
+
+```js
+renderPanel(vm, ui, ctx)     ui/panel.js     whole panel copy (role "panel"); ctx.width < 140 → the rail
+renderRail(vm, ui, ctx)      ui/rail.js      64 × H rail (§3.9)
+renderRibbon(vm, ui, ctx)    ui/ribbon.js    30 px × work width (§3.10)
+renderMat(vm, ui, ctx)       ui/mat.js       mat 304×232 / short 304×184 (§3.2), incl. first-run hint and pops
+renderBanner(vm, ui, ctx)    ui/banner.js    save/clock banner (§3.8) → element | null (no banner notice)
+renderAway(vm, ui, ctx)      ui/away.js      away / busy card (§3.7) → element | null (vm.away null)
+renderFlock(vm, ui, ctx)     ui/flock.js     tab content (§3.3)
+renderShop(vm, ui, ctx)      ui/shop.js      tab content (§3.4)
+renderString(vm, ui, ctx)    ui/string.js    tab content (§3.5)
+renderSettings(vm, ui, ctx)  ui/settings.js  tab content (§3.6)
+```
+
+**Pure.** A render function reads only its three arguments (and imports: `gpui-kit`, `gpui-base`,
+`ui/*`, `engine/index.js`). It never calls herdr, never keeps a `cx`, never calls `cx.notify()`,
+never creates timers, scroll or focus handles, never mutates `vm`, `ui` or `ctx`. Same arguments
+⇒ the same tree. Strings in the vm are already clipped (B6); any further cut uses `clip()` first.
+
+**`vm`** is the B6/B10 ViewModel of this copy (role and width already applied by `view()`).
+Animation flags (`pulse`, `spin`, `bob`, `hintBob`, `storm`, crane `x1`) are obeyed as given:
+the UI never adds a `.loop`/`.spin`/`.frames` the vm did not ask for (§13.5 loop budget), and
+with `ctx.calm` it adds none at all (transitions only).
+
+**`ui`** is the copy's UI state (B7 `Session.ui`), a plain object; every field is optional and
+renderers default it:
+
+```js
+{ tab: "flock"|"shop"|"string"|"settings",  // default "flock"
+  back: "flock"|"shop"|"string",            // tab the "← Back" of Settings returns to (default "flock")
+  segment: "works"|"tools"|"folk"|"charms"|"curios"|"auto",   // Shop segment (default "works")
+  selected: helperId | null,                // Flock detail card
+  confirm: false | true | "wish" | "reset" | "restore",  // two-step confirms (true = "wish")
+  armedAt: ms | null,  now: ms | null,      // confirm arming (1.5 s); renderers compare, never read a clock
+  details: bool,                            // banner "Details ▸" expanded
+  folded: { [groupKey]: bool },             // Flock group folds (null-prototype)
+  scrollTo: groupKey | null,                // Flock: counts chip ● / ◗ asked for this group
+  pops: [{ id, label, x, y, risen }]        // floating numbers (≤ 5, mat px), owned by the glue
+}
+```
+
+**`ctx`** is built by the glue once per render:
+
+```js
+{ T,            // herdr theme() as is (keys may be 8-digit; ui/color.js normalises)
+  S,            // palette.pickScene(dark): scene tokens (§13.2)
+  hues,         // palette.pickHues(dark): Hue[0..7]
+  dark,         // settings().dark (optional; S/hues already reflect it)
+  zoom,         // settings().zoom (loop px are multiplied by it; numeric lengths are not)
+  calm,         // vm settings calm (no loops, no spins, no pops)
+  width,        // this copy's logical width (panel Wp, rail 64, ribbon work width W)
+  height,       // logical height (panel H; ribbon 30), optional
+  panelShown,   // ribbon only: panel copy visible and unfolded (hides the ribbon mini Sheet)
+  save,         // optional, from the slot: { state: "saved"|"saving"|"problem", text: "Saved 12 s ago",
+                //   path, lastGood, backup, damaged: [names] } (footer glyph, banner Details, Settings)
+  narrowHint,   // ribbon only, optional: true shows "Narrow window: fold Creaseworks to a rail?" (§2.3)
+  handlers }    // below; every one is optional to the caller of a renderer (tests pass stubs)
+```
+
+**Handlers.** Each takes `cx` last; it dispatches the B5 action (or changes `Session.ui`) and
+calls `cx.notify()` itself. Renderers call them from element handlers and call
+`cx.stop_propagation()` first whenever the element sits over another clickable.
+
+| handler | from | does |
+|---|---|---|
+| `click(target, id, event, cx)` | mat pieces, rail/ribbon mini Sheet, rail crane | B5 `click`; `target` ∈ `sheet mini node scrap crane boat ream`, `id` the vm item id (node: `nodes[].id`), `event` `{ x, y }` in mat px (pop position) or null |
+| `open(helperId, cx)` | tray envelope, tile/ribbon envelope marker, ✉ buttons | B5 `open` |
+| `openHelper(helperId, cx)` | needs-you chips, needs/finished marks and pips, away "Open ›"; counts chip ▲/✓ and rail ▲ pass the group key `"needs"` / `"finished"` instead (glue picks the longest-waiting / oldest and cycles on repeat) | §5.6 focus the pane (+ `checkin`) |
+| `buy(item, count, cx)` | Shop rows, tier sub-rows | B5 `buy` |
+| `setting(key, value, cx)` | Settings, Works ×1/×10/Max (`"buyCount"`, ui-only) | B5 `setting` (dotted key) |
+| `switchAuto(id, on, cx)` | Auto rows, Settings automations | B5 `switch` |
+| `wish(cx)` | String confirm card "Make the wish" | B5 `wish` |
+| `collect(cx)` | away card Collect | B5 `collect` |
+| `dismiss(notice, cx)` | banner Dismiss, away/busy ✕, ribbon narrow hint "Not now" (`"narrow"`) | B5 `dismiss` with the notice `kind` (`"away"`, `"busy"`, `"clock"`; save kinds and `"narrow"` are glue-only) |
+| `fold(cx)` | header fold icon, rail chevron, ribbon `[⇔]` | `creaseworks.fold` (panel ↔ rail) |
+| `show(cx)` | ribbon save chip, "Welcome back" pill | unfold / show the panel (no-op when shown) |
+| `tab(name, cx)` | tabs row, gear (`"settings"`), "← Back" (`ui.back`) | sets `ui.tab` (and `ui.back` when leaving for Settings) |
+| `segment(name, cx)` | Shop segment control | sets `ui.segment` |
+| `select(helperId, cx)` | Flock tiles, rail/ribbon working/resting marks | sets `ui.selected` (null clears), `ui.tab = "flock"`; from rail/ribbon also unfolds/shows the panel |
+| `toggleGroup(key, cx)` | Flock group headers, Album, Elsewhere, "Owned (n)" (`"owned:<segment>"`) | flips `ui.folded[key]` |
+| `showGroup(key, cx)` | counts chip ● / ◗ | `ui.tab = "flock"`, unfolds the group, `ui.scrollTo = key` |
+| `details(on, cx)` | banner Details ▸ | sets `ui.details` |
+| `confirm(kind, cx)` | first click of a two-step action (`"wish" "reset" "restore"`) | sets `ui.confirm = kind`, `ui.armedAt = now` |
+| `cancel(cx)` | "Keep folding", confirm cancel | clears `ui.confirm` |
+| `retrySave(cx)` `checkSave(cx)` `restoreBackup(cx)` | banner Retry now, Settings save rows | glue store calls |
+| `sharePath(path, cx)` | Settings "Share a save…" | glue `location.json` |
+
+**Ids.** Every clickable has an `.id()` that is unique in the copy's tree and stable across
+renders (built from vm ids, never from list positions when an id exists). Prefixes: `cw-hdr-*`
+`cw-tab-*` `cw-boostbar-*` `cw-foot-*` (panel frame), DESIGN §3.2 names for the mat (`cw-sheet`,
+`cw-node-<id>`, `cw-scrap-<id>`, `cw-ream`, `cw-crane`, `cw-boat`, `cw-env-<helperId>`,
+`cw-chip-<helperId>`, `cw-hint`), `cw-banner-*`, `cw-away-*`, `cw-rail-*`, `cw-rib-*`,
+`cw-flock-*`, `cw-shop-*`, `cw-string-*`, `cw-set-*`. Scroll containers carry ids too.
+
+**Layout split.** `renderPanel` owns the frame (header 44, banner 28, mat, boost bar 26, tabs 32,
+footer 22) and wraps the active tab's element in `div#cw-content` (`flex_1 min_h(0)
+overflow_y_scrollbar`, full width, no padding). A tab renderer returns one element sized to its
+content at full width (`w_full`, its own 8 px side padding), never a fixed height and never its
+own outer scroll. The away card is an absolute overlay positioned by the panel over the mat.
+
+**As built (frame builder).** `ui/panel.js` also exports `activeTab(ui)`, `FRAME`, `RAIL_BELOW`;
+`ui/mat.js` `matGeometry(vm, ctx)` (drawn mat `ctx.width − 16` × 184 narrow-or-short / 232 /
+260 wide; vm positions are mapped piecewise around the Sheet and every hit box is pushed off it:
+the engine's slot centres in the rows above and below the Sheet put a 28 px hit area 1.2 px over
+its edge) and `isCalm(vm, ctx)` (`ctx.calm || vm.calm || vm.settings.calm`); `ui/banner.js`
+`bannerLayout` (the banner's drawn height, so the panel can place the away card),
+`bannerNotices`, `saveProblem`, `middleClip`; `ui/away.js` `awayLines`; `ui/ribbon.js`
+`pipArea(W)`, `densityLevel(n, w)`. The crane and boat glide by easing `left` over each 1 s data
+tick to the vm's new `x` (the §17 R2 fallback), not one long transition, because a pure render
+cannot tell its first frame. Flags missing from a vm default as follows: crane `bob` true, sheet
+`hintBob` = `firstRunHint` (both off in calm). Each module exports its grapheme limits
+(`MAT_CLIP`, `BANNER_CLIP`, `AWAY_CLIP`, `RAIL_CLIP`, `RIBBON_CLIP`, `PANEL_CLIP`).

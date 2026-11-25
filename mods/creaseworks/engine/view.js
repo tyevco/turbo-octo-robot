@@ -1,25 +1,24 @@
 // view(state, now, opts) → ViewModel (ARCHITECTURE B6, B10; DESIGN §3, §5.2,
 // §13.5). Plain, pre-formatted data: every string is built and clip()ped
-// here, every loop flag (pulse / spin / bob) already obeys the loop budget and
-// calm mode, so the UI only draws. Pure: reads the state, never mutates it
-// (the cached helper index aside, which is the engine's own memo).
+// here and every loop flag (pulse / spin / bob) already obeys the loop budget
+// and calm mode, so the UI only draws. Pure: reads the state and never
+// changes it (the engine's own cached helper index aside).
 //
-// opts (all optional):
-//   role       "panel" | "ribbon" ("rail" is also accepted; a panel under
-//              140 px wide is the rail)
-//   width      the copy's measured width (ribbon: work width W; panel: Wp)
-//   dense      boolean override of the Roster density setting
-//   style      "short" | "sci" override of the number style
-//   writer     this window's writerId (Elsewhere grouping, stale helpers)
-//   tab        the panel tab on show: "flock" (default) | "shop" | "string" | "settings"
-//   short      the short mat variant (304 × 184, §2.3)
-//   matShown   override of "the mat is on screen" (default: presence flags)
-//   buyCount   Works toggle: 1 (default) | 10 | "max"
-//   saveNotice the glue's save notice ({ kind, text?, message?, retryMs?, at? } | null)
+// opts (all optional; ARCHITECTURE B10):
+//   role        "panel" | "ribbon" (a panel narrower than 140 px is the rail)
+//   width       the copy's measured width (ribbon: work width W; panel: Wp)
+//   dense       boolean override of the Roster density setting
+//   style       "short" | "sci" override of the number style
+//   writer      this window's writerId (Elsewhere grouping, stale helpers)
+//   tab         the panel tab on show: "flock" (default) | "shop" | "string" | "settings"
+//   short       the short mat variant (304 × 184, DESIGN §2.3)
+//   matShown    override of "the mat is on screen" (default: the presence flags)
+//   buyCount    the Works toggle: 1 (default) | 10 | "max"
+//   saveNotice  the glue's save notice: { kind, text?, message?, retryMs?, at? } | null
 
 import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRESTIGE } from "./content.js";
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
-import { indexHelpers, flock, groupFor } from "./helpers.js";
+import { indexHelpers, flock } from "./helpers.js";
 import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicking.js";
 import { stackFactor } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
@@ -31,19 +30,20 @@ import { clip } from "./text.js";
 // Constants (module scope: literals only, A2 rule 2)
 
 const GROUP_ORDER = ["needs", "finished", "working", "resting"];
-const GROUP_RANK = { needs: 0, finished: 1, working: 2, resting: 3, elsewhere: 4 };
-const STATUS_GROUP = { working: "working", blocked: "needs", done: "finished", idle: "resting" };
-const KID_STATUS = { working: "working", blocked: "needs", done: "resting", idle: "resting" };
-const WORD = { needs: "Needs you", finished: "Finished", working: "Working", resting: "Resting", elsewhere: "Elsewhere" };
+const GROUP_OF = { working: "working", blocked: "needs", done: "finished", idle: "resting" };
+const WORD = { working: "Working", blocked: "Needs you", done: "Finished", idle: "Resting" };
 const TITLE = { needs: "Needs you", finished: "Finished", working: "Working", resting: "Resting" };
-const SEG_ICON = { tools: "ui/hand", folk: "ui/paw", charms: "ui/ribbon", curios: "ui/curio", auto: "ui/cog" };
+const SEG_ICON = { tools: "hand", folk: "paw", charms: "ribbon", curios: "curio", auto: "cog" };
 
 /** Loop budget per copy (DESIGN §13.5). */
 export const LOOP_BUDGET = Object.freeze({
-  total: 12, pulse: 6, pulseMs: 10000, spinNew: 4, spinNewMs: 20000, spinStep: 6, bobMs: 10000,
+  total: 12, pulse: 6, pulseMs: 10000, spinNew: 4, spinNewMs: 20000, spinStep: 6, bobMs: 10000, chips: 4,
 });
 /** Ribbon geometry (DESIGN §3.10): left block 118, right block 100, 16 px gutters. */
 export const RIBBON = Object.freeze({ left: 118, right: 100, pad: 16, chip: 22, pip: 14, defaultWidth: 1172 });
+/** Rail below this panel width (DESIGN §2.4). */
+const RAIL_BELOW = 140;
+/** Boost bar totals: the remaining-time caps (DESIGN §6.2; Flock Song 120 s; Tailwind 10 min). */
 const BOOST_CAP = { rush: 90000, storm: 30000, chorus: 240000, song: 120000, tailwind: 600000 };
 const SAVE_TEXT = {
   recovered: "Save was damaged. Loaded the backup. Damaged copy kept.",
@@ -58,8 +58,9 @@ const SAVE_ACTIONS = {
   recovered: ["details", "dismiss"], fresh: ["details"], conflict: [], merged: [],
   error: ["retry", "details"], newer: ["details"], clock: ["dismiss"],
 };
-const MAT = { w: 304, h: 232, shortH: 184, fieldTop: 28, fieldBottom: 200, shortBottom: 152 };
-const CLIP = { name: 8, chip: 10, title: 60, markTitle: 40, notice: 140, row: 28, place: 40 };
+/** Mat geometry (DESIGN §3.2): play field y 28–200 (short: 28–152); crane hit 48×36, boat 48×32. */
+const MAT = { w: 304, fieldTop: 28, fieldBottom: 200, shortBottom: 152, craneW: 48, craneH: 36, boatW: 48, edge: 8 };
+const CLIP = { name: 8, chip: 10, long: 16, title: 60, agent: 24, notice: 140, row: 32, place: 40, error: 60 };
 
 // ---------------------------------------------------------------------------
 // Small pure helpers
@@ -67,8 +68,17 @@ const CLIP = { name: 8, chip: 10, title: 60, markTitle: 40, notice: 140, row: 28
 const num = (v, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const cnt = (n, style) => formatCount(n, style);
 const plural = (n, one, many) => `${formatInt(n)} ${n === 1 ? one : many}`;
+const round1 = (x) => Math.round(x * 10) / 10;
+const ago = (ms) => formatDuration(Math.max(0, ms), { spaced: true, parts: 1 });
+const statusOf = (h) => (Object.hasOwn(WORD, h.status) ? h.status : "idle");
 
-/** "×1.4" (one decimal, a whole value without ".0"). */
+/** "×1.4", "×1.0": one decimal (the streak label). */
+function times1(x) {
+  const t = Math.round(x * 10);
+  return `×${Math.floor(t / 10)}.${t % 10}`;
+}
+
+/** "×3", "×1.5": a multiplier, one decimal only when it has one. */
 function times(x) {
   const t = Math.round(x * 10);
   return "×" + (t % 10 === 0 ? String(t / 10) : `${Math.floor(t / 10)}.${t % 10}`);
@@ -88,12 +98,9 @@ function natural(a, b) {
   const x = a === null || a === undefined ? "" : String(a);
   const y = b === null || b === undefined ? "" : String(b);
   if (x === y) return 0;
-  const nx = /^\d+$/.test(x);
-  const ny = /^\d+$/.test(y);
-  if (nx && ny) return Number(x) - Number(y);
   const rx = /^(.*?)(\d+)$/.exec(x);
   const ry = /^(.*?)(\d+)$/.exec(y);
-  if (rx && ry && rx[1] === ry[1]) return Number(rx[2]) - Number(ry[2]);
+  if (rx && ry && rx[1] === ry[1] && rx[2] !== ry[2]) return Number(rx[2]) - Number(ry[2]);
   return x < y ? -1 : 1;
 }
 
@@ -103,158 +110,154 @@ const byPlace = (a, b) => natural(a.space, b.space) || natural(a.tab, b.tab) || 
 
 /**
  * When `h` started working, as closely as the record tells: `workingSince`
- * when the engine records it, else the latest of the times only a start of
- * work sets (joined, warmUntil − warmMs, thanksUntil − thanksMs). Every
- * candidate is ≤ the true start, so a recent value never invents new work.
+ * if the engine records it, else the latest of the times only a start of work
+ * sets (joined; warmUntil − 20 min; thanksUntil − 5 min). Every candidate is
+ * ≤ the true start, so a recent value never invents new work.
  */
-function workStart(h) {
+export function workStart(h) {
   if (typeof h.workingSince === "number") return h.workingSince;
   let t = num(h.joined, -Infinity);
-  const w = num(h.warmUntil) - K.warmMs;
-  const th = num(h.thanksUntil) - K.thanksMs;
-  if (h.warmUntil > 0 && w > t) t = w;
-  if (h.thanksUntil > 0 && th > t) t = th;
+  if (h.warmUntil > 0 && h.warmUntil - K.warmMs > t) t = h.warmUntil - K.warmMs;
+  if (h.thanksUntil > 0 && h.thanksUntil - K.thanksMs > t) t = h.thanksUntil - K.thanksMs;
   return t;
 }
 
-/** "Mina", "Mina 2": ASCII names, clipped (A2 rule 8). */
-function shortName(h, max) {
+/** Helper names are ASCII (§5.1); clipped all the same (A2 rule 8). */
+function nameOfHelper(h, max) {
   return clip(String(h.name ?? ""), max);
 }
 
 function place(h) {
   const sp = h.space ? String(h.space) : "";
   const tb = h.tab ? String(h.tab) : "";
-  if (sp && tb) return clip(`${sp} / ${tb}`, CLIP.place);
-  return clip(sp || tb, CLIP.place);
+  return clip(sp && tb ? `${sp} / ${tb}` : sp || tb, CLIP.place);
 }
 
-function ago(ms) {
-  return formatDuration(Math.max(0, ms), { spaced: true, parts: 1 });
+/** The agent's name: the first " · " part of its title ("claude · fix flaky test" → "claude"). */
+function agentOf(title) {
+  if (!title) return "";
+  const s = String(title);
+  const k = s.indexOf(" · ");
+  return clip(k > 0 ? s.slice(0, k) : s, CLIP.agent);
 }
 
-// ---------------------------------------------------------------------------
-// Mat geometry
-
-/** Mat px of slot `slot` (centre), mapped onto the short variant when asked. */
-function slotPos(slot, short) {
+/** Mat px of slot `slot` (its centre), mapped onto the short variant when asked. */
+export function slotPos(slot, short) {
   const p = slotXY(slot);
   if (!short) return { x: round1(p.x), y: round1(p.y) };
   const k = (MAT.shortBottom - MAT.fieldTop) / (MAT.fieldBottom - MAT.fieldTop);
   let x = p.x;
   const col = slot % SLOT.cols;
   const row = Math.floor(slot / SLOT.cols);
-  // The short Sheet (96 at 104, 42) spans the whole band height: the four
-  // middle columns of the top and bottom rows move out to its sides.
+  // The short Sheet (96 at 104, 42) fills the band's height: the four middle
+  // columns of the top and bottom rows move out to its sides.
   if ((row === 0 || row === SLOT.rows - 1) && col >= 3 && col <= 6) x = col <= 4 ? 62 + 28 * (col - 3) : 214 + 28 * (col - 5);
   return { x: round1(x), y: round1(MAT.fieldTop + (p.y - MAT.fieldTop) * k) };
 }
 
-const round1 = (x) => Math.round(x * 10) / 10;
+/** Ribbon density level for `n` marks in a ribbon `W` px wide (DESIGN §3.10). */
+export function ribbonLevel(n, W) {
+  const w = W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad;
+  if (n * RIBBON.chip <= w) return "A";
+  if (n <= 2 * Math.floor(w / RIBBON.pip)) return "B";
+  return "C";
+}
 
 // ---------------------------------------------------------------------------
 // The view
 
 /**
  * view(state, now, opts) → ViewModel (ARCHITECTURE B6). Cheap: one pass over
- * the helpers, one rates() call, one flock() for the best-buy estimates.
+ * the helpers, one rates() call and one flock() for the best-buy estimates.
  */
-export function view(state, now, opts = {}) {
-  const o = opts || {};
+export function view(state, now, opts = undefined) {
+  const o = opts && typeof opts === "object" ? opts : {};
   const t = num(now, state.clock);
   const style = o.style === "sci" || o.style === "short" ? o.style : state.settings.style === "sci" ? "sci" : "short";
-  const writer = o.writer === undefined ? undefined : o.writer;
-  const role = o.role === "ribbon" ? "ribbon" : o.role === "rail" ? "rail" : "panel";
+  const writer = o.writer === undefined || o.writer === null ? undefined : String(o.writer);
+  const role = o.role === "ribbon" ? "ribbon" : "panel";
   const width = num(o.width, 0);
-  const rail = role === "rail" || (role === "panel" && width > 0 && width < 140);
+  const rail = role === "panel" && (o.role === "rail" || (width > 0 && width < RAIL_BELOW));
   const calm = state.settings.calm === true;
   const p = state.presence;
-  const matShown = role === "panel" && !rail && (typeof o.matShown === "boolean" ? o.matShown : p.visible !== false && p.matShown !== false);
-  const tab = typeof o.tab === "string" ? o.tab : "flock";
-  const tilesShown = role === "panel" && !rail && tab === "flock";
+  const matShown = role === "panel" && !rail
+    && (typeof o.matShown === "boolean" ? o.matShown : p.visible !== false && p.matShown !== false);
+  const tilesShown = role === "panel" && !rail && (typeof o.tab === "string" ? o.tab : "flock") === "flock";
   const short = o.short === true;
 
   const E = effects(state);
   const r = rates(state, writer);
   const idx = indexHelpers(state);
-  const live = Math.max(0, t - state.clock); // ms since the engine's clock
+  const live = Math.max(0, t - state.clock); // live ms since the engine's clock
 
-  // ---- helpers: one pass --------------------------------------------------
-  const roster = rosterOf(state, t, writer, idx);
-  const loops = budget(state, E, t, o, { calm, matShown, tilesShown, roster });
-
-  const helpers = helpersVm(state, t, roster, loops, o, style);
-  const counts = { needs: roster.groups.needs.length, finished: roster.groups.finished.length, working: roster.groups.working.length, resting: roster.groups.resting.length };
-
-  const liveRate = r.Rw + r.Hs;
-  const header = {
-    folds: cnt(state.bank, style),
-    rate: formatRate(liveRate, style),
-    wishes: state.wishes,
-    counts,
+  const roster = rosterOf(state, writer, idx);
+  const loops = budget(state, E, t, { calm, role, matShown, tilesShown, roster });
+  const counts = {
+    needs: roster.groups.needs.length,
+    finished: roster.groups.finished.length,
+    working: roster.groups.working.length,
+    resting: roster.groups.resting.length,
   };
-
+  const liveRate = r.Rw + r.Hs;
+  const header = { folds: cnt(state.bank, style), rate: formatRate(liveRate, style), wishes: state.wishes, counts };
   const saveNotice = o.saveNotice && typeof o.saveNotice === "object" && typeof o.saveNotice.kind === "string" ? o.saveNotice : null;
-  const awayVm = awayCard(state, t, E, style);
-  const vm = {
+  const away = awayCard(state, E, style);
+  const marks = marksOf(state, t, roster);
+  const envelopes = Object.keys(state.envelopes).length;
+  const firstRunHint = !state.ui.hints.fold && state.stats.hits < 3;
+
+  return {
     rev: state.rev,
     calm,
     header,
-    sheet: {
-      frame: state.hand.frame,
-      ticks: state.hand.frame,
-      firstRunHint: !state.ui.hints.fold && state.stats.hits < 3,
-      hintBob: loops.hint,
-      short,
-    },
+    sheet: { frame: state.hand.frame, ticks: state.hand.frame, firstRunHint, hintBob: loops.hint, short },
     mat: matVm(state, t, E, loops, short, calm, roster),
     tray: trayVm(state, t, E, r, idx, loops, style),
     streak: streakVm(state, E, t),
     boosts: boostsVm(state, E, live, t),
-    helpers,
+    helpers: helpersVm(state, t, roster, loops, o, style),
     shop: shopVm(state, E, r, idx, writer, o, style),
     string: stringVm(state, style),
     settings: settingsVm(state),
-    away: awayVm,
+    away,
     notices: noticesVm(state, t, saveNotice, style),
-    ribbon: null,
-    rail: null,
+    ribbon: ribbonVm(state, marks, role === "ribbon" && width > 0 ? width : RIBBON.defaultWidth, header, saveNotice, envelopes, style, liveRate),
+    rail: {
+      pips: marks,
+      count: header.folds,
+      rate: formatRate(liveRate, style, { compact: true }),
+      needs: counts.needs,
+      envelopes,
+      crane: state.spawn.crane ? state.spawn.crane.id : null,
+      save: saveNotice ? clip(typeof saveNotice.text === "string" ? saveNotice.text : SAVE_TEXT[saveNotice.kind] || "Save problem", CLIP.notice) : null,
+    },
   };
-  const marks = marksOf(state, t, roster);
-  vm.ribbon = ribbonVm(state, t, roster, marks, role === "ribbon" && width > 0 ? width : RIBBON.defaultWidth, header, saveNotice, awayVm, style, liveRate);
-  vm.rail = {
-    pips: marks.all,
-    count: header.folds,
-    rate: formatRate(liveRate, style, { compact: true }),
-    needs: counts.needs,
-    envelopes: Object.keys(state.envelopes).length,
-    crane: state.spawn.crane ? state.spawn.crane.id : null,
-    save: saveNotice ? clip(saveNotice.text ? String(saveNotice.text) : SAVE_TEXT[saveNotice.kind] || "Save problem", CLIP.notice) : null,
-  };
-  return vm;
 }
 
 // ---------------------------------------------------------------------------
-// Roster: groups, kids, Elsewhere, Album
+// Roster: groups, fledglings, Elsewhere
 
-function rosterOf(state, t, writer, idx) {
+function rosterOf(state, writer, idx) {
   const groups = { needs: [], finished: [], working: [], resting: [] };
   const elsewhere = [];
   const kidsOf = Object.create(null);
-  const all = [];
+  const tiles = [];
   const present = idx.present;
-  const presentIds = Object.create(null);
-  for (let i = 0; i < present.length; i++) presentIds[present[i].id] = true;
+  const here = Object.create(null);
+  for (let i = 0; i < present.length; i++) here[present[i].id] = true;
+  const other = writer !== undefined;
   for (let i = 0; i < present.length; i++) {
     const h = present[i];
-    if (h.kind === "kid" && h.parent && presentIds[h.parent]) {
+    // A fledgling is a pip on its parent's tile (§3.3); one without a present parent gets its own tile.
+    if (h.kind === "kid" && h.parent && here[h.parent]) {
       (kidsOf[h.parent] || (kidsOf[h.parent] = [])).push(h);
       continue;
     }
-    const g = groupFor(h, writer);
-    if (g === "elsewhere") elsewhere.push(h);
-    else (groups[g] || groups.resting).push(h);
-    all.push(h);
+    if (other && h.seenBy && h.seenBy !== writer) elsewhere.push(h);
+    else {
+      groups[GROUP_OF[statusOf(h)]].push(h);
+      tiles.push(h);
+    }
   }
   groups.needs.sort(byWait);
   groups.finished.sort(byJoin);
@@ -263,43 +266,28 @@ function rosterOf(state, t, writer, idx) {
   elsewhere.sort(byJoin);
   for (const k in kidsOf) kidsOf[k].sort(byJoin);
   const workspace = state.settings.order === "workspace";
-  let ordered;
-  if (workspace) {
-    ordered = all.filter((h) => !elsewhereOf(h, writer)).sort(byPlace);
-  } else {
-    ordered = groups.needs.concat(groups.finished, groups.working, groups.resting);
-  }
-  return { groups, elsewhere, kidsOf, ordered, workspace, writer };
-}
-
-function elsewhereOf(h, writer) {
-  return writer !== undefined && writer !== null && h.seenBy && h.seenBy !== writer;
-}
-
-function groupKey(h, writer) {
-  if (elsewhereOf(h, writer)) return "elsewhere";
-  return STATUS_GROUP[h.status] || "resting";
+  const ordered = workspace ? tiles.sort(byPlace) : groups.needs.concat(groups.finished, groups.working, groups.resting);
+  return { groups, elsewhere, kidsOf, ordered, workspace };
 }
 
 // ---------------------------------------------------------------------------
-// Loop budget (DESIGN §13.5): ≤ 12 loop/spin nodes per copy; lowest priority
-// drops first: needs-you > crane > storm > envelope > In step spin >
-// new-work spin > first-run hint. Calm mode: none. The ribbon copy has none.
+// Loop budget (DESIGN §13.5): ≤ 12 loop/spin nodes per copy; the lowest
+// priority drops first: needs-you > crane > storm > envelope > In step spin >
+// new-work spin > first-run hint. Calm mode and the ribbon copy: none.
 
-function budget(state, E, t, o, c) {
+function budget(state, E, t, c) {
   const out = { pulse: Object.create(null), chipPulse: false, spin: Object.create(null), crane: false, storm: false, envelope: null, hint: false, count: 0 };
-  if (c.calm || o.role === "ribbon") return out;
+  if (c.calm || c.role !== "panel") return out;
   let left = LOOP_BUDGET.total;
   const take = (want) => {
     const n = Math.max(0, Math.min(want, left));
     left -= n;
     return n;
   };
-  // 1. needs-you pulse: the most recent waits within 10 s, one mark per helper
-  //    (the tile while the Flock tab shows, else the mat chip).
+  // 1. Needs-you pulse: the most recent waits within 10 s (≤ 6), one mark per
+  //    helper: the tile while the Flock tab shows, else the mat chip.
   if (c.tilesShown || c.matShown) {
-    let cand = c.roster.groups.needs;
-    if (!c.tilesShown) cand = cand.slice(0, 4); // the drawn mat chips
+    const cand = c.tilesShown ? c.roster.groups.needs : c.roster.groups.needs.slice(0, LOOP_BUDGET.chips);
     const recent = [];
     for (const h of cand) {
       const since = t - num(h.blockedAt, -Infinity);
@@ -311,17 +299,19 @@ function budget(state, E, t, o, c) {
     out.chipPulse = !c.tilesShown;
   }
   const sp = state.spawn;
-  // 2. gilded crane bob, 3. storm stripes (mat only)
+  // 2. Gilded crane bob, 3. storm stripes (on the mat).
   if (c.matShown && sp.crane) out.crane = take(1) === 1;
   if (c.matShown && state.boosts.stormEnd > t) out.storm = take(1) === 1;
-  // 4. the newest tray envelope bobs for 10 s after it lands (if drawn)
+  // 4. The newest drawn tray envelope bobs for 10 s after it lands.
   if (c.matShown) {
-    const drawn = trayOrder(state).slice(0, 6);
+    const drawn = trayOrder(state);
     let newest = null;
-    for (const [id, env] of drawn) if (!newest || env.lastAt > newest[1].lastAt) newest = [id, env];
-    if (newest && t - newest[1].lastAt >= 0 && t - newest[1].lastAt < LOOP_BUDGET.bobMs && take(1) === 1) out.envelope = newest[0];
+    for (let i = 0; i < drawn.length && i < 6; i++) if (!newest || drawn[i][1].lastAt > newest[1].lastAt) newest = drawn[i];
+    const age = newest ? t - num(newest[1].lastAt, newest[1].landedAt) : -1;
+    if (newest && age >= 0 && age < LOOP_BUDGET.bobMs && take(1) === 1) out.envelope = newest[0];
   }
-  // 5. In step spins (≤ 6 visible working badges) replace 6. new-work spins (≤ 4)
+  // 5. In step spins (≤ 6 working badges in display order) replace
+  // 6. new-work spins (≤ 4, the latest starts within 20 s). Panel tiles only.
   if (c.tilesShown) {
     const working = c.roster.workspace ? c.roster.ordered.filter((h) => h.status === "working") : c.roster.groups.working;
     if (inStepAt(state, E, t)) {
@@ -338,7 +328,7 @@ function budget(state, E, t, o, c) {
       for (let i = 0; i < n; i++) out.spin[fresh[i][1].id] = true;
     }
   }
-  // 7. first-run hint bob (until the 3rd fold)
+  // 7. The first-run hint bobs until the 3rd fold.
   if (c.matShown && !state.ui.hints.fold && state.stats.hits < 3) out.hint = take(1) === 1;
   out.count = LOOP_BUDGET.total - left;
   return out;
@@ -348,14 +338,13 @@ function budget(state, E, t, o, c) {
 // Flock tab (§3.3)
 
 function helpersVm(state, t, roster, loops, o, style) {
-  const tiles = roster.ordered;
-  const nTiles = tiles.length + roster.elsewhere.length;
+  const nTiles = roster.ordered.length + roster.elsewhere.length;
   const density = state.settings.density;
   const dense = typeof o.dense === "boolean" ? o.dense : density === "always" ? true : density === "never" ? false : nTiles >= 21;
   const groups = [];
   if (roster.workspace) {
-    if (tiles.length) {
-      groups.push({ key: "all", title: null, count: tiles.length, folded: false, tiles: tiles.map((h) => tile(state, t, h, "", roster, loops, style)) });
+    if (roster.ordered.length) {
+      groups.push({ key: "all", title: "Workspace order", count: roster.ordered.length, folded: false, tiles: roster.ordered.map((h) => tile(state, t, h, false, roster, loops)) });
     }
   } else {
     for (const key of GROUP_ORDER) {
@@ -366,114 +355,91 @@ function helpersVm(state, t, roster, loops, o, style) {
         title: TITLE[key],
         count: list.length,
         folded: key === "resting" && list.length > 12,
-        tiles: list.map((h) => tile(state, t, h, key, roster, loops, style)),
+        tiles: list.map((h) => tile(state, t, h, false, roster, loops)),
       });
     }
   }
-  const elsewhere = roster.elsewhere.map((h) => tile(state, t, h, "elsewhere", roster, loops, style));
+  const nWorking = roster.groups.working.length;
   return {
     groups,
     dense,
-    legend: nTiles <= 3,
+    legend: nTiles === 0,
     empty: nTiles === 0,
-    working: roster.groups.working.length,
-    pace: formatPace(roster.groups.working.length),
-    elsewhere,
+    pace: nWorking > 0 ? `${formatInt(nWorking)} working · bench pace ${Math.round(crowd(nWorking) * 100)} %` : null,
+    elsewhere: roster.elsewhere.map((h) => tile(state, t, h, true, roster, loops)),
     album: albumOf(state, t, style),
   };
 }
 
-/** "9 working · bench pace 50 %" (crowd as a percentage, §5.3). */
-function formatPace(n) {
-  if (n === 0) return "nobody working";
-  return `${formatInt(n)} working · bench pace ${Math.round(crowd(n) * 100)} %`;
-}
-
-function tile(state, t, h, key, roster, loops, style) {
-  const g = key || groupKey(h, roster.writer);
-  const status = g === "elsewhere" ? STATUS_GROUP[h.status] || "resting" : g;
+function tile(state, t, h, elsewhere, roster, loops) {
+  const status = statusOf(h);
   const word = WORD[status];
-  const elsewhere = g === "elsewhere";
   const kids = roster.kidsOf[h.id];
-  const pips = [];
-  let kidsWorking = 0;
-  if (kids) {
-    for (let i = 0; i < kids.length; i++) {
-      const k = kids[i];
-      if (k.status === "working") kidsWorking++;
-      if (pips.length < 4) pips.push({ helperId: k.id, status: KID_STATUS[k.status] || "resting", tooltip: `${shortName(k, CLIP.chip)} · fledgling · ${WORD[KID_STATUS[k.status] || "resting"]}` });
-    }
-  }
+  const pips = kids ? kids.map(statusOf) : [];
   const title = h.title ? clip(String(h.title), CLIP.title) : "";
   const where = place(h);
-  let tooltip = `${shortName(h, 16)} · ${h.species} · ${elsewhere ? `${word} (another window)` : word}`;
+  let tooltip = `${nameOfHelper(h, CLIP.long)} · ${h.species} · ${elsewhere ? `${word} (another window)` : word}`;
   if (title) tooltip += ` · ${title}`;
   if (where) tooltip += ` · ${where}`;
-  const rest = status === "resting" && !elsewhere ? Math.max(0, Math.min(1, num(h.rest))) : null;
   return {
     helperId: h.id,
-    name: shortName(h, CLIP.name),
+    name: nameOfHelper(h, CLIP.name),
     species: h.species,
     hue: h.hue,
     status,
     statusWord: word,
     envelope: Object.hasOwn(state.envelopes, h.id),
     pips,
-    pipsMore: kids && kids.length > 4 ? kids.length - 4 : 0,
-    rest,
+    rest: status === "idle" && !elsewhere ? Math.max(0, Math.min(1, num(h.rest))) : null,
     pulse: !elsewhere && !loops.chipPulse && loops.pulse[h.id] === true,
     spin: !elsewhere && loops.spin[h.id] === true,
-    dashed: status === "needs",
-    opacity: elsewhere ? 0.5 : status === "resting" ? 0.8 : 1,
+    dashed: status === "blocked",
+    opacity: elsewhere ? 0.5 : status === "idle" ? 0.8 : 1,
     tooltip,
     pane: h.pane ?? null,
     addr: h.addr ?? null,
-    kind: h.kind,
-    detail: {
-      title,
-      line: detailLine(state, t, h, status, kids ? kids.length : 0, style),
-      rest: status === "resting" || status === "finished"
-        ? `rest ${Math.round(num(h.rest) * 100)} % → next task ${times(1 + effectsRestMax(state) * num(h.rest))}`
-        : null,
-      where,
-    },
+    kind: h.kind === "kid" ? "kid" : "pane",
+    detail: detail(state, t, h, status, title, where, kids ? kids.length : 0),
   };
 }
 
-function effectsRestMax(state) {
-  return state.bought["warm-hands"] === true ? 2 : K.restMax;
-}
-
-function detailLine(state, t, h, status, nKids, style) {
+/** The Flock detail card's lines (§3.3), for the selected tile. */
+function detail(state, t, h, status, title, where, nKids) {
   const parts = [];
-  if (status === "needs" && typeof h.blockedAt === "number") parts.push(`Needs you ${ago(t - h.blockedAt)}`);
+  if (status === "blocked" && typeof h.blockedAt === "number") parts.push(`Needs you ${ago(t - h.blockedAt)}`);
   else if (status === "working") {
     const s = workStart(h);
     parts.push(Number.isFinite(s) && s <= t ? `Working ${ago(t - s)}` : "Working");
   } else parts.push(WORD[status]);
   if (nKids > 0) parts.push(plural(nKids, "fledgling", "fledglings"));
-  parts.push(`${cnt(num(h.stats && h.stats.run), style)} folds this run`);
-  return parts.join(" · ");
+  parts.push(`${cnt(num(h.stats && h.stats.run), state.settings.style)} folds this run`);
+  const restMax = state.bought["warm-hands"] === true ? 2 : K.restMax;
+  const rest = num(h.rest);
+  return {
+    title,
+    where,
+    line: parts.join(" · "),
+    rest: status === "idle" || status === "done" ? `rest ${Math.round(rest * 100)} % → next task ${times(1 + restMax * rest)}` : null,
+  };
 }
 
 function albumOf(state, t, style) {
-  const out = [];
+  const gone = [];
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (!h.gone || h.kind !== "pane") continue;
-    out.push(h);
+    if (h.gone && h.kind === "pane") gone.push(h);
   }
-  out.sort((a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b));
-  const rows = new Array(out.length);
-  for (let i = 0; i < out.length; i++) {
-    const h = out[i];
+  gone.sort((a, b) => num(b.missingSince) - num(a.missingSince) || byJoin(a, b));
+  const rows = new Array(gone.length);
+  for (let i = 0; i < gone.length; i++) {
+    const h = gone[i];
     rows[i] = {
       helperId: h.id,
-      name: shortName(h, 16),
+      name: nameOfHelper(h, CLIP.long),
       species: h.species,
       hue: h.hue,
-      leftAgo: `left ${ago(t - num(h.missingSince, t))} ago`,
+      leftAgo: ago(t - num(h.missingSince, t)),
       folds: cnt(num(h.stats && h.stats.folds), style),
     };
   }
@@ -483,74 +449,63 @@ function albumOf(state, t, style) {
 // ---------------------------------------------------------------------------
 // Ribbon and rail marks (§3.9, §3.10)
 
-function mark(state, t, h, status, elsewhere) {
+function mark(state, t, h, elsewhere) {
+  const status = statusOf(h);
   const word = WORD[status];
-  const title = h.title ? clip(String(h.title), CLIP.markTitle) : "";
-  const where = place(h);
-  let tip = shortName(h, 16);
-  const mid = [title, where].filter(Boolean).join(" · ");
+  const mid = [agentOf(h.title), place(h)].filter(Boolean).join(" · ");
+  let tip = nameOfHelper(h, CLIP.long);
   if (mid) tip += ` — ${mid}`;
   tip += ` — ${elsewhere ? `${word} (another window)` : word}`;
-  if (status === "needs" && typeof h.blockedAt === "number") tip += ` · ${ago(t - h.blockedAt)}`;
+  if (status === "blocked" && typeof h.blockedAt === "number") tip += ` · ${ago(t - h.blockedAt)}`;
   return {
     helperId: h.id,
     status,
     hue: h.hue,
     envelope: Object.hasOwn(state.envelopes, h.id),
-    dashed: status === "needs",
+    dashed: status === "blocked",
     opacity: elsewhere ? 0.5 : 1,
     tooltip: tip,
   };
 }
 
+/** Group order with join order inside (or workspace order); Elsewhere last at 50 %. */
 function marksOf(state, t, roster) {
-  // Group order with join order inside (§3.10), or workspace order; Elsewhere last.
-  const list = roster.workspace
-    ? roster.ordered
-    : roster.groups.needs.slice().sort(byJoin).concat(roster.groups.finished, roster.groups.working, roster.groups.resting);
-  const all = [];
-  for (const h of list) all.push(mark(state, t, h, STATUS_GROUP[h.status] || "resting", false));
-  for (const h of roster.elsewhere) all.push(mark(state, t, h, STATUS_GROUP[h.status] || "resting", true));
-  return { all };
+  const g = roster.groups;
+  const list = roster.workspace ? roster.ordered : g.needs.slice().sort(byJoin).concat(g.finished, g.working, g.resting);
+  const out = new Array(list.length + roster.elsewhere.length);
+  let k = 0;
+  for (const h of list) out[k++] = mark(state, t, h, false);
+  for (const h of roster.elsewhere) out[k++] = mark(state, t, h, true);
+  return out;
 }
 
-/** Ribbon density level for `n` marks in a ribbon `W` px wide (§3.10). */
-export function ribbonLevel(n, W) {
-  const w = W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad;
-  if (n * RIBBON.chip <= w) return "A";
-  if (n <= 2 * Math.floor(w / RIBBON.pip)) return "B";
-  return "C";
-}
-
-function ribbonVm(state, t, roster, marks, W, header, saveNotice, awayVm, style, liveRate) {
-  const n = marks.all.length;
+function ribbonVm(state, all, W, header, saveNotice, envelopes, style, liveRate) {
+  const n = all.length;
   const level = ribbonLevel(n, W);
-  let out = marks.all;
+  let marks = all;
   const tallies = [];
   if (level === "C") {
-    out = [];
-    const tally = Object.create(null);
-    for (const m of marks.all) {
-      if (m.opacity === 1 && (m.status === "needs" || m.status === "finished")) out.push(m);
-      else {
-        const key = m.opacity === 1 ? m.status : "elsewhere";
-        tally[key] = (tally[key] || 0) + 1;
-      }
+    // Needs-you and finished stay individual; the rest become tally chips.
+    marks = [];
+    let working = 0;
+    let idle = 0;
+    for (const m of all) {
+      if (m.status === "blocked" || m.status === "done") marks.push(m);
+      else if (m.status === "working") working++;
+      else idle++;
     }
-    for (const key of ["working", "resting", "needs", "finished", "elsewhere"]) {
-      if (!tally[key]) continue;
-      tallies.push({ status: key, count: tally[key], label: formatInt(tally[key]), tooltip: `${formatInt(tally[key])} ${key === "elsewhere" ? "in another window" : WORD[key].toLowerCase()}` });
-    }
+    if (working) tallies.push({ status: "working", count: working, label: formatInt(working), tooltip: `${formatInt(working)} working` });
+    if (idle) tallies.push({ status: "idle", count: idle, label: formatInt(idle), tooltip: `${formatInt(idle)} resting` });
   }
   const pot = state.away.pot;
   return {
-    marks: out,
+    marks,
     level,
     tallies,
     width: Math.max(0, W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad),
     folds: header.folds,
     rate: formatRate(liveRate, style, { compact: true }),
-    envelopes: Object.keys(state.envelopes).length,
+    envelopes,
     save: saveNotice ? "Save problem" : null,
     pill: pot ? `Welcome back +${cnt(pot.folds, style)}` : null,
     empty: n === 0 ? "No paper folk yet · start an agent in any tab and it joins the workshop" : null,
@@ -558,16 +513,22 @@ function ribbonVm(state, t, roster, marks, W, header, saveNotice, awayVm, style,
 }
 
 // ---------------------------------------------------------------------------
-// Mat (§3.2)
+// Mat (§3.2). Nodes, scraps, the ream and the crease line are slot centres;
+// the crane and the boat are the left/top of their hit boxes (they glide by
+// `left`), as the UI fixtures draw them.
 
 function matVm(state, t, E, loops, short, calm, roster) {
   const sp = state.spawn;
-  // Needs-you chips: longest waiting first, up to 4, then "+n" (§3.2 item 10).
   const waiting = roster.groups.needs;
   const chips = [];
-  for (let i = 0; i < waiting.length && i < 4; i++) {
+  for (let i = 0; i < waiting.length && i < LOOP_BUDGET.chips; i++) {
     const h = waiting[i];
-    chips.push({ helperId: h.id, name: shortName(h, CLIP.chip), pulse: loops.chipPulse && loops.pulse[h.id] === true, tooltip: `${shortName(h, 16)} needs you \u00b7 ${ago(t - num(h.blockedAt, t))}` });
+    chips.push({
+      helperId: h.id,
+      name: nameOfHelper(h, CLIP.chip),
+      pulse: loops.chipPulse && loops.pulse[h.id] === true,
+      tooltip: `${nameOfHelper(h, CLIP.long)} needs you · ${ago(t - num(h.blockedAt, t))}`,
+    });
   }
   const nodes = [];
   for (const key of ["chain", "chain2"]) {
@@ -577,7 +538,8 @@ function matVm(state, t, E, loops, short, calm, roster) {
     for (const n of c.nodes) {
       if (n.done) continue;
       const pos = slotPos(n.slot, short);
-      nodes.push({ id: nodeId(c, n.i), i: n.i, label: String(n.i + 1), x: pos.x, y: pos.y, due: n.i === c.next, fading: left !== null && left <= 2000 });
+      // `i` is the number drawn on the node (1-based); `id` is the click id.
+      nodes.push({ id: nodeId(c, n.i), i: n.i + 1, x: pos.x, y: pos.y, due: n.i === c.next, fading: left !== null && left <= 2000 });
     }
   }
   const scraps = sp.scraps.map((s) => {
@@ -588,24 +550,27 @@ function matVm(state, t, E, loops, short, calm, roster) {
   if (sp.crane) {
     const pos = slotPos(sp.crane.slot, short);
     const life = E.craneLifeMs;
-    const msLeft = num(lifeLeft(state, E, "crane", sp.crane));
-    const x0 = Math.max(24, Math.min(280, pos.x));
-    const x1 = calm ? x0 : x0 < MAT.w / 2 ? 280 : 24;
-    const k = life > 0 ? 1 - msLeft / life : 1;
-    crane = { id: sp.crane.id, x: round1(x0 + (x1 - x0) * k), y: pos.y, x1, msLeft, bob: loops.crane };
+    const msLeft = Math.round(num(lifeLeft(state, E, "crane", sp.crane)));
+    const maxX = MAT.w - MAT.craneW - MAT.edge;
+    const x0 = Math.max(MAT.edge, Math.min(maxX, pos.x - MAT.craneW / 2));
+    // It glides one way, towards the far side (§13.5); calm: it sits still.
+    const x1 = calm ? x0 : pos.x < MAT.w / 2 ? maxX : MAT.edge;
+    const k = life > 0 ? Math.max(0, Math.min(1, 1 - msLeft / life)) : 1;
+    crane = { id: sp.crane.id, x: round1(x0 + (x1 - x0) * k), y: round1(pos.y - MAT.craneH / 2), x1: round1(x1), msLeft, bob: loops.crane };
   }
   let boat = null;
   if (sp.boat) {
     const life = E.boatLifeMs;
-    const msLeft = num(lifeLeft(state, E, "boat", sp.boat));
-    const x0 = 24;
-    const x1 = calm ? 216 : 280;
-    const k = life > 0 ? 1 - msLeft / life : 1;
-    boat = { id: sp.boat.id, x: calm ? x1 : round1(x0 + (x1 - x0) * k), x1, msLeft };
+    const msLeft = Math.round(num(lifeLeft(state, E, "boat", sp.boat)));
+    const x0 = MAT.edge;
+    const x1 = MAT.w - MAT.boatW - MAT.edge;
+    const k = life > 0 ? Math.max(0, Math.min(1, 1 - msLeft / life)) : 1;
+    // Calm: it sits at the tray end.
+    boat = calm ? { id: sp.boat.id, x: x1, x1, msLeft } : { id: sp.boat.id, x: round1(x0 + (x1 - x0) * k), x1, msLeft };
   }
   let ream = null;
   if (sp.ream) {
-    const pos = slotPos(sp.ream.slot ?? SLOT.ream, short);
+    const pos = slotPos(typeof sp.ream.slot === "number" ? sp.ream.slot : SLOT.ream, short);
     ream = { id: sp.ream.id, x: pos.x, y: pos.y };
   }
   let creaseLine = null;
@@ -618,7 +583,7 @@ function matVm(state, t, E, loops, short, calm, roster) {
   }
   return {
     chips,
-    more: Math.max(0, waiting.length - 4),
+    more: Math.max(0, waiting.length - LOOP_BUDGET.chips),
     shelf: state.hand.figures.slice(),
     nodes,
     scraps,
@@ -642,11 +607,12 @@ function trayOrder(state) {
 
 function trayVm(state, t, E, r, idx, loops, style) {
   const list = trayOrder(state);
-  const shown = list.slice(0, 6);
   const N = idx.panes.length;
   const b = state.boosts;
   const tw = b.tailwind > 0 && b.tailwindMs > 0 ? 2 : 1;
-  const envelopes = shown.map(([id, env]) => {
+  const envelopes = [];
+  for (let i = 0; i < list.length && i < 6; i++) {
+    const [id, env] = list[i];
     const def = ENVELOPES.find((d) => d.type === env.type) || ENVELOPES[0];
     const u = num(env.units);
     let tooltip;
@@ -655,7 +621,7 @@ function trayVm(state, t, E, r, idx, loops, style) {
     } else {
       const ms = def.baseMs * stackFactor(u) * E.durMult * tw;
       const mult = env.type === "rush" ? E.rushMult : env.type === "storm" ? E.stormMult : K.chorusMult;
-      const cur = env.type === "rush" ? Math.max(0, b.rushEnd - t) : env.type === "storm" ? Math.max(0, b.stormEnd - t) : Math.max(0, num(b.chorus));
+      const cur = env.type === "rush" ? b.rushEnd - t : env.type === "storm" ? b.stormEnd - t : num(b.chorus);
       if (cur > 0) {
         const add = Math.max(0, Math.min(def.capMs, cur + ms * K.extendShare) - cur);
         tooltip = `${def.name} is running: opening now adds only ${formatDuration(add)}`;
@@ -663,25 +629,17 @@ function trayVm(state, t, E, r, idx, loops, style) {
         tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · open when you're ready to click`;
       }
     }
-    return {
-      helperId: id,
-      type: env.type,
-      units: u,
-      label: u >= 2 ? `×${dec2(u)}` : null,
-      bob: loops.envelope === id,
-      tooltip: clip(tooltip, CLIP.notice),
-    };
-  });
-  return { envelopes, more: Math.max(0, list.length - 6), total: list.length };
+    envelopes.push({ helperId: id, type: env.type, units: u, bob: loops.envelope === id, label: u >= 2 ? `×${dec2(u)}` : null, tooltip: clip(tooltip, CLIP.notice) });
+  }
+  return { envelopes, more: Math.max(0, list.length - 6) };
 }
 
 function streakVm(state, E, t) {
   const r = rhythmAt(state, E, t);
-  const c = 1 + E.comboMax * Math.min(r, K.rMax) / K.rMax;
   const glow = state.hand.afterglowMs;
   return {
     fill: Math.min(r, K.rMax) / K.rMax,
-    label: times(c),
+    label: times1(1 + E.comboMax * Math.min(r, K.rMax) / K.rMax),
     inStep: inStepAt(state, E, t),
     afterglow: glow > 0 ? formatDuration(glow, { parts: 1 }) : null,
   };
@@ -691,9 +649,9 @@ function boostsVm(state, E, live, t) {
   const b = state.boosts;
   const out = [];
   const add = (type, label, msLeft) => {
-    if (msLeft > 0) out.push({ type, label: clip(label, CLIP.row), msLeft: Math.round(msLeft), msTotal: Math.max(BOOST_CAP[type], Math.round(msLeft)) });
+    if (msLeft > 0) out.push({ type, label, msLeft: Math.round(msLeft), msTotal: Math.max(BOOST_CAP[type], Math.round(msLeft)) });
   };
-  add("storm", `Paper Storm ${times(E.stormMult)}`, b.stormEnd - t);
+  add("storm", `Storm ${times(E.stormMult)}`, b.stormEnd - t);
   add("rush", `Rush ${times(E.rushMult)}`, b.rushEnd - t);
   add("song", `Flock Song ${times(K.songMult)}`, num(b.song) - live);
   add("chorus", `Chorus ${times(K.chorusMult)}`, num(b.chorus) - live);
@@ -702,7 +660,9 @@ function boostsVm(state, E, live, t) {
 }
 
 // ---------------------------------------------------------------------------
-// Shop (§3.4)
+// Shop (§3.4). Every item of a segment is a row in table order; `revealed`
+// false rows draw as the "???" silhouette and owned upgrades (`owned` 1) go
+// into the segment's "Owned (n)" fold, as the UI decides.
 
 function shopVm(state, E, r, idx, writer, o, style) {
   const bank = state.bank;
@@ -710,7 +670,7 @@ function shopVm(state, E, r, idx, writer, o, style) {
   const fl = flock(state, E, idx, state.clock, writer);
   const reveal = 3 * Math.max(bank, state.runFolds);
   const buyCount = o.buyCount === 10 ? 10 : o.buyCount === "max" ? "max" : 1;
-  let best = null; // [payback seconds, row]
+  let best = null; // [payback s, row]
   const consider = (row, cost, item) => {
     if (!row.affordable) return;
     const d = estimateDelta(state, E, fl, item);
@@ -720,33 +680,35 @@ function shopVm(state, E, r, idx, writer, o, style) {
   };
   const eta = (cost) => (cost > bank && Rp > 0 ? formatEta((cost - bank) / Rp * 1000) : null);
 
-  // Works: every revealed workshop, then one silhouette.
   const works = [];
   for (let k = 0; k < WORKSHOPS.length; k++) {
     const w = WORKSHOPS[k];
     const owned = state.owned[w.id] || 0;
-    const revealed = k === 0 || (state.owned[WORKSHOPS[k - 1].id] || 0) >= 1 || owned > 0;
+    const revealed = k === 0 || owned > 0 || (state.owned[WORKSHOPS[k - 1].id] || 0) >= 1;
     const n = buyCount === "max" ? Math.max(1, maxAffordable(state, w.id)) : buyCount;
     const info = itemInfo(state, w.id, n);
     const each = w.out * Math.pow(2, tierOf(state, w.id)) * E.G;
     const row = {
       id: w.id,
-      name: revealed ? w.name : "???",
+      name: w.name,
       owned,
-      count: n,
       cost: cnt(info.cost, style),
       affordable: revealed && info.unlocked && info.cost <= bank,
       best: false,
       eta: revealed && info.unlocked ? eta(info.cost) : null,
-      effect: revealed ? `${formatRate(each, style)} each · ${formatRate(each * owned, style, { sign: false })} total` : "",
-      icon: `workshop/${w.id}`,
+      effect: `${formatRate(each, style)} each · ${formatRate(each * owned, style, { sign: false })} total`,
+      icon: w.id,
       tier: false,
       revealed,
       sub: [],
+      count: n,
     };
     if (revealed) {
-      const one = itemInfo(state, w.id, 1);
-      if (one.unlocked && one.cost <= bank) consider(row, one.cost, w.id);
+      if (buyCount === 1) consider(row, info.cost, w.id);
+      else {
+        const one = itemInfo(state, w.id, 1);
+        if (one.unlocked && one.cost <= bank) consider({ affordable: true, ref: row }, one.cost, w.id);
+      }
       for (const tr of TIERS) {
         const id = `${w.id}-t${tr.n}`;
         const ti = itemInfo(state, id, 1);
@@ -759,8 +721,8 @@ function shopVm(state, E, r, idx, writer, o, style) {
           affordable: ti.ok,
           best: false,
           eta: eta(ti.cost),
-          effect: `${w.name} output ×2`,
-          icon: `workshop/${w.id}`,
+          effect: `${w.name} ×2`,
+          icon: w.id,
           tier: true,
           revealed: true,
           sub: [],
@@ -770,67 +732,43 @@ function shopVm(state, E, r, idx, writer, o, style) {
       }
     }
     works.push(row);
-    if (!revealed) break;
   }
 
   const segments = { works, tools: [], folk: [], charms: [], curios: [], auto: [] };
-  const owned = { works: [], tools: [], folk: [], charms: [], curios: [], auto: [] };
-  // One "???" row per segment: the cheapest unlocked item not yet revealed.
-  const silhouette = Object.create(null);
   const upgradeRow = (u, auto) => {
     const info = itemInfo(state, u.id, 1);
     const have = info.have === true;
     const revealed = have || (info.unlocked && (u.cost <= reveal || (u.req !== undefined && state.bought[u.req] === true)));
     const row = {
       id: u.id,
-      name: revealed ? u.name : "???",
+      name: u.name,
       owned: have ? 1 : 0,
       cost: cnt(u.cost, style),
       affordable: revealed && info.ok,
       best: false,
       eta: revealed && !have && info.unlocked ? eta(u.cost) : null,
-      effect: revealed ? u.text : "",
+      effect: u.text,
       icon: SEG_ICON[u.seg],
       tier: false,
       revealed,
       sub: [],
-      have,
+      locked: !info.unlocked,
     };
     if (auto) row.on = have && state.auto[u.id] !== false;
-    if (revealed || !info.unlocked) return row;
-    const s = silhouette[u.seg];
-    if (!s || u.cost < s[0]) silhouette[u.seg] = [u.cost, row];
-    return null;
+    return row;
   };
   for (const u of UPGRADES) {
     const row = upgradeRow(u, false);
-    if (!row || !row.revealed) continue;
-    if (row.have) owned[u.seg].push(row);
-    else {
-      consider(row, u.cost, u.id);
-      segments[u.seg].push(row);
-    }
+    if (row.revealed && !row.owned) consider(row, u.cost, u.id);
+    segments[u.seg].push(row);
   }
-  for (const a of AUTOMATIONS) {
-    const row = upgradeRow(a, true);
-    if (row && row.revealed) segments.auto.push(row); // bought ones keep their switch here
-  }
-  for (const seg of ["tools", "folk", "charms", "curios", "auto"]) {
-    segments[seg].sort((a, b) => costOf(a.id) - costOf(b.id));
-    if (silhouette[seg]) segments[seg].push(silhouette[seg][1]);
-    owned[seg].sort((a, b) => costOf(a.id) - costOf(b.id));
-  }
+  for (const a of AUTOMATIONS) segments.auto.push(upgradeRow(a, true));
   if (best) {
-    best[1].best = true;
-    best[1].tooltip = `Best buy: pays back in ${formatDuration(best[0] * 1000, { parts: 1 })}`;
+    const row = best[1].ref || best[1];
+    row.best = true;
+    row.tooltip = `Best buy: pays back in ${formatDuration(best[0] * 1000, { parts: 1 })}`;
   }
-  return { segments, owned, buyCount };
-}
-
-function costOf(id) {
-  for (const u of UPGRADES) if (u.id === id) return u.cost;
-  for (const a of AUTOMATIONS) if (a.id === id) return a.cost;
-  return Infinity;
+  return { segments, buyCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -838,8 +776,8 @@ function costOf(id) {
 
 function stringVm(state, style) {
   const s = stringInfo(state);
-  const strands = new Array(20);
   const per = s.of / 20;
+  const strands = new Array(20);
   for (let i = 0; i < 20; i++) strands[i] = Math.max(0, Math.min(1, (s.cranes - i * per) / per));
   const W = state.wishes;
   const gainShown = Math.max(s.gain, s.needed);
@@ -849,27 +787,20 @@ function stringVm(state, style) {
     nextIn: cnt(s.nextIn, style),
     lifetime: cnt(s.lifetime, style),
     gain: s.gain,
-    needed: s.needed,
     can: s.can,
-    title: `${formatInt(Math.min(s.cranes, s.of))} / ${formatInt(s.of)} cranes`,
-    next: `Next crane in ${cnt(s.nextIn, style)} folds · lifetime ${cnt(s.lifetime, style)}`,
-    at: `At ${formatInt(s.of)}: +${formatInt(gainShown)} Wishes (+${Math.round(PRESTIGE.perWish * 100)} % to everything each, forever)`,
-    button: s.can ? `Make the wish (+${formatInt(s.gain)} Wishes)` : `Make the wish (at ${formatInt(s.of)} cranes)`,
-    strands,
     perks: PERKS.map((pk) => ({ at: pk.at, text: pk.text, have: W >= pk.at })),
     garlands: state.garlands.map((g) => ({
       wish: g.wish,
       day: g.day,
+      stripes: (g.stripes || []).map((st) => [st[0], st[1], clip(String(st[2] ?? ""), CLIP.long)]),
       wishes: g.wishes,
-      title: `#${g.wish}`,
-      text: `${g.day} · ${plural(g.wishes, "Wish", "Wishes")}`,
-      stripes: (g.stripes || []).map((st) => ({
-        key: st[0],
-        weight: st[1],
-        label: clip(String(st[2] ?? ""), 16),
-        tooltip: clip(`${st[2] ?? st[0]} · ${Math.round(num(st[1]) * 100)} %`, CLIP.markTitle),
-      })),
     })),
+    needed: s.needed,
+    strands,
+    title: `${formatInt(Math.min(s.cranes, s.of))} / ${formatInt(s.of)} cranes`,
+    next: `Next crane in ${cnt(s.nextIn, style)} folds · lifetime ${cnt(s.lifetime, style)}`,
+    at: `At ${formatInt(s.of)}: +${formatInt(gainShown)} Wishes (+${Math.round(PRESTIGE.perWish * 100)} % to everything each, forever)`,
+    button: `Make the wish (+${formatInt(gainShown)} Wishes)`,
   };
 }
 
@@ -885,92 +816,91 @@ function settingsVm(state) {
     gather: s.gather !== false,
     nodes: s.nodes !== false,
     pops: s.calm === true ? false : s.pops !== false,
-    popsDisabled: s.calm === true,
     notify: { master: s.notify.master === true, full: s.notify.full !== false, pile: s.notify.pile !== false, save: s.notify.save !== false },
     order: s.order === "workspace" ? "workspace" : "urgency",
     density: s.density === "always" || s.density === "never" ? s.density : "auto",
     style: s.style === "sci" ? "sci" : "short",
     notifySentToday: sent,
-    notifyText: `${Math.min(3, sent)} of 3 sent today`,
     automations: AUTOMATIONS.map((a) => {
       const have = state.bought[a.id] === true;
       return { id: a.id, name: a.name, owned: have, on: have && state.auto[a.id] !== false };
     }),
+    popsDisabled: s.calm === true,
+    notifyText: `${Math.min(3, sent)} of 3 sent today`,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Away card (§3.7, §10.3)
+// Away and busy cards (§3.7, §10.3)
 
-function awayCard(state, t, E, style) {
+function awayCard(state, E, style) {
   const p = state.away.pot;
+  const envelopes = Object.keys(state.envelopes).length;
+  const envelopesText = envelopes > 0 ? `${plural(envelopes, "envelope", "envelopes")} waiting on the tray` : null;
   if (p) {
     const hs = state.helpers;
     const needs = [];
     for (const id of p.needs || []) {
       const h = hs[id];
-      if (h && !h.gone && h.status === "blocked") needs.push({ helperId: id, name: shortName(h, CLIP.chip) });
+      if (h && !h.gone && h.status === "blocked") needs.push({ helperId: id, name: nameOfHelper(h, CLIP.chip) });
     }
-    const envelopes = Object.keys(state.envelopes).length;
-    const bestH = p.best ? hs[p.best] : null;
-    const affordable = (p.affordable || []).map((id) => ({ id, name: nameOf(id) }));
-    const duration = formatDuration(p.seconds * 1000, "spaced");
+    const bh = p.best ? hs[p.best] : null;
+    const best = bh ? { helperId: bh.id, name: nameOfHelper(bh, CLIP.long), species: bh.species, tasks: bh.stats.tasks } : null;
+    const affordable = (p.affordable || []).map((id) => ({ id, name: itemName(id) }));
+    const rested = num(p.rested);
     return {
       kind: "away",
-      title: "While you were away",
-      duration,
+      duration: formatDuration(p.seconds * 1000, "spaced"),
       capped: p.capped === true,
+      folds: `+${cnt(p.folds, style)}`,
+      split: { workshops: cnt(p.split ? p.split.workshops : 0, style), helpers: cnt(p.split ? p.split.helpers : 0, style) },
+      envelopes,
+      needs,
+      rested,
+      best,
+      affordable,
+      collectable: true,
+      title: "While you were away",
       capText: p.capped
         ? `You were away ${formatDuration(num(p.gap, p.seconds * 1000), "spaced")}; helpers fold for at most 8 h while you're gone.`
         : "(Creaseworks counts up to 8 h)",
-      folds: `+${cnt(p.folds, style)}`,
-      split: `workshops ${cnt(p.split ? p.split.workshops : 0, style)} · helpers ${cnt(p.split ? p.split.helpers : 0, style)}`,
-      envelopes,
-      envelopesText: envelopes > 0 ? `${plural(envelopes, "envelope", "envelopes")} waiting on the tray` : null,
-      needs,
-      needsText: needs.length ? clip(`${plural(needs.length, "helper needs", "helpers need")} you: ${needs.map((x) => x.name).join(", ")}`, CLIP.notice) : null,
-      rested: num(p.rested),
-      restedText: p.rested > 0 ? `${plural(p.rested, "helper", "helpers")} rested fully (next tasks ${times(1 + E.restMax)})` : null,
-      best: bestH ? clip(`Best helper: ${bestH.name} the ${bestH.species}, ${plural(bestH.stats.tasks, "task", "tasks")}`, CLIP.notice) : null,
-      affordable,
+      splitText: `workshops ${cnt(p.split ? p.split.workshops : 0, style)} · helpers ${cnt(p.split ? p.split.helpers : 0, style)}`,
+      envelopesText,
+      needsText: needs.length ? clip(`${needs.length === 1 ? "1 helper needs" : `${formatInt(needs.length)} helpers need`} you: ${needs.map((x) => x.name).join(", ")}`, CLIP.notice) : null,
+      restedText: rested > 0 ? `${plural(rested, "helper", "helpers")} rested fully (next tasks ${times(1 + E.restMax)})` : null,
+      bestText: best ? clip(`Best helper: ${best.name} the ${best.species}, ${plural(best.tasks, "task", "tasks")}`, CLIP.notice) : null,
       affordableText: affordable.length ? clip(`You can afford: ${affordable.map((x) => x.name).join(", ")}`, CLIP.notice) : null,
-      tasks: null,
-      collectable: true,
       at: p.at,
     };
   }
   let busy = null;
   for (const n of state.notices) if (n.kind === "busy" && (!busy || n.at > busy.at)) busy = n;
-  if (busy) {
-    const d = busy.data || {};
-    const envelopes = num(d.envelopes);
-    return {
-      kind: "busy",
-      title: "While you were busy",
-      duration: formatDuration(num(d.seconds) * 1000, "spaced"),
-      capped: false,
-      capText: null,
-      folds: `+${cnt(num(d.folds), style)}`,
-      split: null,
-      envelopes,
-      envelopesText: envelopes > 0 ? `${plural(envelopes, "envelope", "envelopes")} waiting on the tray` : null,
-      needs: [],
-      needsText: null,
-      rested: 0,
-      restedText: null,
-      best: null,
-      affordable: [],
-      affordableText: null,
-      tasks: num(d.tasks),
-      tasksText: `${plural(num(d.tasks), "task", "tasks")} finished`,
-      collectable: false,
-      at: busy.at,
-    };
-  }
-  return null;
+  if (!busy) return null;
+  const d = busy.data || {};
+  const tasks = num(d.tasks);
+  return {
+    kind: "busy",
+    duration: formatDuration(num(d.seconds) * 1000, "spaced"),
+    capped: false,
+    folds: `+${cnt(num(d.folds), style)}`,
+    split: null,
+    envelopes: num(d.envelopes, envelopes),
+    needs: [],
+    rested: 0,
+    best: null,
+    affordable: [],
+    collectable: false,
+    title: "While you were busy",
+    capText: null,
+    splitText: null,
+    envelopesText: num(d.envelopes, envelopes) > 0 ? `${plural(num(d.envelopes, envelopes), "envelope", "envelopes")} waiting on the tray` : null,
+    tasks,
+    tasksText: `${plural(tasks, "task", "tasks")} finished`,
+    at: busy.at,
+  };
 }
 
-function nameOf(id) {
+function itemName(id) {
   for (const w of WORKSHOPS) if (w.id === id) return w.name;
   for (const u of UPGRADES) if (u.id === id) return u.name;
   for (const a of AUTOMATIONS) if (a.id === id) return a.name;
@@ -978,7 +908,8 @@ function nameOf(id) {
 }
 
 // ---------------------------------------------------------------------------
-// Notices (engine + the glue's save notice, §3.8)
+// Notices: the glue's save notice first, then the engine's (§3.8). `place`
+// says where each goes; the `busy` notice is the away card (vm.away).
 
 function noticesVm(state, t, saveNotice, style) {
   const out = [];
@@ -987,22 +918,21 @@ function noticesVm(state, t, saveNotice, style) {
     let text = typeof saveNotice.text === "string" ? saveNotice.text : SAVE_TEXT[kind] || "Save problem.";
     if (kind === "error" && typeof saveNotice.text !== "string" && saveNotice.message) {
       const retry = num(saveNotice.retryMs, 0);
-      text = `Can't save: ${clip(String(saveNotice.message), 60)}.${retry > 0 ? ` Retrying in ${formatDuration(retry, "spaced")}.` : ""} Your progress is safe in memory.`;
+      text = `Can't save: ${clip(String(saveNotice.message), CLIP.error)}.${retry > 0 ? ` Retrying in ${formatDuration(retry, "spaced")}.` : ""} Your progress is safe in memory.`;
     }
     out.push({ kind, text: clip(text, CLIP.notice), actions: (SAVE_ACTIONS[kind] || ["details"]).slice(), place: "banner", save: true, at: num(saveNotice.at, t) });
   }
-  // Engine notices, newest first within each place.
   const list = state.notices.slice().sort((a, b) => b.at - a.at);
   for (const n of list) {
     const d = n.data || {};
     if (n.kind === "clock") {
       out.push({ kind: "clock", text: SAVE_TEXT.clock, actions: ["dismiss"], place: "banner", save: false, at: n.at });
     } else if (n.kind === "overflow") {
-      out.push({ kind: "overflow", text: clip(`+${cnt(num(d.amount), style)} from a full envelope (${String(d.name ?? "")})`, CLIP.notice), actions: [], place: "footer", save: false, at: n.at });
+      const who = clip(String(d.name ?? ""), CLIP.long);
+      out.push({ kind: "overflow", text: `+${cnt(num(d.amount), style)} from a full envelope${who ? ` (${who})` : ""}`, actions: [], place: "footer", save: false, at: n.at });
     } else if (n.kind === "away") {
-      out.push({ kind: "away", text: clip(`+${cnt(num(d.folds), style)} while away (${formatDuration(num(d.seconds) * 1000, "spaced")})`, CLIP.notice), actions: [], place: "footer", save: false, at: n.at });
+      out.push({ kind: "away", text: `+${cnt(num(d.folds), style)} while away (${formatDuration(num(d.seconds) * 1000, "spaced")})`, actions: [], place: "footer", save: false, at: n.at });
     }
-    // "busy" is the away card (vm.away), not a line.
   }
   return out;
 }

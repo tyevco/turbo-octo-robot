@@ -1,0 +1,511 @@
+// The mat, the main scene (DESIGN §3.2, §4, §13.5): `renderMat(vm, ui, ctx)`
+// (ARCHITECTURE B11). Layering is sibling order (later paints on top): grid
+// and edge (paint_path), storm stripes, crease line, the Sheet and its fold
+// ticks, crease nodes, scraps, the ream, the gilded crane, the boat, the top
+// band (needs-you chips or the figure shelf), the bottom band (tray and
+// streak meter), floating numbers, the first-run hint.
+//
+// Positions in the vm are logical px in the 304×232 mat (304×184 with
+// `sheet.short`). The mat drawn here is `ctx.width − 16` wide and 184 / 232 /
+// 260 tall (narrow / standard / wide, §2.4); `matGeometry` maps vm positions
+// into it piecewise around the Sheet so nothing that missed the Sheet in the
+// vm overlaps it here. Loops only where the vm asks (pulse, bob, hintBob,
+// storm) and never in calm mode (§11.1).
+
+import { div, svg, PathBuilder, Background } from "gpui-kit";
+import { h_flex } from "gpui-base";
+import { clip } from "../engine/index.js";
+import { validateBackgroundColor } from "./color.js";
+import { sheetPaths, spritePath, speciesSprite, icon, sprite } from "./art.js";
+import { chip, pop, progressBar, text } from "./widgets.js";
+
+/** Grapheme limits for every string this module draws (tested). */
+export const MAT_CLIP = Object.freeze({ chip: 10, more: 6, label: 8, pop: 10, hint: 40 });
+
+const SRC_W = 304;
+const STD = Object.freeze({ h: 232, sheet: 112, sx: 96, sy: 58 });
+const SHORT = Object.freeze({ h: 184, sheet: 96, sx: 104, sy: 42 });
+const TOP_BAND = 28;
+const BOTTOM_BAND = 32;
+const HALF_HIT = 14;
+const CRANE = Object.freeze({ w: 48, h: 36 });
+const BOAT = Object.freeze({ w: 48, h: 32, x0: 8, x1: 248 });
+const ENV_TYPES = Object.freeze(["bundle", "rush", "storm", "chorus"]);
+const HINT_TEXT = "Click the paper to fold it";
+
+function handler(ctx, name) {
+  const h = ctx && ctx.handlers;
+  const f = h && typeof h[name] === "function" ? h[name] : null;
+  return (...args) => (f ? f(...args) : undefined);
+}
+
+/** Calm mode from ctx or the vm (§11.1: no loops, no spins, no pops). */
+export function isCalm(vm, ctx) {
+  return Boolean((ctx && ctx.calm) || (vm && vm.calm) || (vm && vm.settings && vm.settings.calm));
+}
+
+const num = (v, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+const r1 = (v) => Math.round(v * 10) / 10;
+const pct = (v, of) => `${r1((v / of) * 100)}%`;
+
+/** Piecewise linear map of `v` from [a0, a1] onto [b0, b1] (identity when equal). */
+function lin(v, a0, a1, b0, b1) {
+  if (a1 === a0) return b0;
+  return b0 + ((v - a0) * (b1 - b0)) / (a1 - a0);
+}
+
+/**
+ * The drawn mat's size and the vm → drawn position map:
+ * `{ w, h, sheet, sx, sy, short, mapX(x), mapY(y) }`. Standard 320 wide and
+ * a non-short vm give the identity.
+ */
+export function matGeometry(vm, ctx) {
+  const width = num(ctx && ctx.width, 320);
+  const srcShort = Boolean(vm && vm.sheet && vm.sheet.short);
+  const narrow = width < 280;
+  const wide = width >= 400;
+  const w = Math.max(200, Math.round(width - 16));
+  const src = srcShort ? SHORT : STD;
+  const h = srcShort || narrow ? SHORT.h : wide ? 260 : STD.h;
+  const sheet = h === SHORT.h ? SHORT.sheet : STD.sheet;
+  const fieldTop = TOP_BAND;
+  const fieldBot = h - BOTTOM_BAND;
+  const sx = Math.round((w - sheet) / 2);
+  const sy = Math.round(fieldTop + (fieldBot - fieldTop - sheet) / 2);
+  // x: left of the Sheet, the Sheet's columns, right of the Sheet; each keeps
+  // a half hit area clear of the Sheet's edges.
+  const a = src.sx;
+  const b = src.sx + src.sheet;
+  const mapX = (x) => {
+    if (x < a) return lin(Math.max(HALF_HIT, x), HALF_HIT, a - HALF_HIT, HALF_HIT, sx - HALF_HIT);
+    if (x <= b) return x - a + sx;
+    return lin(Math.min(SRC_W - HALF_HIT, x), b + HALF_HIT, SRC_W - HALF_HIT, sx + sheet + HALF_HIT, w - HALF_HIT);
+  };
+  const srcBot = src.h - BOTTOM_BAND;
+  const mapY = (y) => (src.h === h ? y : lin(y, TOP_BAND, srcBot, fieldTop, fieldBot));
+  // A box (left/top, w × h) pushed off the Sheet by the shortest move: slot
+  // centres next to the Sheet put a 28 px hit area up to ~1 px over its edge.
+  const clear = (bx, by, bw, bh) => {
+    const ox = Math.min(bx + bw, sx + sheet) - Math.max(bx, sx);
+    const oy = Math.min(by + bh, sy + sheet) - Math.max(by, sy);
+    if (ox <= 0 || oy <= 0) return [bx, by];
+    const moves = [
+      [sx - (bx + bw), 0], [sx + sheet - bx, 0], [0, sy - (by + bh)], [0, sy + sheet - by],
+    ].filter(([dx, dy]) => bx + dx >= 0 && bx + dx + bw <= w && by + dy >= 0 && by + dy + bh <= h);
+    if (!moves.length) return [bx, by];
+    moves.sort((a, b) => Math.abs(a[0]) + Math.abs(a[1]) - Math.abs(b[0]) - Math.abs(b[1]));
+    return [r1(bx + moves[0][0]), r1(by + moves[0][1])];
+  };
+  return { w, h, sheet, sx, sy, short: h === SHORT.h, mapX, mapY, clear };
+}
+
+function paint(path, background) {
+  const win = globalThis.window;
+  if (!win || typeof win.paint_path !== "function") return null;
+  return win.paint_path(path, background);
+}
+
+/** Grid lines every `step` px in % coordinates, one stroke path. */
+function gridPath(w, h, step) {
+  const b = PathBuilder.stroke(1);
+  for (let x = step; x < w; x += step) b.move_to(pct(x, w), "0%").line_to(pct(x, w), "100%");
+  for (let y = step; y < h; y += step) b.move_to("0%", pct(y, h)).line_to("100%", pct(y, h));
+  return b.build();
+}
+
+function layer(el) {
+  return el ? el.absolute().inset_0() : null;
+}
+
+function background(g, S, calm, zoom, storm) {
+  const out = [];
+  // 1. Grid: two stroke elements (minor 16, major 64), then the 4 px edge.
+  out.push(layer(paint(gridPath(g.w, g.h, 16), Background.solid(validateBackgroundColor(S.grid)))));
+  out.push(layer(paint(gridPath(g.w, g.h, 64), Background.solid(validateBackgroundColor(S.gridMajor)))));
+  const edge = PathBuilder.fill().add_polygon([["0%", pct(g.h - 4, g.h)], ["100%", pct(g.h - 4, g.h)], ["100%", "100%"], ["0%", "100%"]]).build();
+  out.push(layer(paint(edge, Background.solid(validateBackgroundColor(S.matEdge)))));
+  // 2. Storm stripes, under the play pieces.
+  if (storm && !calm) {
+    const rect = PathBuilder.fill().add_polygon([["0%", "0%"], ["100%", "0%"], ["100%", "100%"], ["0%", "100%"]]).build();
+    const stripes = layer(paint(rect, Background.pattern_slash(validateBackgroundColor(S.onMat), 2 * zoom, 12 * zoom)));
+    if (stripes) out.push(stripes.id("cw-storm").opacity(0.06).loop("opacity", { from: 0.06, to: 0.16, period: 1200 }));
+  }
+  return out.filter(Boolean);
+}
+
+function creaseLine(points, g, S) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const b = PathBuilder.stroke(2);
+  points.forEach((p, i) => {
+    const x = pct(g.mapX(num(p[0])), g.w);
+    const y = pct(g.mapY(num(p[1])), g.h);
+    if (i === 0) b.move_to(x, y);
+    else b.line_to(x, y);
+  });
+  b.dash_array([6, 4]);
+  const el = layer(paint(b.build(), Background.solid(validateBackgroundColor(S.sheet))));
+  return el ? el.id("cw-crease-line") : null;
+}
+
+function theSheet(vm, g, S, click, zoom) {
+  const frame = num(vm.sheet && vm.sheet.frame, 0);
+  const { base, shade } = sheetPaths(frame);
+  const size = g.sheet;
+  const el = div()
+    .id("cw-sheet")
+    .absolute()
+    .left(g.sx)
+    .top(g.sy)
+    .w(size)
+    .h(size)
+    .cursor_pointer()
+    .tooltip("Fold the paper")
+    .active((s) => s.opacity(0.88))
+    .on_mouse_down("left", (e, cx) => {
+      const z = zoom > 0 ? zoom : 1;
+      const lp = e && e.local_position;
+      const lx = lp && typeof lp.x === "number" ? lp.x / z : size / 2;
+      const ly = lp && typeof lp.y === "number" ? lp.y / z : size / 2;
+      return click("sheet", null, { x: r1(g.sx + lx), y: r1(g.sy + ly) }, cx);
+    })
+    .child(svg(base).absolute().top(0).left(0).w(size).h(size).text_color(S.sheet))
+    .child(svg(shade).absolute().top(0).left(0).w(size).h(size).text_color(S.sheetShade));
+  // Fold ticks: 8 × (6×2), done ticks in S.sheet, the rest S.crease.
+  const done = Math.max(0, Math.min(8, Math.round(num(vm.sheet && vm.sheet.ticks, 0))));
+  const ticks = h_flex()
+    .absolute()
+    .left(Math.round(g.sx + (size - 74) / 2))
+    .top(g.sy + size + 5)
+    .w(74)
+    .h(2)
+    .gap(4);
+  for (let i = 0; i < 8; i++) ticks.child(div().w(6).h(2).flex_none().bg(i < done ? S.sheet : S.crease));
+  return [el, ticks];
+}
+
+/** The centre of a `size` hit area at vm (x, y), mapped and kept off the Sheet. */
+function place(g, vx, vy, bw, bh) {
+  const [bx, by] = g.clear(r1(g.mapX(num(vx)) - bw / 2), r1(g.mapY(num(vy)) - bh / 2), bw, bh);
+  return [bx + bw / 2, by + bh / 2];
+}
+
+function node(n, g, S, click, calm) {
+  const [x, y] = place(g, n.x, n.y, 28, 28);
+  const label = clip(String(n.i ?? ""), 3);
+  const disc = h_flex()
+    .w(22)
+    .h(22)
+    .flex_none()
+    .rounded_full()
+    .justify_center()
+    .bg(S.sheet)
+    .border(2)
+    .border_color(S.node)
+    .child(text(label, { size: 11, weight: 600, color: S.ink }));
+  const el = h_flex()
+    .id(`cw-node-${n.id}`)
+    .absolute()
+    .left(r1(x - HALF_HIT))
+    .top(r1(y - HALF_HIT))
+    .w(28)
+    .h(28)
+    .justify_center()
+    .rounded_full()
+    .cursor_pointer()
+    .tooltip(`Crease node ${label}${n.due ? " (next)" : ""}`)
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return click("node", n.id, { x: r1(x), y: r1(y) }, cx);
+    })
+    .child(disc);
+  if (n.due) el.border(3).border_color(S.node);
+  if (n.fading) {
+    el.opacity(0.4);
+    if (!calm) el.transition("opacity", 2000);
+  }
+  return el;
+}
+
+function scrap(s, g, S, click) {
+  const [x, y] = place(g, s.x, s.y, 28, 28);
+  return h_flex()
+    .id(`cw-scrap-${s.id}`)
+    .absolute()
+    .left(r1(x - HALF_HIT))
+    .top(r1(y - HALF_HIT))
+    .w(28)
+    .h(28)
+    .justify_center()
+    .cursor_pointer()
+    .tooltip("A paper scrap")
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return click("scrap", s.id, { x: r1(x), y: r1(y) }, cx);
+    })
+    .child(sprite(spritePath("scene", "scrap"), 16, S.sheet));
+}
+
+function ream(r, g, S, click) {
+  const [x, y] = place(g, r.x, r.y, 36, 28);
+  return h_flex()
+    .id("cw-ream")
+    .absolute()
+    .left(r1(Math.max(0, x - 18)))
+    .top(r1(Math.max(0, y - 14)))
+    .w(36)
+    .h(28)
+    .justify_center()
+    .cursor_pointer()
+    .tooltip("A fresh ream: today's welcome")
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return click("ream", r.id, { x: r1(x), y: r1(y) }, cx);
+    })
+    .child(sprite(spritePath("scene", "ream"), [28, 20], S.sheet));
+}
+
+function crane(c, g, S, click, calm, zoom) {
+  const cx0 = g.mapX(num(c.x) + CRANE.w / 2) - CRANE.w / 2;
+  const cy0 = g.mapY(num(c.y) + CRANE.h / 2) - CRANE.h / 2;
+  const [left, top] = g.clear(r1(Math.max(0, Math.min(g.w - CRANE.w, cx0))), r1(Math.max(0, Math.min(g.h - CRANE.h, cy0))), CRANE.w, CRANE.h);
+  const bob = !calm && (c.bob === undefined ? true : Boolean(c.bob));
+  const art = div().id("cw-crane-art").absolute().left(4).top(4).w(40).h(28);
+  for (const [part, color] of [["outline", S.goldInk], ["body", S.gold], ["shade", S.goldShade]]) {
+    art.child(svg(spritePath("scene", `crane-gilded-${part}`)).absolute().top(0).left(0).w(40).h(28).text_color(color));
+  }
+  if (bob) art.loop("top", { from: 4, to: 4 - 4 * zoom, period: 1300 });
+  const el = div()
+    .id("cw-crane")
+    .absolute()
+    .left(left)
+    .top(top)
+    .w(CRANE.w)
+    .h(CRANE.h)
+    .cursor_pointer()
+    .tooltip("A gilded crane! Click it before it flies off.")
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return click("crane", c.id, { x: r1(left + CRANE.w / 2), y: r1(top) }, cx);
+    })
+    .child(art);
+  // Glide (§13.5, §17 R2 fallback): the vm moves x each data tick; ease
+  // linearly over that tick. Calm: it sits still.
+  if (!calm && num(c.x1, c.x) !== num(c.x)) el.transition("left", { duration: 1000, easing: "linear" });
+  return el;
+}
+
+function boat(b, g, S, click, calm) {
+  const left = r1(lin(num(b.x, BOAT.x0), BOAT.x0, BOAT.x1, BOAT.x0, g.w - BOAT.w - BOAT.x0));
+  const top = g.h - BOTTOM_BAND;
+  const el = div()
+    .id("cw-boat")
+    .absolute()
+    .left(Math.max(0, left))
+    .top(top)
+    .w(BOAT.w)
+    .h(BOAT.h)
+    .cursor_pointer()
+    .tooltip("The Paper Boat: catch it for a Tailwind")
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return click("boat", b.id, { x: r1(left + BOAT.w / 2), y: top }, cx);
+    })
+    .child(svg(spritePath("scene", "boat-hull")).absolute().left(4).top(2).w(40).h(28).text_color(S.sheet))
+    .child(svg(spritePath("scene", "boat-sail")).absolute().left(4).top(2).w(40).h(28).text_color(S.sheetShade));
+  if (!calm && num(b.x1, b.x) !== num(b.x)) el.transition("left", { duration: 1000, easing: "linear" });
+  return el;
+}
+
+const chipWidth = (name) => 8 + 12 + 4 + Math.ceil(name.length * 6.5) + 8 + 2;
+
+function topBand(vm, g, T, S, openHelper, calm) {
+  const mat = vm.mat || {};
+  const chips = Array.isArray(mat.chips) ? mat.chips : [];
+  const band = h_flex().id("cw-mat-top").absolute().left(0).top(0).w(g.w).h(TOP_BAND).px(6).gap(4).overflow_hidden();
+  if (chips.length) {
+    let room = g.w - 12 - 28;
+    let shown = 0;
+    for (const c of chips) {
+      if (shown >= 4) break;
+      const name = clip(String(c.name ?? ""), MAT_CLIP.chip);
+      const cw = chipWidth(name);
+      if (shown > 0 && cw > room) break;
+      room -= cw + 4;
+      const id = c.helperId;
+      band.child(chip(`cw-chip-${id}`, name, {
+        status: "blocked",
+        border: S.sheet,
+        pulse: Boolean(c.pulse) && !calm,
+        tooltip: c.tooltip ? clip(String(c.tooltip), 140) : `${name} needs you: open its pane`,
+        stop: true,
+        onClick: (e, cx) => openHelper(id, cx),
+      }, T, S));
+      shown++;
+    }
+    const more = num(mat.more, 0) + (chips.length - shown);
+    if (more > 0) band.child(text(clip(`+${more}`, MAT_CLIP.more), { size: 11, weight: 600, color: S.onMat }));
+    return band;
+  }
+  // Nobody waiting: the shelf, the last 12 figures folded (16 px each).
+  const shelf = Array.isArray(mat.shelf) ? mat.shelf.slice(-12) : [];
+  const fit = Math.max(0, Math.floor((g.w - 12) / 18));
+  for (const sp of shelf.slice(-fit)) {
+    try {
+      band.child(speciesSprite(sp, 16, S.sheet, { surface: S.mat }));
+    } catch {
+      // An unknown species from a newer save draws nothing rather than failing the render.
+    }
+  }
+  return band;
+}
+
+function envelope(env, S, open, calm, zoom) {
+  const id = env.helperId;
+  const type = ENV_TYPES.includes(env.type) ? env.type : "bundle";
+  const units = num(env.units, 1);
+  const art = div()
+    .id(`cw-env-${id}-art`)
+    .absolute()
+    .left(0)
+    .top(4)
+    .w(28)
+    .h(20)
+    .child(svg(spritePath("scene", "envelope-body")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheet))
+    .child(svg(spritePath("scene", "envelope-flap")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheetShade))
+    .child(svg(spritePath("seal", type)).absolute().top(1).left(15).w(12).h(12).text_color(S.ink));
+  if (units >= 2) {
+    art.child(div().absolute().left(2).top(6).text_size(11).font_weight(600).text_color(S.ink).child(clip(`×${Math.floor(units)}`, MAT_CLIP.label)));
+  }
+  if (env.bob && !calm) art.loop("top", { from: 4, to: 4 - 2 * zoom, period: 1600 });
+  const word = type === "bundle" ? "Bundle" : type === "rush" ? "Rush" : type === "storm" ? "Paper Storm" : "Chorus";
+  return div()
+    .id(`cw-env-${id}`)
+    .relative()
+    .flex_none()
+    .w(28)
+    .h(28)
+    .cursor_pointer()
+    .tooltip(env.tooltip ? clip(String(env.tooltip), 140) : `${word} envelope · click to open`)
+    .on_click((e, cx) => {
+      cx.stop_propagation();
+      return open(id, cx);
+    })
+    .child(art);
+}
+
+const textW = (s) => Math.ceil(String(s).length * 6.5);
+
+function bottomBand(vm, g, T, S, open, calm, zoom) {
+  const tray = vm.tray || {};
+  const envs = Array.isArray(tray.envelopes) ? tray.envelopes : [];
+  const streak = vm.streak || {};
+  const inStep = Boolean(streak.inStep);
+  const label = clip(String(streak.label ?? ""), MAT_CLIP.label);
+  const avail = g.w - 16;
+  const labelW = inStep ? 12 + 4 + textW("In step") : textW(label);
+  const minTrack = 40;
+  const moreW = 26;
+  const room = avail - (minTrack + 6 + labelW) - 8 - moreW;
+  const cap = Math.max(1, Math.min(6, Math.floor((room + 2) / 30)));
+  const drawn = envs.slice(0, cap);
+  const more = num(tray.more, 0) + (envs.length - drawn.length);
+  const trayRow = h_flex().id("cw-tray").gap(2).flex_none();
+  for (const env of drawn) trayRow.child(envelope(env, S, open, calm, zoom));
+  if (more > 0) trayRow.child(text(clip(`+${more}`, MAT_CLIP.more), { size: 11, weight: 600, color: S.onMat }));
+  const used = drawn.length * 30 + (more > 0 ? moreW : 0);
+  const track = Math.max(minTrack, Math.min(96, avail - used - 8 - 6 - labelW));
+  const meter = h_flex()
+    .id("cw-streak")
+    .gap(6)
+    .flex_none()
+    .tooltip(inStep ? `In step ${label}: your helpers work faster` : `Rhythm ${label}: keep clicking in time`)
+    .child(progressBar("cw-streak-bar", num(streak.fill, 0), { width: track, height: 6, track: S.grid, fill: S.node, ms: 150, calm }, T, S));
+  if (inStep) {
+    meter.child(h_flex().gap(4).child(icon("step", 12, S.onMat)).child(text("In step", { size: 11, weight: 600, color: S.onMat })));
+  } else {
+    meter.child(text(label, { size: 11, weight: 600, color: S.onMat }));
+  }
+  return h_flex()
+    .id("cw-mat-bottom")
+    .absolute()
+    .left(0)
+    .top(g.h - BOTTOM_BAND)
+    .w(g.w)
+    .h(BOTTOM_BAND)
+    .px(8)
+    .gap(8)
+    .justify_between()
+    .child(trayRow)
+    .child(meter);
+}
+
+function firstRunHint(vm, g, T, calm, zoom) {
+  const sheet = vm.sheet || {};
+  if (!sheet.firstRunHint) return null;
+  const bob = !calm && (sheet.hintBob === undefined ? true : Boolean(sheet.hintBob));
+  const w = 168;
+  const top = Math.max(2, g.sy - 34);
+  const tri = PathBuilder.fill().add_polygon([["0%", "0%"], ["100%", "0%"], ["50%", "100%"]]).build();
+  const arrow = paint(tri, Background.solid(validateBackgroundColor(T.popover)));
+  const body = div()
+    .id("cw-hint-bob")
+    .absolute()
+    .left(0)
+    .top(0)
+    .w(w)
+    .h(32)
+    .child(
+      h_flex()
+        .h(22)
+        .w(w)
+        .px(8)
+        .justify_center()
+        .rounded(11)
+        .bg(T.popover)
+        .border(1)
+        .border_color(T.border)
+        .child(text(clip(HINT_TEXT, MAT_CLIP.hint), { size: 11, weight: 600, color: T.foreground })),
+    );
+  if (arrow) body.child(arrow.absolute().left(w / 2 - 5).top(22).w(10).h(8));
+  if (bob) body.loop("top", { from: 0, to: 4 * zoom, period: 900 });
+  const hint = div().id("cw-hint").absolute().left(Math.round(g.sx + g.sheet / 2 - w / 2)).top(top).w(w).h(32).child(body);
+  return hint;
+}
+
+function pops(vm, ui, S, calm) {
+  if (calm || (vm.settings && vm.settings.pops === false)) return [];
+  const list = ui && Array.isArray(ui.pops) ? ui.pops.slice(-5) : [];
+  return list.map((p) => pop(`cw-pop-${p.id}`, clip(String(p.label ?? ""), MAT_CLIP.pop), num(p.x), num(p.y), Boolean(p.risen), undefined, S));
+}
+
+/**
+ * The mat (DESIGN §3.2): a `div#cw-mat` sized by `matGeometry`, holding every
+ * scene layer in paint order. Pure (B11).
+ */
+export function renderMat(vm, ui, ctx) {
+  const T = ctx.T;
+  const S = ctx.S;
+  const zoom = num(ctx.zoom, 1) || 1;
+  const calm = isCalm(vm, ctx);
+  const g = matGeometry(vm, ctx);
+  const click = handler(ctx, "click");
+  const open = handler(ctx, "open");
+  const openHelper = handler(ctx, "openHelper");
+  const mat = vm.mat || {};
+  const root = div().id("cw-mat").relative().flex_none().w(g.w).h(g.h).rounded(10).overflow_hidden().bg(S.mat);
+  for (const el of background(g, S, calm, zoom, Boolean(mat.storm))) root.child(el);
+  const line = creaseLine(mat.creaseLine, g, S);
+  if (line) root.child(line);
+  for (const el of theSheet(vm, g, S, click, zoom)) root.child(el);
+  for (const n of Array.isArray(mat.nodes) ? mat.nodes : []) root.child(node(n, g, S, click, calm));
+  for (const s of Array.isArray(mat.scraps) ? mat.scraps : []) root.child(scrap(s, g, S, click));
+  if (mat.ream) root.child(ream(mat.ream, g, S, click));
+  if (mat.crane) root.child(crane(mat.crane, g, S, click, calm, zoom));
+  if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
+  root.child(topBand(vm, g, T, S, openHelper, calm));
+  root.child(bottomBand(vm, g, T, S, open, calm, zoom));
+  for (const p of pops(vm, ui, S, calm)) root.child(p);
+  const hint = firstRunHint(vm, g, T, calm, zoom);
+  if (hint) root.child(hint);
+  return root;
+}

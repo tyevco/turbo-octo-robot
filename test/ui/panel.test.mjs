@@ -1,0 +1,686 @@
+// Panel frame and always-visible surfaces (DESIGN §3.1, §3.2, §3.7–§3.10,
+// §13.5, §14; ARCHITECTURE B11): every ViewModel fixture rendered through the
+// mock gpui in graphite and paper (invalid methods and colours throw there),
+// the loop budget (steady 0, events ≤ 12 per copy, calm 0), ids on every
+// clickable and unique per tree, propagation stopped by pieces over the mat,
+// mat geometry (nothing overlaps the Sheet at any width), handler wiring,
+// grapheme clipping with inflated strings, and render time per fixture.
+//
+//   node --import ./tools/node/register.mjs --test test/ui/panel.test.mjs
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { register } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
+
+import { installMockWindow, walk, fire } from "../../tools/mock/gpui-kit.js";
+import { createHost } from "../../tools/qjs/harness.mjs";
+import * as F from "../fixtures/vm-fixtures.mjs";
+import { graphemes } from "../../mods/creaseworks/engine/index.js";
+import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const UI = join(root, "mods/creaseworks/ui");
+const THEMES = JSON.parse(readFileSync(join(root, "tools/mock/themes.json"), "utf8"));
+const THEME_NAMES = ["graphite", "paper"];
+
+// The tab renderers (flock, shop, string, settings) are another builder's
+// files. Until they exist, ui/panel.js imports a stub for each, so the frame
+// is still tested; the diagnostic says so.
+const TAB_FILES = ["flock", "shop", "string", "settings"];
+const missingTabs = TAB_FILES.filter((n) => !existsSync(join(UI, `${n}.js`)));
+if (missingTabs.length) {
+  const stub =
+    'import { div } from "gpui-kit";' +
+    "const mk = (n) => (vm, ui, ctx) => div().id(`stub-${n}`).w_full().child(`stub ${n}`);" +
+    'export const renderFlock = mk("flock"), renderShop = mk("shop"), renderString = mk("string"), renderSettings = mk("settings");';
+  const hooks =
+    'import { existsSync } from "node:fs"; import { fileURLToPath } from "node:url";' +
+    `const STUB = ${JSON.stringify("data:text/javascript," + encodeURIComponent(stub))};` +
+    "export async function resolve(spec, context, next) {" +
+    "  if (/^\\.\\/(flock|shop|string|settings)\\.js$/.test(spec) && context.parentURL && context.parentURL.endsWith('/ui/panel.js')" +
+    "      && !existsSync(fileURLToPath(new URL(spec, context.parentURL)))) return { url: STUB, shortCircuit: true };" +
+    "  return next(spec, context); }";
+  register("data:text/javascript," + encodeURIComponent(hooks));
+}
+
+const { renderPanel, activeTab, RAIL_BELOW } = await import("../../mods/creaseworks/ui/panel.js");
+const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creaseworks/ui/mat.js");
+const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
+const { renderAway, awayLines } = await import("../../mods/creaseworks/ui/away.js");
+const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
+const { renderRibbon, pipArea, densityLevel } = await import("../../mods/creaseworks/ui/ribbon.js");
+
+installMockWindow();
+
+const isDark = (name) => name !== "paper" && name !== "win98";
+
+/** A ctx (B11) with recording handlers. */
+function makeCtx(themeName, s, over = {}) {
+  const dark = isDark(themeName);
+  const calls = [];
+  const names = [
+    "click", "open", "openHelper", "buy", "setting", "switchAuto", "wish", "collect", "dismiss", "fold", "show", "tab",
+    "segment", "select", "toggleGroup", "showGroup", "details", "confirm", "cancel", "retrySave", "checkSave",
+    "restoreBackup", "sharePath",
+  ];
+  const handlers = {};
+  for (const n of names) handlers[n] = (...args) => calls.push([n, ...args.slice(0, -1)]);
+  return {
+    T: THEMES[themeName], S: pickScene(dark), hues: pickHues(dark), dark, zoom: 1, calm: false,
+    width: s.width, height: s.height, panelShown: true, handlers, calls, ...over,
+  };
+}
+
+function renderScenario(s, ctx) {
+  return s.role === "ribbon" ? renderRibbon(s.vm, s.ui, ctx) : renderPanel(s.vm, s.ui, ctx);
+}
+
+/** Every node of a serialised tree, including text nodes. */
+function allNodes(json, visit, path = []) {
+  visit(json, path);
+  const kids = (json.children || []).concat(json.slots ? Object.values(json.slots) : []);
+  for (const k of kids) if (k && typeof k === "object") allNodes(k, visit, json.id ? path.concat(json.id) : path);
+}
+
+function countLoops(json) {
+  let n = 0;
+  walk(json, (node) => {
+    n += (node.loops ? node.loops.length : 0) + (node.spin ? 1 : 0) + (node.frames ? 1 : 0);
+  });
+  return n;
+}
+
+const CLICK_EVENTS = ["on_click", "on_mouse_down", "on_mouse_up", "on_change"];
+
+function clickables(json) {
+  const out = [];
+  walk(json, (node) => {
+    const hs = Object.keys(node.handlers || {});
+    if (hs.some((h) => CLICK_EVENTS.some((e) => h === e || h.startsWith(e + ":")))) out.push(node);
+  });
+  return out;
+}
+
+function ids(json) {
+  const out = [];
+  walk(json, (node) => {
+    if (node.id) out.push(node.id);
+  });
+  return out;
+}
+
+const fakeCx = () => {
+  const cx = { stopped: 0, stop_propagation() { cx.stopped++; }, notify() {} };
+  return cx;
+};
+
+const SCENARIOS = F.allScenarios();
+
+// ---------------------------------------------------------------------------
+// Every fixture renders, in both themes
+
+test("every fixture renders through the mock gpui in graphite and paper (methods and colours validated)", () => {
+  if (missingTabs.length) console.log(`# tab renderers stubbed (not yet written): ${missingTabs.join(", ")}`);
+  for (const s of SCENARIOS) {
+    for (const th of THEME_NAMES) {
+      for (const panelShown of s.role === "ribbon" ? [true, false] : [true]) {
+        const ctx = makeCtx(th, s, { panelShown });
+        const tree = renderScenario(s, ctx);
+        assert.ok(tree && tree.__r, `${s.name} ${th}: a live element`);
+        const json = tree.toJSON();
+        assert.ok(json.kind, s.name);
+        // The parts render on their own as well (B11: each is a pure function).
+        if (s.role === "panel" && s.width >= RAIL_BELOW) {
+          renderMat(s.vm, s.ui, ctx).toJSON();
+          renderBanner(s.vm, s.ui, ctx)?.toJSON();
+          renderAway(s.vm, s.ui, ctx)?.toJSON();
+        }
+        renderRail(s.vm, s.ui, ctx).toJSON();
+      }
+    }
+  }
+});
+
+test("the panel picks rail / frame by width and tab content by ui.tab", () => {
+  const rail = F.scenario("rail");
+  const json = renderPanel(rail.vm, rail.ui, makeCtx("graphite", rail)).toJSON();
+  assert.equal(json.id, "cw-rail");
+  const std = F.scenario("standard-4");
+  const pj = renderPanel(std.vm, std.ui, makeCtx("graphite", std)).toJSON();
+  assert.equal(pj.id, "cw-panel");
+  const top = pj.children.map((c) => c.id);
+  assert.deepEqual(top, ["cw-hdr", "cw-mat-slot", "cw-boostbar", "cw-tabs", "cw-content", "cw-foot"]);
+  const banner = F.scenario("banner-error");
+  const bj = renderPanel(banner.vm, banner.ui, makeCtx("graphite", banner)).toJSON();
+  assert.deepEqual(bj.children.map((c) => c.id).slice(0, 3), ["cw-hdr", "cw-banner-wrap", "cw-mat-slot"]);
+  const away = F.scenario("away");
+  const aj = renderPanel(away.vm, away.ui, makeCtx("graphite", away)).toJSON();
+  assert.equal(aj.children.at(-1).id, "cw-away-slot", "the away card paints last (over the frame)");
+  assert.equal(activeTab({ tab: "nope" }), "flock");
+  assert.equal(activeTab({ tab: "settings" }), "settings");
+  const set = F.scenario("settings");
+  const sj = renderPanel(set.vm, set.ui, makeCtx("graphite", set)).toJSON();
+  const tabs = sj.children.find((c) => c.id === "cw-tabs");
+  assert.ok(ids(tabs).includes("cw-tab-back"), "Settings shows ← Back in the tabs row");
+  assert.ok(!ids(tabs).includes("cw-tab-shop"));
+});
+
+// ---------------------------------------------------------------------------
+// Loop budget (DESIGN §13.5)
+
+test("loop budget: steady views 0, event views ≤ 12 per copy, calm 0", () => {
+  const steady = new Set(F.STEADY_VIEWS);
+  let maxSeen = 0;
+  for (const s of SCENARIOS) {
+    const base = s.name.split("@")[0];
+    for (const th of THEME_NAMES) {
+      const n = countLoops(renderScenario(s, makeCtx(th, s, { panelShown: false })).toJSON());
+      maxSeen = Math.max(maxSeen, n);
+      assert.ok(n <= 12, `${s.name} ${th}: ${n} loop/spin nodes`);
+      if (steady.has(base)) assert.equal(n, 0, `${s.name} ${th} is a steady-state view`);
+      const calm = countLoops(renderScenario(s, makeCtx(th, s, { calm: true, panelShown: false })).toJSON());
+      assert.equal(calm, 0, `${s.name} ${th} calm`);
+    }
+  }
+  assert.ok(maxSeen > 0, "some event view does loop");
+  // Each event the frame owns shows up as exactly the loop the vm asked for.
+  const loopIds = (name) => {
+    const s = F.scenario(name);
+    const out = [];
+    walk(renderPanel(s.vm, s.ui, makeCtx("graphite", s)).toJSON(), (n) => {
+      if (n.loops && n.loops.length) out.push([n.id, n.loops[0].property, n.loops[0].period]);
+    });
+    return out;
+  };
+  assert.ok(loopIds("storm").some(([id, p, t]) => id === "cw-storm" && p === "opacity" && t === 1200));
+  assert.ok(loopIds("crane").some(([id, p, t]) => id === "cw-crane-art" && p === "top" && t === 1300));
+  assert.ok(loopIds("first-run").some(([id, p, t]) => id === "cw-hint-bob" && p === "top" && t === 900));
+  assert.ok(loopIds("finished-2").some(([id, p, t]) => /^cw-env-.*-art$/.test(id) && p === "top" && t === 1600));
+  // Only the flagged envelope bobs; nothing faster than 2 Hz.
+  for (const s of SCENARIOS) {
+    walk(renderScenario(s, makeCtx("graphite", s)).toJSON(), (n) => {
+      for (const l of n.loops || []) assert.ok(l.period >= 900, `${s.name} ${n.id} period ${l.period}`);
+    });
+  }
+});
+
+test("mat chips pulse only when the vm says so; calm drops crane glide, storm and pops", () => {
+  const s = F.scenario("needs-you-3");
+  const vm = JSON.parse(JSON.stringify(s.vm));
+  vm.mat.chips[0].pulse = true;
+  const json = renderMat(vm, s.ui, makeCtx("graphite", s)).toJSON();
+  const pulsing = [];
+  walk(json, (n) => {
+    if (n.loops && n.loops.length) pulsing.push(n.id);
+  });
+  assert.deepEqual(pulsing, [`cw-chip-${vm.mat.chips[0].helperId}-pill`]);
+  const crane = F.scenario("crane");
+  const glide = (calm) => {
+    let t = null;
+    walk(renderMat(crane.vm, crane.ui, makeCtx("graphite", crane, { calm })).toJSON(), (n) => {
+      if (n.id === "cw-crane") t = n.transitions;
+    });
+    return t;
+  };
+  assert.deepEqual(glide(false).map((x) => x.property), ["left"]);
+  assert.deepEqual(glide(true), []);
+  const ui = { ...crane.ui, pops: [{ id: "p1", label: "+1.2K", x: 150, y: 90, risen: false }] };
+  const withPops = ids(renderMat(crane.vm, ui, makeCtx("graphite", crane)).toJSON());
+  assert.ok(withPops.includes("cw-pop-p1"));
+  assert.ok(!ids(renderMat(crane.vm, ui, makeCtx("graphite", crane, { calm: true })).toJSON()).includes("cw-pop-p1"));
+});
+
+// ---------------------------------------------------------------------------
+// Ids and propagation
+
+test("every clickable has an id, and ids are unique in each tree", () => {
+  for (const s of SCENARIOS) {
+    for (const panelShown of [true, false]) {
+      const json = renderScenario(s, makeCtx("paper", s, { panelShown })).toJSON();
+      for (const node of clickables(json)) {
+        assert.ok(typeof node.id === "string" && node.id.length > 0, `${s.name}: a ${node.kind} with ${Object.keys(node.handlers)} has no id`);
+      }
+      for (const kind of ["Button", "Switch", "Checkbox"]) {
+        walk(json, (n) => {
+          if (n.kind === kind) assert.ok(n.id, `${s.name}: ${kind} without id`);
+        });
+      }
+      const list = ids(json);
+      const seen = new Set();
+      for (const id of list) {
+        assert.ok(!seen.has(id), `${s.name}: duplicate id ${id}`);
+        seen.add(id);
+      }
+    }
+  }
+});
+
+test("pieces over the mat stop propagation; the Sheet does not need to", () => {
+  const views = ["needs-you-3", "storm", "crane", "boat", "chain-7", "tray-full", "finished-2"];
+  for (const name of views) {
+    const s = F.scenario(name);
+    const ctx = makeCtx("graphite", s);
+    const live = renderMat(s.vm, s.ui, ctx);
+    const json = live.toJSON();
+    let checked = 0;
+    for (const node of clickables(json)) {
+      if (node.id === "cw-sheet") continue;
+      const cx = fakeCx();
+      const ev = Object.keys(node.handlers)[0];
+      fire(live, node.id, ev, { local_position: { x: 4, y: 4 } }, cx);
+      assert.ok(cx.stopped >= 1, `${name}: ${node.id} (${ev}) must stop propagation`);
+      checked++;
+    }
+    assert.ok(checked > 0, name);
+  }
+  // Ribbon envelope markers sit on their chip.
+  const r = F.scenario("ribbon-4", { window: 1440 });
+  const live = renderRibbon(r.vm, r.ui, makeCtx("graphite", r));
+  const marker = ids(live.toJSON()).find((id) => id.startsWith("cw-rib-env-"));
+  assert.ok(marker, "ribbon-4 has an envelope marker");
+  const cx = fakeCx();
+  fire(live, marker, "on_click", {}, cx);
+  assert.equal(cx.stopped, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Handler wiring (B11 table)
+
+test("handlers receive the B11 arguments", () => {
+  const s = F.scenario("chain-7");
+  const ctx = makeCtx("graphite", s);
+  const live = renderMat(s.vm, s.ui, ctx);
+  const node = s.vm.mat.nodes.find((n) => n.x > 230); // clear of the Sheet: not nudged
+  fire(live, `cw-node-${node.id}`, "on_click", {}, fakeCx());
+  assert.deepEqual(ctx.calls.at(-1), ["click", "node", node.id, { x: node.x, y: node.y }]);
+  fire(live, `cw-scrap-${s.vm.mat.scraps[0].id}`, "on_click", {}, fakeCx());
+  assert.equal(ctx.calls.at(-1)[1], "scrap");
+  fire(live, "cw-sheet", "on_mouse_down:left", { local_position: { x: 10, y: 20 } }, fakeCx());
+  assert.deepEqual(ctx.calls.at(-1), ["click", "sheet", null, { x: 106, y: 78 }]);
+  fire(live, "cw-sheet", "on_mouse_down:left", {}, fakeCx());
+  assert.deepEqual(ctx.calls.at(-1), ["click", "sheet", null, { x: 152, y: 114 }], "no local_position: the Sheet's centre");
+  const env = s.vm.tray.envelopes[0].helperId;
+  fire(live, `cw-env-${env}`, "on_click", {}, fakeCx());
+  assert.deepEqual(ctx.calls.at(-1), ["open", env]);
+
+  const n3 = F.scenario("needs-you-3");
+  const c3 = makeCtx("graphite", n3);
+  const p3 = renderPanel(n3.vm, n3.ui, c3);
+  const chip = n3.vm.mat.chips[0].helperId;
+  fire(p3, `cw-chip-${chip}`, "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["openHelper", chip]);
+  fire(p3, "cw-hdr-count-needs", "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["openHelper", "needs"]);
+  fire(p3, "cw-hdr-count-working", "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["showGroup", "working"]);
+  fire(p3, "cw-hdr-gear", "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["tab", "settings"]);
+  fire(p3, "cw-tab-shop", "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["tab", "shop"]);
+  fire(p3, "cw-hdr-fold", "on_click", {}, fakeCx());
+  assert.deepEqual(c3.calls.at(-1), ["fold"]);
+
+  const a = F.scenario("away");
+  const ca = makeCtx("graphite", a);
+  const pa = renderPanel(a.vm, a.ui, ca);
+  fire(pa, "cw-away-collect", "on_click", {}, fakeCx());
+  assert.deepEqual(ca.calls.at(-1), ["collect"]);
+  fire(pa, "cw-away-close", "on_click", {}, fakeCx());
+  assert.deepEqual(ca.calls.at(-1), ["dismiss", "away"]);
+  fire(pa, "cw-away-open", "on_click", {}, fakeCx());
+  assert.deepEqual(ca.calls.at(-1), ["openHelper", a.vm.away.needs[0].helperId]);
+  const b = F.scenario("busy");
+  const cb = makeCtx("graphite", b);
+  const pb = renderPanel(b.vm, b.ui, cb);
+  assert.ok(!ids(pb.toJSON()).includes("cw-away-collect"), "busy has no Collect");
+  fire(pb, "cw-away-close", "on_click", {}, fakeCx());
+  assert.deepEqual(cb.calls.at(-1), ["dismiss", "busy"]);
+
+  const e = F.scenario("banner-error");
+  const ce = makeCtx("graphite", e);
+  const pe = renderPanel(e.vm, e.ui, ce);
+  fire(pe, "cw-banner-retry", "on_click", {}, fakeCx());
+  assert.deepEqual(ce.calls.at(-1), ["retrySave"]);
+  fire(pe, "cw-banner-details-toggle", "on_click", {}, fakeCx());
+  assert.deepEqual(ce.calls.at(-1), ["details", true]);
+  const k = F.scenario("banner-clock");
+  const ck = makeCtx("graphite", k);
+  fire(renderPanel(k.vm, k.ui, ck), "cw-banner-dismiss", "on_click", {}, fakeCx());
+  assert.deepEqual(ck.calls.at(-1), ["dismiss", "clock"]);
+
+  const r = F.scenario("rail");
+  const cr = makeCtx("graphite", r);
+  const pr = renderPanel(r.vm, r.ui, cr);
+  fire(pr, "cw-sheet-mini", "on_click", {}, fakeCx());
+  assert.deepEqual(cr.calls.at(-1), ["click", "mini", null, null]);
+  fire(pr, "cw-rail-needs", "on_click", {}, fakeCx());
+  assert.deepEqual(cr.calls.at(-1), ["openHelper", "needs"]);
+  fire(pr, "cw-rail-unfold", "on_click", {}, fakeCx());
+  assert.deepEqual(cr.calls.at(-1), ["fold"]);
+  const pips = r.vm.rail.pips;
+  const blocked = pips.find((m) => m.status === "blocked");
+  const working = pips.find((m) => m.status === "working");
+  fire(pr, `cw-rail-pip-${blocked.helperId}`, "on_click", {}, fakeCx());
+  assert.deepEqual(cr.calls.at(-1), ["openHelper", blocked.helperId]);
+  fire(pr, `cw-rail-pip-${working.helperId}`, "on_click", {}, fakeCx());
+  assert.deepEqual(cr.calls.at(-1), ["select", working.helperId]);
+
+  const rb = F.scenario("ribbon-130", { window: 1100 });
+  const crb = makeCtx("graphite", rb, { panelShown: false });
+  const prb = renderRibbon(rb.vm, rb.ui, crb);
+  fire(prb, "cw-rib-tally-working", "on_click", {}, fakeCx());
+  assert.deepEqual(crb.calls.at(-1), ["showGroup", "working"]);
+  fire(prb, "cw-rib-mini", "on_click", {}, fakeCx());
+  assert.deepEqual(crb.calls.at(-1), ["click", "mini", null, null]);
+  fire(prb, "cw-rib-env", "on_click", {}, fakeCx());
+  assert.deepEqual(crb.calls.at(-1), ["open", rb.vm.tray.envelopes[0].helperId]);
+  assert.ok(!ids(renderRibbon(rb.vm, rb.ui, makeCtx("graphite", rb, { panelShown: true })).toJSON()).includes("cw-rib-mini"),
+    "no ribbon mini Sheet while the panel shows");
+});
+
+// ---------------------------------------------------------------------------
+// Ribbon density, rail grid
+
+test("ribbon density levels A/B/C follow §3.10 and every helper keeps a mark up to the B capacity", () => {
+  assert.equal(pipArea(1172), 922);
+  assert.equal(pipArea(832), 582);
+  assert.equal(densityLevel(41, 922), "A");
+  assert.equal(densityLevel(42, 922), "B");
+  assert.equal(densityLevel(130, 922), "B");
+  assert.equal(densityLevel(131, 922), "C");
+  assert.equal(densityLevel(26, 582), "A");
+  assert.equal(densityLevel(82, 582), "B");
+  assert.equal(densityLevel(83, 582), "C");
+  for (const n of F.RIBBON_COUNTS) {
+    for (const w of [1100, 1440]) {
+      const s = F.scenario(`ribbon-${n}`, { window: w });
+      const json = renderRibbon(s.vm, s.ui, makeCtx("graphite", s)).toJSON();
+      const marks = ids(json).filter((id) => id.startsWith("cw-rib-m-"));
+      const level = s.vm.ribbon.level;
+      if (n === 0) {
+        let empty = false;
+        allNodes(json, (x) => {
+          if (x.kind === "text" && x.text.startsWith("No paper folk yet")) empty = true;
+        });
+        assert.ok(empty, "empty ribbon text");
+        continue;
+      }
+      assert.equal(level, densityLevel(n, pipArea(s.width)), `ribbon-${n}@${w}`);
+      assert.equal(ids(json).includes("cw-rib-chips"), level === "A");
+      assert.equal(ids(json).includes("cw-rib-pips"), level !== "A");
+      if (level === "C") {
+        const urgent = s.vm.ribbon.marks.length;
+        assert.equal(marks.length, urgent, "needs-you and finished stay individual");
+        assert.ok(ids(json).includes("cw-rib-tally-working") && ids(json).includes("cw-rib-tally-idle"));
+      } else {
+        assert.equal(marks.length, n, `ribbon-${n}@${w}: one mark per helper`);
+      }
+    }
+  }
+  // 64 helpers keep individual marks at both sizes (§3.10, §5.5).
+  for (const w of [1100, 1440]) assert.notEqual(F.scenario("ribbon-64", { window: w }).vm.ribbon.level, "C");
+});
+
+test("rail: every helper is a pip in 4 columns, the grid scrolls, the save glyph shows only with a notice", () => {
+  const s = F.scenario("rail-64");
+  const json = renderRail(s.vm, s.ui, makeCtx("graphite", s)).toJSON();
+  const pips = ids(json).filter((id) => id.startsWith("cw-rail-pip-"));
+  assert.equal(pips.length, s.vm.rail.pips.length);
+  let scroll = null;
+  walk(json, (n) => {
+    if (n.id === "cw-rail-pips") scroll = n;
+  });
+  assert.ok(scroll.styles.some((st) => st[0] === "overflow_y_scrollbar"));
+  assert.ok(!ids(json).includes("cw-rail-save"));
+  const b = F.scenario("rail-banner");
+  assert.ok(ids(renderRail(b.vm, b.ui, makeCtx("graphite", b)).toJSON()).includes("cw-rail-save"));
+});
+
+// ---------------------------------------------------------------------------
+// Mat geometry
+
+function box(node) {
+  const get = (k) => node.styles.find((st) => st[0] === k)?.[1];
+  return { x: get("left"), y: get("top"), w: get("w"), h: get("h") };
+}
+const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+test("mat: sizes per width state, grid is two paint_path strokes, nothing overlaps the Sheet", () => {
+  const std = F.scenario("standard-4");
+  const g = matGeometry(std.vm, makeCtx("graphite", std));
+  assert.deepEqual([g.w, g.h, g.sheet, g.sx, g.sy], [304, 232, 112, 96, 58]);
+  for (const x of [15.2, 45.6, 76, 106.4, 200, 258.4, 288.8]) assert.equal(g.mapX(x), x, "standard is the identity");
+  const short = F.scenario("short");
+  const gs = matGeometry(short.vm, makeCtx("graphite", short));
+  assert.deepEqual([gs.w, gs.h, gs.sheet, gs.sx, gs.sy], [304, 184, 96, 104, 42]);
+  const wide = matGeometry(std.vm, makeCtx("graphite", std, { width: 440 }));
+  assert.deepEqual([wide.w, wide.h, wide.sheet], [424, 260, 112]);
+  const narrow = matGeometry(short.vm, makeCtx("graphite", short, { width: 240 }));
+  assert.deepEqual([narrow.w, narrow.h, narrow.sheet], [224, 184, 96]);
+
+  const json = renderMat(std.vm, std.ui, makeCtx("graphite", std)).toJSON();
+  const paths = json.children.filter((c) => c.kind === "path");
+  assert.ok(paths.length >= 3, "minor grid, major grid, edge");
+  assert.equal(paths[0].args[0].fill, false);
+  assert.equal(paths[1].args[0].fill, false);
+  assert.equal(paths[2].args[0].fill, true);
+  assert.deepEqual(paths.slice(0, 3).map((p) => p.args[1].values[0]), [pickScene(true).grid, pickScene(true).gridMajor, pickScene(true).matEdge]);
+  const storm = F.scenario("storm");
+  const sj = renderMat(storm.vm, storm.ui, makeCtx("graphite", storm)).toJSON();
+  const stripes = sj.children.find((c) => c.id === "cw-storm");
+  assert.equal(stripes.args[1].kind, "pattern-slash");
+  const sheetIndex = sj.children.findIndex((c) => c.id === "cw-sheet");
+  assert.ok(sj.children.indexOf(stripes) < sheetIndex, "stripes paint under the play pieces");
+  assert.ok(sj.children.findIndex((c) => c.id === "cw-crease-line") < sheetIndex);
+
+  const piece = /^cw-(node|scrap|ream|crane)/;
+  for (const s of SCENARIOS) {
+    if (s.role !== "panel" || s.width < RAIL_BELOW) continue;
+    for (const width of [s.width, 240, 320, 440]) {
+      const mj = renderMat(s.vm, s.ui, makeCtx("graphite", s, { width })).toJSON();
+      const sheet = box(mj.children.find((c) => c.id === "cw-sheet"));
+      const gw = matGeometry(s.vm, makeCtx("graphite", s, { width }));
+      for (const c of mj.children) {
+        if (!c.id || !piece.test(c.id)) continue;
+        const b = box(c);
+        assert.ok(!overlap(b, sheet), `${s.name} @${width}: ${c.id} ${JSON.stringify(b)} overlaps the Sheet ${JSON.stringify(sheet)}`);
+        assert.ok(b.x >= 0 && b.y >= 0 && b.x + b.w <= gw.w + 0.5 && b.y + b.h <= gw.h + 0.5, `${s.name} @${width}: ${c.id} inside the mat`);
+      }
+    }
+  }
+});
+
+test("tray: at most 6 envelopes, then +n; the drawn count shrinks to fit narrow mats", () => {
+  const s = F.scenario("tray-full");
+  const count = (width) => ids(renderMat(s.vm, s.ui, makeCtx("graphite", s, { width })).toJSON()).filter((id) => /^cw-env-[0-9a-f]+$/.test(id)).length;
+  assert.equal(count(320), 6);
+  assert.ok(count(240) < 6 && count(240) >= 1);
+  assert.equal(count(440), 6);
+});
+
+// ---------------------------------------------------------------------------
+// Banner and away card
+
+test("banner: one per banner notice kind, text in T.foreground, tints through withAlpha, Details card", () => {
+  for (const kind of F.BANNER_KINDS) {
+    const s = F.scenario(`banner-${kind}`);
+    for (const th of THEME_NAMES) {
+      const ctx = makeCtx(th, s);
+      const lay = bannerLayout(s.vm, s.ui, ctx);
+      assert.ok(lay && lay.h >= 28, kind);
+      const json = renderBanner(s.vm, s.ui, ctx).toJSON();
+      let words = 0;
+      walk(json, (n) => {
+        if (n.id === "cw-banner-text") {
+          for (const c of n.children) {
+            assert.equal(c.styles.find((st) => st[0] === "text_color")[1], THEMES[th].foreground, `${kind} ${th}: text is T.foreground`);
+            words++;
+          }
+        }
+      });
+      assert.ok(words >= 1);
+      assert.equal(ids(json).includes("cw-banner-details"), Boolean(s.ui.details), kind);
+    }
+  }
+  assert.equal(renderBanner(F.viewModel("standard-4"), {}, makeCtx("graphite", F.scenario("standard-4"))), null);
+  assert.equal(bannerNotices({ notices: [{ kind: "away", text: "x", place: "footer" }] }).length, 0);
+  assert.equal(middleClip("/home/me/.config/herdr-app/creaseworks/save.json", 20), "/home/me/.…save.json");
+  assert.equal(middleClip("short.json", 20), "short.json");
+  assert.equal(graphemes(middleClip("👩‍💻".repeat(30), 9)).length, 9);
+});
+
+test("away card: lines from the vm, Collect only for the away kind", () => {
+  const a = F.viewModel("away").away;
+  const L = awayLines(a);
+  assert.equal(L.title, "While you were away");
+  assert.equal(L.envelopes, "9 envelopes waiting on the tray");
+  assert.equal(L.needs, "2 helpers need you: Hali, Yuki");
+  assert.equal(L.best, "Best helper: Moto the owl, 31 tasks");
+  assert.equal(L.affordable, "You can afford: Washi Vat, Echo Crease II");
+  const ready = awayLines({ ...a, needsText: "ready line" });
+  assert.equal(ready.needs, "ready line", "B10 ready lines win");
+  const busy = awayLines(F.viewModel("busy").away);
+  assert.equal(busy.title, "While you were busy");
+  assert.equal(renderAway({ away: null }, {}, makeCtx("graphite", F.scenario("away"))), null);
+});
+
+// ---------------------------------------------------------------------------
+// Text: clipped, ≥ 11 px
+
+const FREE_TEXT = new Set([
+  "name", "text", "tooltip", "label", "folds", "rate", "duration", "title", "statusWord", "leftAgo", "count", "pill", "empty",
+  "save", "capText", "splitText", "envelopesText", "needsText", "restedText", "bestText", "affordableText", "tasksText",
+]);
+const LONG = "Ünïcödé 👩‍💻🇯🇵 ".repeat(40);
+
+function inflate(v, key) {
+  if (typeof v === "string") return FREE_TEXT.has(key) ? LONG + v : v;
+  if (Array.isArray(v)) return v.map((x) => inflate(x, key));
+  if (v && typeof v === "object") {
+    const out = {};
+    for (const [k, x] of Object.entries(v)) out[k] = inflate(x, k);
+    return out;
+  }
+  return v;
+}
+
+/** Limit per subtree id prefix; anything else ≤ 140 graphemes. */
+const LIMITS = [
+  [/^cw-chip-/, MAT_CLIP.chip],
+  [/^cw-hdr$/, 20],
+  [/^cw-rib-left$/, 10],
+  [/^cw-rail$/, 9],
+  [/^cw-mat-bottom$/, 8],
+  [/^cw-boostbar$/, 32],
+  [/^cw-foot$/, 60],
+];
+
+test("every text node is clipped (inflated vm strings) and no text is below 11 px", () => {
+  const views = ["standard-4", "needs-you-3", "tray-full", "storm", "away", "busy", "banner-error", "banner-fresh", "rail", "rail-banner", "in-step"];
+  const surfaces = [];
+  for (const name of views) surfaces.push(F.scenario(name));
+  surfaces.push(F.scenario("ribbon-4", { window: 1100 }), F.scenario("ribbon-130", { window: 1440 }));
+  for (const s0 of surfaces) {
+    const s = { ...s0, vm: inflate(s0.vm, ""), ui: { ...s0.ui, pops: [{ id: "x", label: LONG, x: 10, y: 10, risen: false }] } };
+    const ctx = makeCtx("graphite", s);
+    const json = renderScenario(s, ctx).toJSON();
+    let texts = 0;
+    allNodes(json, (n, path) => {
+      if (path.includes("cw-content")) return; // the tab renderers' own test covers their text
+      if (n.kind === "text") {
+        texts++;
+        const len = graphemes(n.text).length;
+        let limit = 140;
+        for (const [re, lim] of LIMITS) if (path.some((id) => re.test(id))) limit = Math.min(limit, lim);
+        assert.ok(len <= limit, `${s.name}: text in ${path.at(-1)} has ${len} graphemes (limit ${limit}): ${n.text.slice(0, 40)}`);
+        return;
+      }
+      for (const st of n.styles || []) {
+        if (st[0] === "text_size") assert.ok(st[1] >= 11, `${s.name}: text_size ${st[1]} in ${n.id ?? path.at(-1)}`);
+        if (st[0] === "tooltip") assert.ok(graphemes(st[1]).length <= 140, `${s.name}: tooltip of ${n.id} is ${graphemes(st[1]).length} graphemes`);
+      }
+    });
+    assert.ok(texts >= 2, s.name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Render time
+
+test("render time per fixture (Node, mock gpui; the hard budget is 50 ms per render)", () => {
+  const rows = [];
+  for (const s of SCENARIOS) {
+    const ctx = makeCtx("graphite", s);
+    renderScenario(s, ctx); // warm
+    const t0 = performance.now();
+    const N = 5;
+    for (let i = 0; i < N; i++) renderScenario(s, ctx);
+    const ms = (performance.now() - t0) / N;
+    rows.push([s.name, ms]);
+    assert.ok(ms < 50, `${s.name}: ${ms.toFixed(2)} ms per render`);
+  }
+  rows.sort((a, b) => b[1] - a[1]);
+  const total = rows.reduce((a, r) => a + r[1], 0);
+  console.log(`# render ms (mean of 5): slowest ${rows.slice(0, 5).map(([n, ms]) => `${n} ${ms.toFixed(2)}`).join(", ")}; mean ${(total / rows.length).toFixed(2)} over ${rows.length} fixtures`);
+});
+
+// ---------------------------------------------------------------------------
+// QuickJS-ng (herdr's runtime): load and render 64-helper views in the sandbox
+
+const FROZEN_REALM = Object.isFrozen(Object.prototype);
+
+test("qjs: the frame modules load under the sandbox and render 64 helpers within budget", {
+  skip: FROZEN_REALM && "quickjs-emscripten does not load with frozen prototypes",
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cw-panel-"));
+  try {
+    cpSync(join(root, "mods/creaseworks/engine"), join(dir, "engine"), { recursive: true });
+    mkdirSync(join(dir, "ui"));
+    for (const f of readdirSync(UI)) if (f.endsWith(".js")) copyFileSync(join(UI, f), join(dir, "ui", f));
+    for (const n of missingTabs) {
+      const fn = "render" + n[0].toUpperCase() + n.slice(1);
+      writeFileSync(join(dir, "ui", `${n}.js`), `import { div } from "gpui-kit";\nexport function ${fn}() { return div().id("stub-${n}").child("stub"); }\n`);
+    }
+    const views = [F.scenario("flock-64-dense"), F.scenario("rail-64"), F.scenario("ribbon-64", { window: 1100 }), F.scenario("away"), F.scenario("storm")];
+    writeFileSync(join(dir, "main.js"), [
+      'import { View } from "gpui-kit";',
+      'import { v_flex } from "gpui-base";',
+      'import { pickScene, pickHues } from "./ui/palette.js";',
+      'import { renderPanel } from "./ui/panel.js";',
+      'import { renderRibbon } from "./ui/ribbon.js";',
+      `const T = ${JSON.stringify(THEMES.graphite)};`,
+      `const VIEWS = ${JSON.stringify(views)};`,
+      "export default class M extends View {",
+      "  render() {",
+      "    const out = v_flex().id(\"m\");",
+      "    for (const s of VIEWS) {",
+      "      const ctx = { T, S: pickScene(true), hues: pickHues(true), zoom: 1, calm: false, width: s.width, height: s.height, handlers: {} };",
+      "      out.child((s.role === \"ribbon\" ? renderRibbon : renderPanel)(s.vm, s.ui, ctx));",
+      "    }",
+      "    return out;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"));
+    const host = await createHost({ modRoot: dir, scenario: {} });
+    try {
+      const load = await host.load();
+      const { tree, ms } = host.render();
+      const { ms: again } = host.render();
+      assert.equal(tree.id, "m");
+      assert.equal(tree.children.length, views.length);
+      assert.deepEqual(host.errors, []);
+      console.log(`# qjs: module graph ${JSON.stringify(load.ms ?? load)}; render of ${views.length} copies (64 helpers) ${ms.toFixed(1)} ms, then ${again.toFixed(1)} ms`);
+      assert.ok(again < 50, `render ${again} ms`);
+    } finally {
+      host.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
