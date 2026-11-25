@@ -154,8 +154,19 @@ export function tryParseColor(value) {
 
 const RUST_FLOAT = /^[+-]?(?:inf|infinity|nan|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/i;
 
+// Rust's `str::trim` strips the Unicode White_Space property, which is not
+// JavaScript's `String.prototype.trim` set: Rust also strips U+0085 (NEL) and
+// does not strip U+FEFF (BOM). `p("\uFEFF12px")` is an error in herdr.
+const RUST_WS = "[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]";
+const RUST_TRIM = new RegExp(`^${RUST_WS}+|${RUST_WS}+$`, "g");
+
+/** Rust `str::trim`. */
+export function rustTrim(text) {
+  return text.replace(RUST_TRIM, "");
+}
+
 function parseNumber(number, text, method) {
-  const trimmed = number.trim();
+  const trimmed = rustTrim(number);
   if (!RUST_FLOAT.test(trimmed)) {
     throw new TypeError(`\`${method}\` could not read a number in the length "${text}"`);
   }
@@ -172,7 +183,7 @@ function parseNumber(number, text, method) {
  */
 function parseLength(b, method) {
   if (b.t === "str") {
-    const text = b.v.trim();
+    const text = rustTrim(b.v);
     if (text === "auto") return { auto: true };
     if (text.endsWith("%")) return { frac: parseNumber(text.slice(0, -1), text, method) / 100 };
     if (text.endsWith("rem")) return { rem: parseNumber(text.slice(0, -3), text, method) };
@@ -434,34 +445,246 @@ function newElement(kind, args = [], id = null, extra = null) {
   return element;
 }
 
-/** Records a generic behaviour call: arguments are bridged (objects refused). */
+// Behaviour checks the shell makes at the call site (engine/quickjs/mod.rs
+// `ShellRuntime::apply`, the "disabled | selectable | … | id" arm). A value the
+// shell would drop or refuse is refused here with the same message.
+
+/** `gpui::Role` variants in accesskit order (vendor/gpui-kit/crates/shell/src/a11y.rs). */
+const ROLE_VARIANTS = (
+  "Unknown TextRun Cell Label Image Link Row ListItem ListMarker TreeItem ListBoxOption MenuItem " +
+  "MenuListOption Paragraph CheckBox RadioButton TextInput Button DefaultButton Pane RowHeader ColumnHeader " +
+  "RowGroup List Table LayoutTableCell LayoutTableRow LayoutTable Switch Menu MultilineTextInput SearchInput " +
+  "DateInput DateTimeInput WeekInput MonthInput TimeInput EmailInput NumberInput PasswordInput " +
+  "PhoneNumberInput UrlInput Abbr Alert AlertDialog Application Article Audio Banner Blockquote Canvas " +
+  "Caption Caret Code ColorWell ComboBox EditableComboBox Complementary Comment ContentDeletion " +
+  "ContentInsertion ContentInfo Definition DescriptionList Details Dialog DisclosureTriangle Document " +
+  "EmbeddedObject Emphasis Feed FigureCaption Figure Footer Form Grid GridCell Group Header Heading Iframe " +
+  "IframePresentational ImeCandidate Keyboard Legend LineBreak ListBox Log Main Mark Marquee Math MenuBar " +
+  "MenuItemCheckBox MenuItemRadio MenuListPopup Meter Navigation Note PluginObject ProgressIndicator " +
+  "RadioGroup Region RootWebArea Ruby RubyAnnotation ScrollBar ScrollView Search Section SectionFooter " +
+  "SectionHeader Slider SpinButton Splitter Status Strong Suggestion SvgRoot Tab TabList TabPanel Term Time " +
+  "Timer TitleBar Toolbar Tooltip Tree TreeGrid Video WebView Window PdfActionableHighlight PdfRoot " +
+  "GraphicsDocument GraphicsObject GraphicsSymbol DocAbstract DocAcknowledgements DocAfterword DocAppendix " +
+  "DocBackLink DocBiblioEntry DocBibliography DocBiblioRef DocChapter DocColophon DocConclusion DocCover " +
+  "DocCredit DocCredits DocDedication DocEndnote DocEndnotes DocEpigraph DocEpilogue DocErrata DocExample " +
+  "DocFootnote DocForeword DocGlossary DocGlossRef DocIndex DocIntroduction DocNoteRef DocNotice " +
+  "DocPageBreak DocPageFooter DocPageHeader DocPageList DocPart DocPreface DocPrologue DocPullquote DocQna " +
+  "DocSubtitle DocTip DocToc ListGrid Terminal"
+).split(" ");
+const ROLE_SET = new Set(ROLE_VARIANTS);
+
+/** a11y.rs `role_from_name`: no ASCII capitals, then `pascal_case` must name a variant. */
+export function isRoleName(name) {
+  if (/[A-Z]/.test(name)) return false;
+  let out = "";
+  let capitalize = true;
+  for (const ch of name) {
+    if (ch === "_") {
+      capitalize = true;
+      continue;
+    }
+    out += capitalize ? ch.toUpperCase() : ch;
+    capitalize = false;
+  }
+  return ROLE_SET.has(out);
+}
+
+/** capability.rs `is_openable_url`: an absolute http(s) URL with a host. */
+function isOpenableUrl(text) {
+  if (typeof URL === "function") {
+    try {
+      const url = new URL(text);
+      return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
+    } catch {
+      return false;
+    }
+  }
+  // QuickJS has no URL: a conservative reading of the WHATWG grammar.
+  return /^[\t\n\r ]*https?:[\\/]*[^\s\\/?#@:]+(?::\d*)?(?:[\\/?#][^\s]*)?[\t\n\r ]*$/i.test(text);
+}
+
+const asF32 = (b) => (b && b.t === "num" ? Math.fround(b.v) : null);
+const finiteF32 = (b) => {
+  const n = asF32(b);
+  return n !== null && Number.isFinite(n) ? n : null;
+};
+const wholeF32 = (b) => {
+  const n = finiteF32(b);
+  return n !== null && Number.isInteger(n) ? n : null;
+};
+const USIZE_MAX_F32 = Math.fround(2 ** 64);
+
+function checkBehavior(name, bridged) {
+  const first = bridged[0];
+  switch (name) {
+    case "id":
+      if (!first || first.t !== "str") {
+        throw new TypeError(
+          "id(name) expects a string; it is the element's stable identity, so it must not change between renders",
+        );
+      }
+      return;
+    case "tooltip":
+      if (!first || first.t !== "str") {
+        throw new TypeError("tooltip(text) expects a string; a tooltip built from an element is not bound yet");
+      }
+      return;
+    case "value":
+      if (finiteF32(first) === null) throw new TypeError("value(percent) expects a number between 0 and 100");
+      return;
+    case "set_position": {
+      const position = wholeF32(first);
+      const size = wholeF32(bridged[1]);
+      if (!(position !== null && size !== null && position >= 1 && size >= position && size <= USIZE_MAX_F32)) {
+        throw new TypeError("set_position(position, size) expects whole finite numbers with 1 <= position <= size");
+      }
+      return;
+    }
+    case "size_range": {
+      const min = finiteF32(first);
+      if (min === null) throw new RangeError("size_range minimum does not fit the native pixel range");
+      if (bridged.length > 1) {
+        const max = finiteF32(bridged[1]);
+        if (max === null) throw new RangeError("size_range maximum does not fit the native pixel range");
+        if (max < min) throw new RangeError("size_range maximum must be greater than or equal to its minimum");
+      }
+      return;
+    }
+    case "row_count":
+    case "column_count": {
+      const count = wholeF32(first);
+      if (!(count !== null && count >= 0 && count <= USIZE_MAX_F32)) {
+        throw new TypeError(`${name}(count) expects a non-negative whole finite number`);
+      }
+      return;
+    }
+    case "role": {
+      if (!first || first.t !== "str") {
+        throw new TypeError("role(name) expects a string; see the Role type in gpui-kit.d.ts");
+      }
+      if (first.v === "generic_container") {
+        throw new TypeError(
+          'role("generic_container") announces nothing: GPUI filters that role out of the accessibility tree. ' +
+            "Leave the role off instead, or name the role the element really has",
+        );
+      }
+      if (!isRoleName(first.v)) {
+        throw new TypeError(
+          `unknown accessibility role \`${first.v}\`; the names mirror gpui::Role in snake_case — see the Role type in gpui-kit.d.ts`,
+        );
+      }
+      return;
+    }
+    case "tab_index": {
+      const index = asF32(first);
+      if (index === null || !Number.isInteger(index)) throw new TypeError("tab_index(index) expects a whole number");
+      return;
+    }
+    case "href":
+      if (!first || first.t !== "str") throw new TypeError("href(url) expects a string");
+      if (!isOpenableUrl(first.v)) throw new TypeError("href(url) expects an absolute HTTP(S) URL with a host");
+      return;
+    default:
+  }
+}
+
+/** Records a generic behaviour call: arguments are bridged (objects refused), then checked as the shell does. */
 function genericMethod(name) {
   return function (...args) {
     const r = live(this);
-    for (const arg of args) {
+    const bridged = args.map((arg) => {
       const b = bridge(arg);
       if (b.t === "fn") throw new TypeError(`\`${name}\` does not take a function`);
-    }
+      return b;
+    });
+    checkBehavior(name, bridged);
     if (name === "id") {
-      if (!r.componentId) r.id = args[0] === null || args[0] === undefined ? null : String(args[0]);
+      if (!r.componentId) r.id = args[0];
     }
     r.styles.push([name, ...args]);
     return this;
   };
 }
 
-/** `on_*(…, handler)`: the handler is the last argument; others are bridged. */
+// While a lazy list's item renderer runs (the shell's Layout phase), handlers
+// and nested lists are refused (mod.rs ShellRuntime::apply, guard_lazy_list).
+let itemRendererDepth = 0;
+
+const MOUSE_BUTTONS = ["left", "right", "middle", "back", "forward"];
+
+function refuseInItemRenderer(name, tail) {
+  if (itemRendererDepth > 0) {
+    throw new TypeError(
+      `\`${name}\` cannot be registered from a virtual list's item renderer: the rows are rebuilt every frame, ` +
+        "so a handler registered there would pile up for as long as the view stood" + tail,
+    );
+  }
+}
+
+/**
+ * `on_*` / `token`: the handler is the FIRST argument (mod.rs `first_handler`);
+ * `on_action(name, handler)` and `on_mouse_down/up`, `on_window_mouse_up`
+ * `(button, handler)` take a string first. Registration from inside a lazy
+ * list's item renderer is refused, as in the shell.
+ */
 function handlerMethod(name) {
-  return function (...args) {
+  if (name === "on_action") {
+    return function (action, handler) {
+      const r = live(this);
+      refuseInItemRenderer(name, "");
+      if (typeof action !== "string" || action === "") {
+        throw new TypeError("on_action(action, handler) expects the action's name first, as a non-empty string");
+      }
+      if (typeof handler !== "function") throw new TypeError("on_action(action, handler) expects a function second");
+      r.handlers[`${name}:${action}`] = handler;
+      return this;
+    };
+  }
+  if (name === "on_mouse_down" || name === "on_mouse_up" || name === "on_window_mouse_up") {
+    return function (button, handler) {
+      const r = live(this);
+      refuseInItemRenderer(name, "");
+      if (typeof button !== "string") {
+        throw new TypeError(
+          `${name}(button, handler) expects a button first: "left", "right", "middle", "back" or "forward"`,
+        );
+      }
+      if (typeof handler !== "function") throw new TypeError(`${name}(button, handler) expects a function second`);
+      if (!MOUSE_BUTTONS.includes(button)) {
+        throw new TypeError(
+          `\`${button}\` is not a mouse button; expected "left", "right", "middle", "back" or "forward"`,
+        );
+      }
+      r.handlers[`${name}:${button}`] = handler;
+      return this;
+    };
+  }
+  return function (handler) {
     const r = live(this);
-    const handler = args[args.length - 1];
-    if (typeof handler !== "function") throw new TypeError(`\`${name}\` expects a function as its last argument`);
-    const rest = args.slice(0, -1);
-    for (const arg of rest) bridge(arg);
-    const key = rest.length ? `${name}:${rest.map(String).join(":")}` : name;
-    r.handlers[key] = handler;
+    refuseInItemRenderer(
+      name,
+      ". Use `on_item_click((key, cx) => ...)` or `on_item_secondary_click((key, event, cx) => ...)` on the list " +
+        "itself, and read the row out of your own data with the stable key it gives you",
+    );
+    if (typeof handler !== "function") throw new TypeError(`${name}(handler) expects a function`);
+    r.handlers[name] = handler;
     return this;
   };
+}
+
+/**
+ * What the shell accepts as a view's render() result (engine/quickjs/mod.rs
+ * `element_id`): a live element, an Entity, or a string (a text element).
+ * Anything else — a number, undefined, an array, a plain object — is refused.
+ */
+export function renderRoot(value) {
+  if (typeof value === "string") return { kind: "text", text: value };
+  if (isElement(value)) {
+    checkLive(value.__r);
+    return value;
+  }
+  if (value && typeof value === "object" && value.__entity === true) return { kind: "child_view", entity: value };
+  throw new TypeError("render(cx) must return an element, an Entity, or a string");
 }
 
 function childNode(child) {
@@ -718,6 +941,7 @@ const BEHAVIORS = {
     const r = live(this);
     const args = [finiteNonNegative(min, "size_range min")];
     if (max !== undefined && max !== null) args.push(finiteNonNegative(max, "size_range max"));
+    checkBehavior("size_range", args.map(bridge)); // the shell's own checks after the prelude's
     r.styles.push(["size_range", ...args]);
     return this;
   },
@@ -790,6 +1014,12 @@ const RANGE_HINT = "once per visible range, not once per item";
 
 /** Shared by `list`, `uniform_list`, `v_virtual_list`, `h_virtual_list`. */
 export function lazyList(kind, id, itemCount, sizes, getKey, render) {
+  if (itemRendererDepth > 0) {
+    throw new TypeError(
+      "a list cannot be built from inside another list's item renderer: its own renderer would belong to no " +
+        "render pass and would never be called. Describe the nested list from the view's render() instead",
+    );
+  }
   const virtual = kind === "v_virtual_list" || kind === "h_virtual_list";
   const shape = virtual
     ? kind + "(id, item_count, item_sizes, get_key, render)"
@@ -1018,11 +1248,18 @@ function materializeList(r, cx, maxItems) {
   const count = Math.min(r.args[1], maxItems);
   const { getKey, render, perItem } = r.list;
   let items;
-  if (perItem) {
-    items = [];
-    for (let index = 0; index < count; index++) items.push(render(index, cx));
-  } else {
-    items = render({ start: 0, end: count }, cx);
+  itemRendererDepth += 1;
+  try {
+    if (perItem) {
+      items = [];
+      for (let index = 0; index < count; index++) items.push(render(index, cx));
+    } else {
+      items = render({ start: 0, end: count }, cx);
+    }
+  } finally {
+    itemRendererDepth -= 1;
+  }
+  if (!perItem) {
     if (!Array.isArray(items)) {
       throw new TypeError(
         "a virtual list's item renderer must return an array of elements, one per                      item in the range it was given",

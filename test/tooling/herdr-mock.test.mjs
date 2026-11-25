@@ -649,3 +649,67 @@ describe("clock, timers and cx", () => {
     assert.deepEqual(order, ["timer0", "read", "timer5"]);
   });
 });
+
+// Review fixes: places the mock was more permissive than herdr.
+describe("strictness fixes", () => {
+  test("host results are built with assignment under frozen prototypes (rquickjs Object::set)", () => {
+    make({ shared: { ok: { a: 1 } } });
+    herdr.setShared("bad", { counts: { constructor: 1 } });
+    // In herdr the conversion throws at the call site: Object.prototype is frozen.
+    assert.throws(() => herdr.shared("bad"), { name: "TypeError", message: "'constructor' is read-only" });
+    herdr.setShared("bad2", { toString: "x" });
+    assert.throws(() => herdr.shared("bad2"), { name: "TypeError", message: "'toString' is read-only" });
+    // `__proto__` goes through the accessor: an object becomes the prototype, a string is dropped.
+    herdr.setShared("p", JSON.parse('{"__proto__": "x", "a": 1}'));
+    const p = herdr.shared("p");
+    assert.deepEqual(Object.keys(p), ["a"]);
+    assert.equal(Object.getPrototypeOf(p), Object.prototype);
+    herdr.setShared("q", JSON.parse('{"__proto__": {"z": 2}, "a": 1}'));
+    const q = herdr.shared("q");
+    assert.deepEqual(Object.keys(q), ["a"]);
+    assert.equal(q.z, 2);
+    assert.deepEqual(herdr.shared("ok"), { a: 1 });
+    ctl.dispose();
+    // With the sandbox's strict builtins off, the same value converts.
+    make({ frozenBuiltins: false });
+    herdr.setShared("bad", { counts: { constructor: 1 } });
+    assert.equal(Object.hasOwn(herdr.shared("bad").counts, "constructor"), true);
+  });
+
+  test("an async result that cannot be converted never settles and is logged", async () => {
+    make({ files: {} });
+    ctl.commandQueue.push({ constructor: 1 });
+    const n = settledFlag(inEvent(() => herdr.nextCommand()));
+    await ctl.flush();
+    assert.equal(n.done, false);
+    assert.match(ctl.errors.at(-1).message, /'constructor' is read-only/);
+  });
+
+  test("paths: '' has no parent; relative paths resolve against herdr's cwd; '.', '..' and '//' fold", async () => {
+    make({ cwd: "/" });
+    const w0 = settledFlag(inEvent(() => herdr.writeTextFile("", "x", null)));
+    const w1 = settledFlag(inEvent(() => herdr.writeTextFile("save.json", "rel", null)));
+    const w2 = settledFlag(inEvent(() => herdr.writeTextFile("/home/p//data/./x/../save.json", "abs", null)));
+    await ctl.flush();
+    assert.equal(w0.error.message, "`herdr.writeTextFile`: File needs a parent directory");
+    assert.equal(w1.error, undefined);
+    assert.equal(ctl.readFile("/save.json"), "rel");
+    assert.ok(ctl.log.some((e) => e.type === "warn" && /relative path `save.json`/.test(e.message)));
+    assert.equal(ctl.readFile("/home/p/data/save.json"), "abs");
+    const r = settledFlag(inEvent(() => herdr.readTextFile("/home/p/data/save.json")));
+    await ctl.flush();
+    assert.equal(r.value, "abs");
+  });
+
+  test("a trailing slash names a directory: reading a file that way or creating one fails like the OS", async () => {
+    make({ files: { "/home/p/a.json": "x" } });
+    const r = settledFlag(inEvent(() => herdr.readTextFile("/home/p/a.json/")));
+    const missing = settledFlag(inEvent(() => herdr.readTextFile("/home/p/b.json/")));
+    const w = settledFlag(inEvent(() => herdr.writeTextFile("/home/p/b.json/", "y", null)));
+    await ctl.flush();
+    assert.equal(r.error.message, "`herdr.readTextFile`: Not a directory (os error 20)");
+    assert.equal(missing.value, null);
+    assert.equal(w.error.message, "`herdr.writeTextFile`: Is a directory (os error 21)");
+    assert.equal(ctl.readFile("/home/p/b.json"), null);
+  });
+});

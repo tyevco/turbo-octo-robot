@@ -20,6 +20,7 @@ export {
   walk,
   handlersOf,
   beginRender,
+  renderRoot,
   constructView,
   setAsyncContextFactory,
   parseColor,
@@ -35,6 +36,6 @@ export const REAL_EXPORTS = Object.freeze([
 
 export const MOCK_ONLY_EXPORTS = Object.freeze([
   "installMockWindow", "createMockWindow", "paint_path", "serialize", "toJSON", "findById", "fire",
-  "walk", "handlersOf", "beginRender", "constructView", "setAsyncContextFactory", "parseColor",
+  "walk", "handlersOf", "beginRender", "renderRoot", "constructView", "setAsyncContextFactory", "parseColor",
   "tryParseColor", "suggest", "unknownMethodMessage", "methods", "REAL_EXPORTS", "MOCK_ONLY_EXPORTS",
 ]);

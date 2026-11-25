@@ -13,7 +13,7 @@
 // "herdr" module forwards to).
 
 import { createController, describe } from "mock:controller.js";
-import { installMockWindow, beginRender, constructView, serialize, fire } from "mock:gpui-kit.js";
+import { installMockWindow, beginRender, renderRoot, constructView, serialize, fire } from "mock:gpui-kit.js";
 // Evaluate the remaining built-ins now (as native modules would be), so a
 // mod's import graph is only its own files.
 import "gpui-kit";
@@ -31,6 +31,8 @@ let layoutOut = null;
 let openFrame = null;
 let closing = null;
 let calls = [];
+let callUpdates = [];
+let callSeq = 0;
 let consoleLines = [];
 let errorsSeen = 0;
 let notifiesSeen = 0;
@@ -98,7 +100,7 @@ function recordCalls() {
   // Every herdr call with its (copied) arguments and outcome: host.callsTo(fn).
   const hostCall = ctl.hostCall.bind(ctl);
   ctl.hostCall = (name, args) => {
-    const entry = { fn: name, args: clone(Array.from(args)), t: ctl.t, phase: ctl.scope ? ctl.scope.phase : "none" };
+    const entry = { id: ++callSeq, fn: name, args: clone(Array.from(args)), t: ctl.t, phase: ctl.scope ? ctl.scope.phase : "none" };
     calls.push(entry);
     let result;
     try {
@@ -110,14 +112,13 @@ function recordCalls() {
     if (result instanceof Promise) {
       entry.async = true;
       entry.settled = false;
+      // Node already holds a copy of the entry: settlements travel as updates.
       result.then(
         (value) => {
-          entry.settled = true;
-          entry.result = clone(value);
+          callUpdates.push({ id: entry.id, t: ctl.t, result: clone(value) });
         },
         (e) => {
-          entry.settled = true;
-          entry.error = e && e.message !== undefined ? String(e.message) : String(e);
+          callUpdates.push({ id: entry.id, t: ctl.t, error: e && e.message !== undefined ? String(e.message) : String(e) });
         },
       );
     } else {
@@ -203,7 +204,7 @@ const ops = {
     beginRender();
     tree = null;
     layoutOut = null;
-    tree = ctl.within("render", instance, (cx) => instance.render(cx), { gen: instanceGen });
+    tree = ctl.within("render", instance, (cx) => renderRoot(instance.render(cx)), { gen: instanceGen });
   },
   layout() {
     // Lazy lists render their items during layout (the render budget applies).
@@ -308,9 +309,10 @@ const ops = {
   pull() {
     const errors = ctl.errors.slice(errorsSeen).map((e) => ({ t: e.t, message: e.message }));
     errorsSeen = ctl.errors.length;
-    const out = { calls, console: consoleLines, errors, filesRev, notifies: ctl.notifies.length - notifiesSeen };
+    const out = { calls, callUpdates, console: consoleLines, errors, filesRev, notifies: ctl.notifies.length - notifiesSeen };
     notifiesSeen = ctl.notifies.length;
     calls = [];
+    callUpdates = [];
     consoleLines = [];
     return out;
   },

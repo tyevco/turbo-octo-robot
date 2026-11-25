@@ -64,6 +64,7 @@ export const MESSAGES = {
   notRegular: "Not a regular file",
   notDir: "Not a directory (os error 20)",
   exists: "File exists (os error 17)",
+  isDir: "Is a directory (os error 21)",
   noParent: "File needs a parent directory",
   changedOutside: "The file changed outside Herdr. Reload before saving; your draft is still here.",
   changedWhileSaving: "The file changed while saving. Reload before saving.",
@@ -174,13 +175,34 @@ export function toSerde(v) {
   return v;
 }
 
-/** A fresh copy handed back to script (host values are never shared objects). */
-export function bridgeOut(v) {
+/**
+ * A fresh copy handed back to script (host values are never shared objects).
+ *
+ * host_modules.rs `into_js` builds objects with rquickjs `Object::set`, i.e.
+ * `JS_SetProperty` with `JS_PROP_THROW`: ordinary assignment, not a data
+ * definition. Under herdr's frozen `Object.prototype` (sandbox.rs
+ * FREEZE_BUILTINS) that means a key naming one of its data properties
+ * (`constructor`, `toString`, `hasOwnProperty`, …) throws
+ * "'<key>' is read-only" at the call site, and a `__proto__` key goes through
+ * the accessor (an object or null value becomes the prototype; anything else
+ * is dropped). `frozen` (default true, herdr's policy) applies that rule even
+ * where the running realm's prototypes are not frozen (Node).
+ */
+export function bridgeOut(v, frozen = true) {
   if (v === null || v === undefined) return null;
-  if (Array.isArray(v)) return v.map(bridgeOut);
+  if (Array.isArray(v)) return v.map((item) => bridgeOut(item, frozen));
   if (typeof v === "object") {
     const out = {};
-    for (const key of Object.keys(v)) put(out, key, bridgeOut(v[key]));
+    for (const key of Object.keys(v)) {
+      const value = bridgeOut(v[key], frozen);
+      if (key === "__proto__") {
+        if (value === null || typeof value === "object") Object.setPrototypeOf(out, value);
+      } else if (frozen && Object.hasOwn(Object.prototype, key) && !Object.hasOwn(out, key)) {
+        throw new TypeError(`'${key}' is read-only`);
+      } else {
+        put(out, key, value);
+      }
+    }
     return out;
   }
   return v;
@@ -350,6 +372,8 @@ export class Controller {
     const sc = scenario ?? {};
     this.scenario = sc;
     this.strict = sc.strict ?? true;
+    // sandbox.rs FREEZE_BUILTINS (herdr's policy; the QuickJS harness sets it from its sandbox policy).
+    this.frozenBuiltins = sc.frozenBuiltins ?? true;
     this.strictRun = sc.strictRun ?? false;
     this.modName = sc.mod ?? null;
     this.latency = { read: 0, write: 0, command: 0, ...(sc.latency ?? {}) };
@@ -416,6 +440,8 @@ export class Controller {
     // files
     this.files = new Map();
     this.dirs = new Set(["/"]);
+    this.cwd = sc.cwd ?? "/";
+    this.relativeWarned = new Set();
     this._mkdirAll(this.homeDir);
     this._mkdirAll(this.appHomeDir);
     for (const [path, text] of Object.entries(sc.files ?? {})) this.externalWrite(path, text);
@@ -567,7 +593,17 @@ export class Controller {
       const settle = task.settle !== false;
       this._finish(task);
       if (!settle) return;
-      if (outcome.ok) task.resolve(bridgeOut(outcome.value));
+      if (outcome.ok) {
+        let value;
+        try {
+          value = bridgeOut(outcome.value, this.frozenBuiltins);
+        } catch (e) {
+          // Converting the answer threw in the settling task: the promise never settles.
+          this._error(`error settling ${task.fn}: ${describe(e)}`, e);
+          return;
+        }
+        task.resolve(value);
+      }
       else task.reject(new Error(`\`herdr.${task.fn}\`: ${outcome.message}`));
       return;
     }
@@ -997,7 +1033,7 @@ export class Controller {
     if (this.calls.length > this.callLogLimit) this.calls.shift();
     try {
       const result = fn.call(this, new Args(values));
-      return result instanceof Promise ? result : bridgeOut(result);
+      return result instanceof Promise ? result : bridgeOut(result, this.frozenBuiltins);
     } catch (e) {
       if (e instanceof HostError) throw new Error(`\`herdr.${name}\`: ${e.message}`);
       throw e;
@@ -1329,14 +1365,41 @@ export class Controller {
   // Files (src/mod_files.rs)
   // -------------------------------------------------------------------------
 
+  /**
+   * The path the OS would open, lexically: relative paths are resolved
+   * against the process's working directory (`scenario.cwd`, default "/";
+   * herdr does not resolve them against anything of the mod's), and "." /
+   * ".." / repeated slashes are folded. "" stays "" (it has no parent).
+   */
   _norm(path) {
-    let p = String(path);
-    while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
-    return p;
+    const raw = String(path);
+    if (raw === "") return "";
+    let p = raw;
+    if (!p.startsWith("/")) {
+      if (!this.relativeWarned.has(raw)) {
+        this.relativeWarned.add(raw);
+        this._record("warn", { message: `relative path \`${raw}\` resolves against herdr's working directory (${this.cwd}), not the mod` });
+      }
+      p = `${this.cwd}/${p}`;
+    }
+    const parts = [];
+    for (const segment of p.split("/")) {
+      if (segment === "" || segment === ".") continue;
+      if (segment === "..") parts.pop();
+      else parts.push(segment);
+    }
+    return "/" + parts.join("/");
   }
 
+  /** A path written as a directory ("…/" or "…/."): the OS refuses to treat it as a file. */
+  _dirSyntax(path) {
+    const raw = String(path);
+    return raw.length > 1 && (raw.endsWith("/") || raw.endsWith("/."));
+  }
+
+  /** Rust `Path::parent` of a normalised path: null for "" and "/". */
   _parent(p) {
-    if (p === "/") return null;
+    if (p === "/" || p === "") return null;
     const i = p.lastIndexOf("/");
     if (i < 0) return "";
     if (i === 0) return "/";
@@ -1360,6 +1423,7 @@ export class Controller {
     const p = this._norm(path);
     if (this._ancestors(p).some((q) => this.files.has(q))) throw new HostError(MESSAGES.notDir);
     if (this.dirs.has(p)) throw new HostError(MESSAGES.notRegular);
+    if (this._dirSyntax(path) && this.files.has(p)) throw new HostError(MESSAGES.notDir);
     if (!this.files.has(p)) return null;
     const text = this.files.get(p);
     if (utf8Length(text) > FILE_LIMIT) {
@@ -1378,6 +1442,7 @@ export class Controller {
     this._mkdirAll(parent);
     if (expected === null) {
       if (this.files.has(p)) throw new HostError(MESSAGES.exists);
+      if (this._dirSyntax(path)) throw new HostError(MESSAGES.isDir);
       this.files.set(p, text);
       return;
     }

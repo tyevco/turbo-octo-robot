@@ -300,7 +300,7 @@ test("toJSON, findById and fire", () => {
   ]);
   assert.throws(() => kit.fire(tree, "buy", "on_hover", true, cx), /has no on_hover handler/);
   assert.throws(() => kit.fire(tree, "nope", "on_click", {}, cx), /no element with id "nope"/);
-  throwsType(() => div().on_click("x"), "`on_click` expects a function as its last argument");
+  throwsType(() => div().on_click("x"), "on_click(handler) expects a function");
 });
 
 test("lazy lists: argument checks, expansion with cx, duplicate keys", () => {
@@ -408,4 +408,72 @@ test("View runs init on construction unless the host constructs it", () => {
   assert.ok(hosted instanceof Game);
   assert.deepEqual(log, [["init", { a: 1 }, "async-cx"]]);
   kit.setAsyncContextFactory(() => undefined);
+});
+
+// Review fixes: behaviour checks the shell makes at the call site
+// (engine/quickjs/mod.rs ShellRuntime::apply) that the mock used to skip.
+test("id, tooltip, value, role, tab_index, href, counts are checked like the shell", () => {
+  throwsType(() => div().id(42), "id(name) expects a string; it is the element's stable identity, so it must not change between renders");
+  throwsType(() => div().id(null), "id(name) expects a string; it is the element's stable identity, so it must not change between renders");
+  assert.equal(div().id("ok").toJSON().id, "ok");
+  throwsType(() => div().tooltip(3), "tooltip(text) expects a string; a tooltip built from an element is not bound yet");
+  throwsType(() => div().value("50"), "value(percent) expects a number between 0 and 100");
+  throwsType(() => div().value(Infinity), "value(percent) expects a number between 0 and 100");
+  div().value(50);
+  throwsType(() => div().role("listbox"), "unknown accessibility role `listbox`; the names mirror gpui::Role in snake_case — see the Role type in gpui-kit.d.ts");
+  throwsType(() => div().role("Button"), "unknown accessibility role `Button`; the names mirror gpui::Role in snake_case — see the Role type in gpui-kit.d.ts");
+  throwsType(() => div().role("generic_container"), 'role("generic_container") announces nothing: GPUI filters that role out of the accessibility tree. Leave the role off instead, or name the role the element really has');
+  throwsType(() => div().role(1), "role(name) expects a string; see the Role type in gpui-kit.d.ts");
+  div().role("button").role("list_box_option").role("check_box");
+  throwsType(() => div().tab_index(1.5), "tab_index(index) expects a whole number");
+  throwsType(() => div().tab_index("1"), "tab_index(index) expects a whole number");
+  div().tab_index(-1);
+  throwsType(() => div().href("/local"), "href(url) expects an absolute HTTP(S) URL with a host");
+  throwsType(() => div().href("file:///etc/passwd"), "href(url) expects an absolute HTTP(S) URL with a host");
+  throwsType(() => div().href(1), "href(url) expects a string");
+  div().href("https://example.com/x");
+  throwsType(() => div().row_count(-1), "row_count(count) expects a non-negative whole finite number");
+  throwsType(() => div().column_count(2.5), "column_count(count) expects a non-negative whole finite number");
+  throwsType(() => div().set_position(0, 3), "set_position(position, size) expects whole finite numbers with 1 <= position <= size");
+  throwsType(() => div().set_position(4, 3), "set_position(position, size) expects whole finite numbers with 1 <= position <= size");
+  div().set_position(1, 3);
+  throwsRange(() => div().size_range(100, 50), "size_range maximum must be greater than or equal to its minimum");
+});
+
+test("handlers: the function comes first; on_action / on_mouse_* take a name or button first", () => {
+  throwsType(() => div().on_click("x", () => {}), "on_click(handler) expects a function");
+  throwsType(() => div().on_action("", () => {}), "on_action(action, handler) expects the action's name first, as a non-empty string");
+  throwsType(() => div().on_action("copy"), "on_action(action, handler) expects a function second");
+  throwsType(() => div().on_mouse_down(() => {}), 'on_mouse_down(button, handler) expects a button first: "left", "right", "middle", "back" or "forward"');
+  throwsType(() => div().on_mouse_up("left"), "on_mouse_up(button, handler) expects a function second");
+  throwsType(() => div().on_window_mouse_up("primary", () => {}), '`primary` is not a mouse button; expected "left", "right", "middle", "back" or "forward"');
+  const el = div().id("a").on_action("copy", () => "copied").on_mouse_down("back", () => "back");
+  assert.equal(kit.fire(el, "a", "on_action:copy"), "copied");
+  assert.equal(kit.fire(el, "a", "on_mouse_down"), "back");
+});
+
+test("a lazy list's item renderer (Layout phase) cannot register handlers or build lists", () => {
+  const rows = (make) => v_virtual_list("rows", 2, 20, (i) => `k${i}`, (range) => {
+    const out = [];
+    for (let i = range.start; i < range.end; i++) out.push(make(i));
+    return out;
+  });
+  const withClick = rows((i) => div().id(`r${i}`).on_click(() => {}));
+  assert.throws(() => kit.serialize(withClick, { cx: {} }), (e) => e instanceof TypeError && e.message.startsWith("`on_click` cannot be registered from a virtual list's item renderer"));
+  const perItem = list("l", 1, (i) => String(i), () => div().on_mouse_down("left", () => {}));
+  assert.throws(() => kit.serialize(perItem, { cx: {} }), (e) => e instanceof TypeError && e.message.startsWith("`on_mouse_down` cannot be registered"));
+  const nested = rows(() => uniform_list("inner", 1, (i) => String(i), () => [div()]));
+  throwsType(() => kit.serialize(nested, { cx: {} }),
+    "a list cannot be built from inside another list's item renderer: its own renderer would belong to no render pass and would never be called. Describe the nested list from the view's render() instead");
+  // The list's own on_item_click is the supported way; after a throw the renderer depth is restored.
+  const ok = rows((i) => div().id(`r${i}`).child(String(i))).on_item_click(() => "item");
+  assert.equal(kit.serialize(ok, { cx: {} }).children.length, 2);
+  div().on_click(() => {});
+});
+
+test("lengths are trimmed with Rust's whitespace set, not JavaScript's", () => {
+  // U+FEFF is JS whitespace but not Rust's; U+0085 is the other way round.
+  throwsType(() => div().p("\uFEFF12px"), '`p` could not read a number in the length "\uFEFF12px"');
+  throwsType(() => div().w("auto\uFEFF"), '`w` expects a length: a number of pixels, or a string like "50%", "12px", "1rem" or "auto"; got "auto\uFEFF"');
+  div().p("\u008512px\u0085").w(" auto\u3000");
 });
