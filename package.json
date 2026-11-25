@@ -1,0 +1,18 @@
+{
+  "name": "herdr-clicker-dev",
+  "private": true,
+  "type": "module",
+  "description": "Development tooling for the herdr layout and mod in this repo. Not part of the share package.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --import ./tools/node/register.mjs --test test/",
+    "test:qjs": "node --test test/qjs/",
+    "shots": "node --import ./tools/node/register.mjs tools/shots/shoot.mjs",
+    "sim": "node tools/sim/pacing.mjs",
+    "check": "npm test && npm run test:qjs && npm run sim -- --assert"
+  },
+  "devDependencies": {
+    "quickjs-emscripten-core": "0.32.0",
+    "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0"
+  }
+}
