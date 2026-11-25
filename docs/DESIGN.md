@@ -115,7 +115,7 @@ The layout is the shipped `main` layout (share §9) with **every id kept** and t
 │ sidebar  │ tabs (42)                                                      │
 │ 268      ├─────────────────────────────────────────────┬──────────────────┤
 │ spaces   │ work-body (row, padding 8, gap 8)           │ cw-panel         │
-│ agents   │  main (terminal panes, min 360)  [panel     │ 320 (64 … 560)   │
+│ agents   │  main (terminal panes, min 80)   [panel     │ weight 0.39, ≥64 │
 │          │                                  hidden]    │ the game         │
 │          ├─────────────────────────────────────────────┴──────────────────┤
 │          │ cw-ribbon 30 (always shown): every helper's status, count, ✉  │
@@ -124,9 +124,12 @@ The layout is the shipped `main` layout (share §9) with **every id kept** and t
 └──────────┴────────────────────────────────────────────────────────────────┘
 ```
 
-* **cw-panel** (props `{role:"panel"}`): the full game. It folds to a **64 px rail** with one key
-  (`run("layout.resize", {id:"cw-panel", px})`; `layout.resize` takes `id`, `px?`, `weight?` in
-  `src/commands.rs` and in `tools/mock/commands.js`).
+* **cw-panel** (props `{role:"panel"}`): the full game, sized by weight beside the terminals (322 px
+  at 1440×900, 226 at 1100×700; ARCHITECTURE B15). It folds to a **64 px rail** with one key
+  (`run("layout.resize", {id:"cw-panel", weight})`: weight 0.001 is the rail, held at the node's
+  `min: 64`; `layout.resize` takes `id`, `px?`, `weight?` in `src/commands.rs` and in
+  `tools/mock/commands.js`). Both states are weights, never `{px}`: herdr never shrinks a `{px}`
+  node, so it would be pushed off-screen by a narrow window or zoom.
 * **cw-ribbon** (props `{role:"ribbon"}`): one 30 px row above herdr's status bar, across the
   whole work column. It shows **every helper's individual status mark**, the fold count, the
   envelope count and any save problem, in every fold state.
@@ -149,17 +152,20 @@ separate copy of the same mod; both render one live game through the handover sl
 
 | State | Width taken from terminals | Height taken | Terminal width at 1440×900 | at 1100×700 |
 |---|---|---|---|---|
-| Expanded (panel 320) | 328 px (320 + 8 gap) | 30 px | 1440 − 268 − 16 − 328 = **828 px** (~100 cols) | **488 px** |
-| Rail (64) | 72 px | 30 px | 1084 px | 744 px |
-| Panel hidden (palette only) | 0 | 30 px | 1156 px | 816 px |
+| Expanded (weight 0.39: 322 px at 1440, 226 at 1100) | panel + 8 gap | 30 px | **825 px** (~100 cols) | **581 px** |
+| Expanded, Files open (Files 367 / 280) | panel 217 / 146 + 8 | 30 px | 556 px | 373 px |
+| Rail (64) | 72 px | 30 px | 1083 px | 743 px |
+| Panel hidden (palette only) | 0 | 30 px | 1155 px | 815 px |
 
 Terminal height at 1440×900 is 900 − 42 − 28 − 30 − 16 = **784 px**; at 1100×700, **584 px**.
 
 Terminals stay usable because: (1) the game never takes keyboard focus (no `focusable` in
 `mod.json`, no `track_focus`, no `Input` except the optional shared-save path field in Settings,
 which takes focus only while the player types in it); (2) clicking the game never focuses a pane,
-except the deliberate "needs you" cue; (3) `main` has `"min": 360`, so a drag can never squeeze
-terminals below 360 px; (4) no sounds, no `setAgentOrder`, `setWindowTitle` or `setBadge`
+except the deliberate "needs you" cue; (3) every node beside `main` is a weight that shrinks to its
+min first, so at zoom 1 the terminals keep at least 360 px in every state from 1100 px wide up,
+and `main` has `"min": 80` (low enough that 1100×700 at zoom 1.5 with Files open still fits the
+rail; ARCHITECTURE B15), so a drag can never squeeze terminals below 80 px; (4) no sounds, no `setAgentOrder`, `setWindowTitle` or `setBadge`
 (host-api Don't).
 
 ### 2.3 Narrow windows (1100×700 and below)
@@ -170,15 +176,19 @@ slot. Estimated terminal width:
 
 ```
 mainEst = Wr − 16 − (Wp + 8) − (filesShown ? filesPx + 8 : 0)
-filesShown = layout() reports node "panel" not hidden;   filesPx = its px size if layout() gives it, else 368
+filesShown = layout() reports node "panel" not hidden
+filesPx    = its px size if layout() gives it; for the shipped {weight} Files column
+             commands.js filesEstimate(info, Wp) = Wp × filesWeight / panelWeight, held to 280 … 900
 ```
 
 * If the panel is expanded and `mainEst < 600`, the ribbon shows a one-time hint chip (11 px,
   `T.popover`, 1 px `T.border`): "Narrow window: fold Creaseworks to a rail?" with **[Fold]**
   (runs the fold command) and **[Not now]**. It appears at most once per Files-panel opening and
   once per day otherwise (`ui.narrowHintDay` in the save). The game never resizes on its own.
-* With the Files panel open at 1100 px wide, `mainEst` is 112 px, so the hint always appears;
-  folding gives the terminals 368 px.
+* With the Files panel open at 1100 px wide the panel is 146 px (Narrow) and the terminals 373 px,
+  so the hint appears; folding gives the terminals 443 px (Files 292). The hint is never shown
+  for a panel already at its 64 px min (zoom 1.5 with Files open at 1100–1440 px), where folding
+  would change nothing.
 * Panel height `H` = window height − 42 − 28 − 30 − 16. When `H < 640` (1100×700 gives 584) the
   panel uses the **short** variant: mat 304×184 with a 96 px Sheet (§3.2).
 * Screenshots of whole windows at **1440×900 and 1100×700**, each expanded, folded and hidden,
@@ -190,8 +200,13 @@ filesShown = layout() reports node "panel" not hidden;   filesPx = its px size i
 |---|---|---|
 | Rail | < 140 (default 64) | §3.9 |
 | Narrow | 140–279 | mat at 100 % width × 184; Flock tiles 4 across (dense); Shop shows icons only |
-| Standard | 280–399 (default 320) | every view as drawn in §3 |
+| Standard | 280–399 (320 as designed; 322 at 1440×900) | every view as drawn in §3 |
 | Wide | ≥ 400 | mat 260 tall; Flock up to 8 columns; Shop rows add effect and payback columns |
+
+Which state a window gets by default (shipped weights, ARCHITECTURE B15): 1100×700 **Narrow**
+(226; 146 with Files open), 1440×900 **Standard** (322; Narrow 217 with Files open), 1920×1080
+**Wide** (456), 2560×1440 **Wide** (636; no maximum: a capped weight node would leave an empty
+strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the rail).
 
 ### 2.5 The layout file (complete)
 
@@ -218,15 +233,15 @@ filesShown = layout() reports node "panel" not hidden;   filesPx = its px size i
     {"id": "work", "type": "column", "resizable": false, "children": [
       {"id": "tabs", "type": "block", "size": {"px": 42}, "window_drag": true, "content": {"mod": "tabs"}},
       {"id": "work-body", "type": "row", "padding": 8, "gap": 8, "children": [
-        {"id": "main", "type": "block", "min": 360, "content": {"tab": "active", "pane": {
+        {"id": "main", "type": "block", "min": 80, "content": {"tab": "active", "pane": {
           "gap": 8, "radius": 10, "background": "background", "lone": true,
           "border": {"width": 1, "color": "border"}, "focus": {"width": 1, "color": "accent"},
           "header": {"content": {"mod": "pane"}, "height": 30, "position": "top", "reveal": "always"}}}},
-        {"id": "panel", "type": "column", "hidden": true, "size": {"px": 368}, "min": 280, "max": 900,
+        {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 280, "max": 900,
          "children": [{"id": "panel-body", "type": "stack", "active": "files", "children": [
            {"id": "files", "type": "block", "content": {"mod": "files"}},
            {"id": "changes", "type": "block", "content": {"mod": "changes"}}]}]},
-        {"id": "cw-panel", "type": "block", "size": {"px": 320}, "min": 64, "max": 560,
+        {"id": "cw-panel", "type": "block", "size": {"weight": 0.39}, "min": 64,
          "radius": 10, "border": {"width": 1, "color": "border"}, "background": "chrome",
          "content": {"mod": "creaseworks", "props": {"role": "panel"}}}]},
       {"id": "cw-ribbon", "type": "block", "size": {"px": 30}, "background": "chrome",
@@ -265,7 +280,7 @@ file must stay valid JSON (an invalid file docks at the right, share Do 3).
 
 | Chord | Command | Does |
 |---|---|---|
-| `ctrl-shift-g` | `creaseworks.fold` | panel ↔ rail (`layout.resize` to 64 or to the last unfolded width, default 320). If the panel is hidden, `layout.show {id:"cw-panel"}` first |
+| `ctrl-shift-g` | `creaseworks.fold` | panel ↔ rail (`layout.resize` to the rail weight 0.001, held at 64 px, or to the last unfolded weight, default 0.39). If the panel is hidden, `layout.show {id:"cw-panel"}` first |
 | `ctrl-shift-y` | `creaseworks.answer` | opens the helper that has needed you longest (§5.6). With nobody waiting, the ribbon shows "Nobody needs you" for 3 s; no toast |
 | `ctrl-shift-j` | `creaseworks.envelope` | opens the oldest envelope (counts as clicking it) |
 
@@ -788,8 +803,12 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   observation's plain id is already held by a different terminal (an earlier entry of the same
   list, or a present helper with another address or `created_ms`), that terminal takes the first
   free **salted id**, FNV-1a of `address + "#" + created_ms + "#" + k` for k = 1, 2, …; the
-  present helper keeps its id, so each terminal resolves to the same id on every observation and
-  no present agent is ever lost. The residual risk is in §17 (R6). (fit.md's `homeId:` prefix was
+  present helper keeps its id. A terminal that is already present always keeps the id it holds,
+  plain or salted, even after the holder of its plain id leaves, so its name, stats and envelope
+  never move mid-session. A salted helper that leaves keeps its `salt` (k) in its Album record
+  (such records are never compacted), so if its agent returns while its plain id belongs to a gone
+  helper it finds its own record first. Each terminal resolves to the same id on every observation
+  and no present agent is ever lost. The residual risk is in §17 (R6). (fit.md's `homeId:` prefix was
   rejected because it would credit a shared terminal twice; judge 2.)
 * **Look from the hash h**: species `SPECIES[h % 12]`; hue `(h >>> 4) % 8`; name
   `A[(h >>> 8) % 16] + B[(h >>> 12) % 12]` with A = `Mi Ko Pi Ta Su No Ri Ha Yu Fe Lo Bi Ka Mo Ze Wu`,
@@ -807,7 +826,11 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   recently gone (`K.albumKeep`) are **compacted**: they keep `{id, name, species, hue, folds,
   tasks}`, the minute they left and any `kidsPast`/`kidsFolds`, and the save writes each as a
   short array (≈ 40 bytes). A compacted helper stays in the Album; if its agent returns it rejoins
-  with those stats and its turn is rebaselined (no reward). Record (≈ 170 bytes):
+  with those stats, its turn is rebaselined (no reward) and it joins anew (join order lists it as
+  the newest). Compaction gives up what the Album does not show: the stored rest boost (§5.4) and
+  this run's share (`stats.run`, so its part of the garland moves to the "everyone else" stripe).
+  A record that cannot be packed (an id that is not 8 hex digits, from a hand-edited save) stays
+  whole. Record (≈ 170 bytes):
   `{id, addr, created, kind:"pane"|"kid", parent, species, hue, name, joined, lastSeen, seenBy,
   status, lastTurn, lastFinishAt, blockedAt, rest, warm, warmUntil, thanksUntil, env, stats:{tasks, folds, envelopes, checkIns}}`.
 * Fuzz: addresses `__proto__`, `constructor`, `toString`, `t1/../x`, remote `peer/t7`, and the
@@ -872,8 +895,10 @@ thanks_i= 1.5 for 5 min after the helper goes from Needs you to Working within 5
   each `b_i` times the bench's effective pace `Hs0 / Σ b_i`. The exponent 0.07 and the fixed knee
   of 4 were calibrated so 30 and 64 agents reach the first wish on day 2 of open time, not on
   day 1 (BALANCE.md P6, P7); the exponent was 0.15 while the pace scaled the whole sum, which let
-  a fresh agent lower a warm bench's output. There are **no** bench-room upgrades or perks (they
-  broke big-flock pacing in calibration).
+  a fresh agent lower a warm bench's output. The same `crowd(N)` scales Bundles and the overflow
+  conversion (§6.1), Elsewhere credit (§12.5) and away gathering (§10.2), so the retune also made
+  those about 15 % smaller at 30 agents and 20 % smaller at 64 (BALANCE.md §8, knob 2). There are
+  **no** bench-room upgrades or perks (they broke big-flock pacing in calibration).
 * **Thanks** stays in calm mode (calm changes no earnings). It needs no click on our cue: answering
   from herdr's own sidebar or toast counts.
 
@@ -1132,7 +1157,20 @@ bonus      : G = 1 + 0.05 · W on all folds; perks by Wishes held (§3.5)
 * Credited time `a = min(gap, 28,800 s)` (8 h). The rest is dropped and the card says so.
 * **Clock moved backwards** (`now < clock − 5 s`): 0 credit, the engine rebases its clock to `now`
   (a `rebase` action) and shows the `clock` notice. It never gives credit for time it already
-  counted.
+  counted: it keeps a high-water mark (`away.highWater`, the latest clock it credited) and a skip
+  allowance (`away.skipLeft`, grown by each clock-back, capped at 8 h). Later, while the clock is
+  below the mark:
+  * **clock put right** (the clock lands within 5 s of the mark, or past it): the time up to the
+    mark is skipped, whatever its size, and the allowance goes to 0;
+  * **an absence below the mark** (a gap over 60 s): at most `skipLeft` is skipped, the rest is
+    credited as a normal away segment;
+  * **live play** (gaps of 60 s or less, including a hidden window's 5 s ticks): credited, and the
+    mark moves with it.
+
+  A skip over 60 s raises the `clock` notice again if it is not showing; it stays until dismissed,
+  so a skipped absence is never silent. Residual: after a clock-back of more than 8 h, putting the
+  clock only partly right can credit at most one 8-h cap of time that was already counted (a
+  partial correction cannot be told from a real absence).
 * Two away segments separated by less than 5 min of live (ticked) time **share one 8-h cap**, so
   restarting herdr repeatedly cannot farm away credit.
 
@@ -1221,17 +1259,40 @@ The mechanism is ARCHITECTURE A4–A6 exactly; this section is the player-facing
 ### 12.1 Files
 
 ```
-<appHome>/data/creaseworks/save.json             current save   {format:"creaseworks-save", version, check, state}
+<appHome>/data/creaseworks/save.json             current save   {format:"creaseworks-save", version: 2, check, state}
 <appHome>/data/creaseworks/save.bak.json         previous good save, rotated at most every 5 min
 <appHome>/data/creaseworks/save.damaged-<n>.json damaged files kept aside, n = 1..5 (oldest replaced)
+<appHome>/data/creaseworks/save.recovery.json    only while save.json cannot be read (> 1 MiB, not a regular file)
 <appHome>/data/creaseworks/location.json         only when sharing: {"path": "/abs/…/save.json"}
 ```
+
+* **Unreadable save.json.** When `save.json` exists but cannot be read at all (over herdr's 1 MiB
+  read limit, a folder, a broken link), progress goes to `save.recovery.json` and the footer says
+  so; once `save.json` can be written again the game goes back to it. On load, the newer (by state
+  clock) of the recovery file and the backup is used, so a stale recovery file never rolls back a
+  newer, normally rotated backup.
+* **Reset and Restore** keep the current save aside (reason `reset` / `restore`) and the next
+  write **replaces** the file rather than merging into it, so another window's save cannot undo
+  them. That other window then finds fewer of its own actions in the file than it last wrote,
+  says "Another window replaced the save…" and names the kept copy in Details.
+* **Pending action log** (A5): bounded (`PENDING_MAX`). Runs of roster observations that change
+  only titles are coalesced; an observation that changes a turn counter, a status, the roster or
+  presence is always kept, so a merge never loses a finished-task reward. Past the bound the log
+  is given up: the next write keeps the other file aside with a notice and writes this game.
+  Merges replay the log in slices that yield between them (500 ms callback budget), and a log
+  given up mid-replay is still replayed to its end.
+* **Backup rotation failures** show their own `error` notice (with its own back-off) and Settings
+  says "Backup: not updated (…)"; the main save goes on.
+* **Stopping sharing** deletes the pointer's path (`{"path": null}` means "not sharing", never a
+  damaged pointer).
 
 Written only with `writeTextFile(path, text, expected)` (CAS, atomic rename), read with
 `readTextFile`; absolute paths from `appHome()`; nothing is ever written under `mods/` (that would
 reload the mod, life §1). Save text < 256 KiB at 64 helpers plus 500 Album helpers, and
 < 512 KiB after a year of 20 agents a day (each with 3 fledglings) thanks to Album compaction (R13;
-tests).
+tests). The envelope `version` is the file format (2 since Album entries may be packed arrays);
+the state keeps its own `version`. A file with a higher format or state version than the build
+knows loads read-only and is never written (§12.2, `newer`).
 Cadence: 2 s after a purchase, wish, setting change or envelope open; every 15 s while anything
 changed; on `close(cx)` one final write at once.
 
@@ -1549,7 +1610,7 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | Pacing: one time unit (play-clock hours, wall mapping), per-source shares, 20 seeds, 30 agents ≥ 12 h, 64 agents ≥ 10 h, typical on day 3, calm equal | BALANCE.md |
 | 30+ readable in every fold state: ribbon pips 12 px at 14 px pitch in two rows; rail per-helper grid; urgent always individual; stable order | §3.9, §3.10, §5.5 |
 | Envelope scaling: per-helper stacking + 60 s unit rule + overflow conversion; player chooses timed boosts | §6 |
-| Narrow windows: 1100×700 behaviour, rail via `layout.resize`, hint, main min 360, window shots at both sizes | §2.2–2.3, §15.3 |
+| Narrow windows: 1100×700 behaviour, rail via `layout.resize`, hint, main min 80 (weights, ARCHITECTURE B15), window shots at both sizes | §2.2–2.3, §15.3 |
 | Unverified primitives replaced or given fallbacks (`.spring` → `.active` opacity; long transitions; facet alpha; `layout.resize` persistence; `local_position` guard) | §3.2, §6.2, §13.1, §17 |
 | Timers: one data timer per copy; no combo timers; pops batched; ≤ 10 tasks | §13.5 |
 | localStorage only for UI conveniences, try/catch, separate store per role | §12.6 |
@@ -1576,16 +1637,16 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R1 | `svg()` alpha masks may flatten `fill-opacity` facets | unverified (gpui §3 describes a mask) | split files generated from day one; one constant flips the renderer (§13.1); check once on the contact-sheet view |
 | R2 | Very long `.transition` durations (boost countdown up to 240 s, crane glide 26 s) not watched in herdr | allowed by the validator (≤ 86,400,000 ms, gpui §9) | fallback: set the width/left on each data tick (1 s steps) |
 | R3 | `layout.resize` on a px node may not persist in `layouts/.state/Creaseworks.json` | unverified | the panel copy re-applies the stored width (localStorage) on `init`, guarded by `checking()` |
-| R4 | `layout()` may not expose node sizes (Files panel width) | unverified | assume 368 px for `mainEst` |
+| R4 | `layout()` may not expose node sizes (Files panel width) | unverified | estimate it from the weights and the panel's measured width (`filesEstimate`); 368 px when the panel is folded |
 | R5 | Hosted spinners paint above the view (gpui §9); clipping inside scroll areas and under the away card is unverified | open | spinners only on visible tiles, ≤ 6, never under absolute cards (cards hide spins while shown) |
-| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once), or their strings clash in the 32-bit hash (≈ 1e-7 for 30 present agents); a remote terminal named differently in two homes becomes two helpers | mitigated | a terminal whose plain id is held by a different present terminal takes a salted id (§5.1), so a clash never loses a present agent; Album records keep no address, so a returning agent whose id clashes with a gone helper's record rejoins that record (their stats merge) |
+| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once), or their strings clash in the 32-bit hash (≈ 1e-7 for 30 present agents); a remote terminal named differently in two homes becomes two helpers | mitigated | a terminal whose plain id is held by a different present terminal takes a salted id (§5.1), so a clash never loses a present agent, and a present terminal keeps its salted id after the plain id's holder leaves; a salted helper's Album record keeps its `salt`, so it is found again when its agent returns. Residual: Album records keep no address, so a new terminal whose plain id clashes with a gone helper's record rejoins that record (their stats merge); and a salted helper that was already in the Album before `salt` was recorded is not recognised, so its returning agent takes the plain id's gone record |
 | R7 | Cross-process CAS race (life §6.3) | accepted | idempotent actions + merge; ≤ 15 s of one window's progress can be overwritten until its next save re-applies it |
 | R8 | `turn` behaviour across a core restart | rebaseline rules (§6.1) | `turn < lastTurn` → rebaseline, no reward |
 | R9 | Clicking a mod block might move keyboard focus off the terminal | unverified | nothing is focusable; verify by hand; if focus moves, refocus the last `focused()` pane on mouse-up |
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Measured: 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 350 KB (save cycle ≈ 280 ms in the QuickJS harness). Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day) |
+| R13 | Save size with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole; a compact record changed after compaction (a check-in, an envelope opened for it) is saved whole from then on, since compaction looks only at whole records (bounded: one record per such change). The save file format is 2 (packed entries), so a build from before compaction reads it as newer (read-only), never as damaged. Measured: 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 345 KiB (slowest load or save step 290–340 ms in the QuickJS harness, budget 500 ms). Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (187 KiB) and a year run whose teardown is a todo test |
 | R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
 | R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |

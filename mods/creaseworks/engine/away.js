@@ -143,30 +143,49 @@ export function potLive(state, dtMs, t, ev) {
 }
 
 /**
- * Time forward over a stretch this save already counted (§10.1): after a
- * clock-back the clock sits below `away.highWater`; a forward jump of more
- * than 5 s (the clock coming back) credits nothing up to the high-water mark.
- * The skipped stretch is frozen like a rebase (boost ends move with it) and,
- * once the clock is back past the mark, the `clock` notice goes. Live ticks
- * (≤ 5 s) are credited as usual and push the mark on by their length.
+ * Time forward over a stretch this save already counted (§10.1). After a
+ * clock-back the clock sits below `away.highWater`; the mark moves on with
+ * every credited stretch, so `highWater − clock` stays the size of the
+ * clock-back. A move forward from below the mark is one of:
+ * - the clock put right: it lands on the mark (within 5 s) or past it. The
+ *   whole stretch up to the mark is skipped (no credit, frozen like a rebase:
+ *   boost ends move with it), whatever its size.
+ * - an absence (> 60 s, the away threshold) that lands below the mark: real
+ *   time, or the clock put only partly right; it cannot be told which. Up to
+ *   `away.skipLeft` of it is skipped: what the clock-backs since the mark
+ *   moved back, capped at the 8 h away cap (the most a put-right jump could
+ *   ever have credited). A clock wrong forward and then corrected costs at
+ *   most 8 h of absence, never every absence until wall time catches up;
+ *   clock round trips of any size, whole or partial, credit nothing twice.
+ * - a live move (≤ 60 s; a hidden window's 5 s ticks too): credited as usual.
+ * A skip that swallows more than the away threshold is never silent: the
+ * `clock` notice is raised again if it is not already showing. The notice
+ * stays until it is dismissed.
  * Returns the ms skipped (0 when nothing was).
  */
 export function skipCounted(state, now) {
   const aw = state.away;
   const c = state.clock;
   const hw = aw.highWater;
-  if (!(typeof hw === "number" && hw > c && now - c > K.clockBackMs)) return 0;
-  const to = Math.min(now, hw);
+  if (!(typeof hw === "number" && hw > c && now > c)) return 0;
+  const left = typeof aw.skipLeft === "number" && aw.skipLeft > 0 ? Math.min(aw.skipLeft, K.awayCapMs) : 0;
+  let to;
+  if (now >= hw - K.clockBackMs) {
+    to = Math.min(now, hw);
+    if (to >= hw) aw.skipLeft = 0;
+  } else if (now - c > K.awayAfterMs && left > 0) {
+    to = c + Math.min(now - c, left);
+    aw.skipLeft = left - (to - c);
+  } else {
+    return 0;
+  }
   const shift = to - c;
   const bo = state.boosts;
   if (bo.rushEnd > c) bo.rushEnd += shift;
   if (bo.stormEnd > c) bo.stormEnd += shift;
   if (state.spawn.syncedTo < to) state.spawn.syncedTo = to;
   state.clock = to;
-  if (to >= hw) {
-    const list = state.notices;
-    for (let i = list.length - 1; i >= 0; i--) if (list[i].kind === "clock") list.splice(i, 1);
-  }
+  if (shift > K.awayAfterMs && !state.notices.some((n) => n.kind === "clock")) pushNotice(state, { kind: "clock", at: to });
   return shift;
 }
 
@@ -187,6 +206,9 @@ export function rebase(state, now, ev) {
   if (bo.stormEnd > state.clock) bo.stormEnd += shift;
   state.clock = now;
   state.away.lastSegmentEnd = state.away.lastSegmentEnd === null ? null : Math.min(state.away.lastSegmentEnd, now);
+  // What a later absence below the mark may skip grows by this clock-back (≤ 8 h).
+  const left = typeof state.away.skipLeft === "number" && state.away.skipLeft > 0 ? state.away.skipLeft : 0;
+  state.away.skipLeft = Math.min(K.awayCapMs, left - shift);
   pushNotice(state, { kind: "clock", at: now });
   ev.push({ kind: "notice", notice: "clock" });
   return ev;

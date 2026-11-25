@@ -206,7 +206,7 @@ test("r1-33: a clock that moves back and then returns credits nothing for time a
   assert.equal(s.away.highWater, T0 + 31000);
 });
 
-test("r1-33: a clock wrong forward, then corrected, costs at most one absence, and never silently", () => {
+test("r1-33: a clock wrong forward, then corrected, costs at most 8 h of absence, and never silently", () => {
   const { s, me } = setup();
   const D = 24 * H;
   engine.advance(s, T0 + 30000);
@@ -232,7 +232,9 @@ test("r1-33: a clock wrong forward, then corrected, costs at most one absence, a
     assert.equal(nights[k].away && nights[k].away.seconds, 8 * 3600, `night ${k} is an ordinary away segment`);
     assert.equal(nights[k].clock, false, `night ${k}: no clock notice`);
   }
-  assert.equal(s.away.highWater, s.clock);
+  // The mark stays ahead (only a jump onto it would be skipped), but nothing
+  // is left to skip from real-looking absences.
+  assert.equal(s.away.skipLeft, 0);
 });
 
 test("r1-33: during a clock-back, a hidden window's 5 s ticks (even late) are credited", () => {
@@ -259,6 +261,33 @@ test("r1-33: a partial clock restore cannot be farmed either", () => {
     assert.equal(s.away.pot, null, `round ${k}`);
     t -= 5 * 60000;
   }
+});
+
+test("r1-33: an absence during a 2-day clock-back is skipped, then credited once when the clock is put right", () => {
+  const { s } = setup();
+  const D = 24 * H;
+  let real = T0 + 30000;
+  engine.advance(s, real);
+  engine.advance(s, real - 2 * D); // the clock goes 2 days back
+  assert.equal(s.away.skipLeft, 8 * H, "what an absence may skip is capped at the away cap");
+  const ev1 = engine.advance(s, real - 2 * D + 6 * H); // a real 6 h absence on the wrong clock
+  real += 6 * H;
+  assert.equal(ev1.some((e) => e.kind === "away"), false, "below the mark: skipped");
+  assert.equal(s.away.skipLeft, 2 * H);
+  const ev2 = engine.advance(s, real); // the clock is put right
+  const away = ev2.find((e) => e.kind === "away");
+  assert.equal(away && away.seconds, 6 * 3600, "the real 6 h, credited once");
+  assert.equal(s.away.skipLeft, 0);
+  assert.equal(s.away.highWater, real);
+});
+
+test("r1-33: older saves get skipLeft 0", () => {
+  const { s } = setup();
+  engine.advance(s, T0 + 30000);
+  delete s.away.skipLeft;
+  const back = engine.parseSave(engine.serialize(s));
+  assert.ok(back.ok);
+  assert.equal(back.state.away.skipLeft, 0);
 });
 
 test("r1-33: the clock put right after the notice was dismissed raises it again", () => {

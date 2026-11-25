@@ -9,13 +9,13 @@
 // (cx.notify()) when the slot's rev or the clock bucket (5 s in calm mode)
 // changed. Handlers dispatch B5 actions or change this copy's `ui`.
 
-import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings } from "herdr";
+import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings, pickFiles } from "herdr";
 import { view, advance, apply, newGame, formatCount } from "../engine/index.js";
 import { now as clockNow, localDay, bucket } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, signature } from "./observe.js";
-import { layoutInfo, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, RAIL_BELOW } from "./commands.js";
+import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, RAIL_BELOW } from "./commands.js";
 import * as notifier from "./notify.js";
 
 export const VISIBLE_MS = 1000;
@@ -326,9 +326,12 @@ export class Session {
     const tab = this.ui.tab;
     const width = this.width ?? (this.role === "ribbon" ? 0 : 320);
     const short = this.role === "panel" && typeof this.height === "number" && this.height > 0 && this.height < SHORT_BELOW;
+    // The Album's rows are built only while its section is unfolded (r1-03:
+    // a folded Album with thousands of records costs nothing to render).
+    const album = this.role === "panel" && tab === "flock" && this.albumOpen();
     const key = [
       s.rev, slot ? slot.rev : 0, width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}` : "",
-      bucket(at, !!s.settings.calm), short, fl ?? "",
+      bucket(at, !!s.settings.calm), short, fl ?? "", album,
     ].join("|");
     if (this.cache && this.cache.key === key) return this.cache.vm;
     const vm = view(s, at, {
@@ -339,6 +342,7 @@ export class Session {
       short,
       buyCount: this.ui.buyCount,
       saveNotice: notice ? saveNoticeOf(notice) : null,
+      album,
     });
     if (fl) {
       vm.ribbon = { ...vm.ribbon, pill: fl };
@@ -346,6 +350,19 @@ export class Session {
     }
     this.cache = { key, vm };
     return vm;
+  }
+
+  /** True when this copy's Flock shows the Album section unfolded (folded by default). */
+  albumOpen() {
+    const u = this.ui;
+    if (this.isFolded) {
+      try {
+        return !this.isFolded(null, u, "album");
+      } catch {
+        // fall through to the plain rule
+      }
+    }
+    return u.scrollTo === "album" || u.folded.album === false;
   }
 
   /** This copy's ui with a fresh `now` (confirm arming compares it; renderers never read a clock). */
@@ -418,7 +435,7 @@ export class Session {
     const L = slot.layout;
     const Wp = slot.widths.panel;
     if (!slot.presence.panelShown || typeof Wp !== "number" || Wp < RAIL_BELOW) return false;
-    const mainEst = this.width - 16 - (Wp + 8) - (L.filesShown ? L.filesPx + 8 : 0);
+    const mainEst = this.width - 16 - (Wp + 8) - (L.filesShown ? filesEstimate(L, Wp) + 8 : 0);
     if (mainEst >= 600) return false;
     if (L.filesShown) return slot.narrow.dismissed !== slot.narrow.filesEpoch;
     return s.ui.narrowHintDay !== s.day;
@@ -674,7 +691,23 @@ export class Session {
         self.storeTask(cx, (slot, env) => store.resetGame(slot, env));
       },
       sharePath(path, cx) {
+        ui().confirm = false;
         self.storeTask(cx, (slot, env) => store.sharePath(slot, env, path));
+      },
+      pickSharePath(cx) {
+        // §12.5: the system file picker chooses the other window's save.json.
+        self.storeTask(cx, async (slot, env) => {
+          let got = null;
+          try {
+            got = await pickFiles({ prompt: "Share this save", multiple: false });
+          } catch {
+            env.flash("The file picker could not open.");
+            return;
+          }
+          if (!Array.isArray(got) || !got.length || typeof got[0] !== "string") return;
+          ui().confirm = false;
+          await store.sharePath(slot, env, got[0]);
+        });
       },
     };
   }

@@ -181,7 +181,7 @@ function saveSection(vm, ui, ctx) {
  * The share card (DESIGN §12.5): pick window A's …/data/creaseworks/save.json
  * (`handlers.pickSharePath`: the glue opens the file picker and hands the
  * chosen absolute path to `sharePath`), or stop sharing (`sharePath("")`, this
- * window's own save again; shown unless `ctx.save.shared` is false).
+ * window's own save again; shown only when `ctx.save.shared === true`).
  */
 function shareCard(save, ctx) {
   const T = ctx.T;
@@ -213,7 +213,7 @@ function shareCard(save, ctx) {
     tooltip: canPick ? "Opens the file picker" : "The file picker is not available in this window",
     onClick: (e, cx) => pickSharePath(cx),
   }, T));
-  if (save.shared !== false) {
+  if (save.shared === true) {
     row.child(button("cw-set-share-stop", "Stop sharing", {
       h: 28,
       size: 12,

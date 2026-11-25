@@ -234,8 +234,9 @@ function pruneNotices(state, now) {
  * advance(state, now[, writer]) → Event[]. Moves time forward from state.clock
  * (closed form per segment; an away segment when the gap is > 60 s). A clock
  * more than 5 s behind state.clock is a clock-back: no credit, rebase, notice;
- * when the clock comes back, the stretch up to `away.highWater` is not
- * credited again and the notice goes.
+ * when the clock is put right the stretch up to `away.highWater`, already
+ * counted, is skipped, and an absence below the mark skips at most 8 h
+ * (away.js skipCounted); the notice stays until dismissed.
  * `writer` (the glue's writerId) lets helpers another window stopped observing
  * fall back to the away rate (§10.2); without it every helper counts as seen.
  */

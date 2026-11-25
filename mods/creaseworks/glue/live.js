@@ -127,7 +127,7 @@ export function newSlot(home, paths) {
     obs: { sig: null, presence: null },
     live: map(), // address → true (latest terminals() read; §5.6 liveness)
     panes: map(), // pane agent address → pane id
-    widths: { panel: null, panelHeight: null, ribbon: null, lastPanel: null },
+    widths: { panel: null, panelHeight: null, ribbon: null, lastPanel: null, lastWeight: null },
     layout: { known: false, ribbonHidden: false, panelHidden: false, filesShown: false, filesPx: 368 },
     presence: { visible: true, active: true, panelShown: false },
     request: null, // { at, select?, group? } a ribbon/rail click for the panel copy's ui

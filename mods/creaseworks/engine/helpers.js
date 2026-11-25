@@ -178,6 +178,11 @@ const round6 = (x) => (x === 0 ? 0 : Number(x.toPrecision(6)));
 
 /** A helper whose agent has gone moves to the Album as a compact record. */
 function toAlbum(h, t) {
+  // A salted id (R6) is remembered as its attempt number, so the same terminal
+  // finds its own record again if it returns (the address is not kept).
+  const salt = saltOf(h);
+  if (salt > 0) h.salt = salt;
+  else delete h.salt;
   for (const k of Object.keys(LIVE_FIELDS)) delete h[k];
   h.gone = true;
   h.missingSince = t;
@@ -255,8 +260,10 @@ function compactRecord(h) {
   const look = lookOf(h.id);
   if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0) a[0] = 0;
   const c = unpackAlbum(h.id, a);
+  if (!c) return false; // not an engine-made id (a legacy or hand-edited save): kept whole
   for (const k of Object.keys(h)) delete h[k];
   Object.assign(h, c);
+  return true;
 }
 
 const byLeft = (a, b) => a.missingSince - b.missingSince || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -300,7 +307,7 @@ function freeName(slots, base) {
 }
 
 /** A returning agent (same address and created_ms) rejoins with its history. */
-function rejoin(h, o, slots) {
+function rejoin(h, o, slots, t) {
   const wasCompact = h.compact === true;
   h.gone = false;
   h.missingSince = null;
@@ -308,8 +315,12 @@ function rejoin(h, o, slots) {
   for (const k of Object.keys(LIVE_FIELDS)) if (!(k in h)) h[k] = LIVE_FIELDS[k];
   h.addr = String(o.addr);
   h.created = Number(o.created) || 0;
-  // A compacted record kept no turn: rebaseline to this sighting (no reward).
-  if (wasCompact) h.lastTurn = Number(o.turn) || 0;
+  // A compacted record kept no turn or join time: rebaseline the turn to this
+  // sighting (no reward) and join it now, so join order lists it as the newest.
+  if (wasCompact) {
+    h.lastTurn = Number(o.turn) || 0;
+    h.joined = t;
+  }
   // Its old name may have been given to a present namesake meanwhile.
   if (nameTaken(slots, h.name)) h.name = freeName(slots, lookOf(h.id).name);
   takeName(slots, h.name);
@@ -418,10 +429,17 @@ export function observe(state, ctx, action, t, ev) {
     const byAddr = Object.create(null);
     const ids = new Array(list.length);
     const claim = Object.create(null); // id → list index that holds it in this observation
+    let keys = null;
+    const byKeyPresent = () => {
+      if (keys) return keys;
+      keys = Object.create(null);
+      for (const x of before) keys[`${x.addr}#${Number(x.created) || 0}`] = x.id;
+      return keys;
+    };
     for (let i = 0; i < list.length; i++) {
       const o = list[i];
       if (!o || typeof o !== "object") continue;
-      ids[i] = claimId(hs, claim, list, o, i);
+      ids[i] = claimId(hs, claim, list, o, i, byKeyPresent);
       byAddr[String(o.addr)] = i;
     }
     const seen = Object.create(null);
@@ -439,7 +457,7 @@ export function observe(state, ctx, action, t, ev) {
       } else {
         // a stale observation replayed after a newer one (or after the agent left)
         if (h.gone ? t < h.missingSince : t < h.lastSeen) continue;
-        if (h.gone) rejoin(h, o, names());
+        if (h.gone) rejoin(h, o, names(), t);
         const turn = Number(o.turn) || 0;
         if (turn > h.lastTurn) {
           h.lastTurn = turn;
@@ -488,21 +506,46 @@ export function observe(state, ctx, action, t, ev) {
 }
 
 /**
- * The id list entry `i` takes: its plain id, unless that id is held by a
- * different terminal (an earlier entry of this list, or a present helper with
- * another address or created_ms), when it takes the first free salted id (R6).
- * The same terminal always resolves to the same id. undefined = no id (a
- * duplicate of an earlier entry, or no free salt).
+ * The id list entry `i` takes (R6). A terminal already present keeps the id it
+ * holds, plain or salted, whatever else came or went. Otherwise it takes its
+ * plain id, unless that id is held by a different terminal (an earlier entry of
+ * this list, or a present helper with another address or created_ms), when it
+ * takes the first free salted id. A returning terminal whose plain id belongs
+ * to a gone record first looks for its own salted Album record (`salt`). The
+ * same terminal always resolves to the same id. undefined = no id (a duplicate
+ * of an earlier entry, or no free salt).
  */
-function claimId(hs, claim, list, o, i) {
+function claimId(hs, claim, list, o, i, present) {
   const addr = String(o.addr);
   const created = Number(o.created) || 0;
+  const same = (j) => String(list[j].addr) === addr && (Number(list[j].created) || 0) === created;
+  const held = present()[`${addr}#${created}`];
+  if (held !== undefined) {
+    const j = claim[held];
+    if (j === undefined) {
+      claim[held] = i;
+      return held;
+    }
+    if (same(j)) return held;
+  }
   let id = helperId(addr, created);
+  const plain = hs[id];
+  if (plain && plain.gone) {
+    // Salted ids are taken in order, so the probe stops at the first unused one.
+    for (let k = 1; k <= 16; k++) {
+      const sid = saltedId(addr, created, k);
+      const r = hs[sid];
+      if (!r) break;
+      if (r.gone && r.salt === k && claim[sid] === undefined) {
+        claim[sid] = i;
+        return sid;
+      }
+    }
+  }
   for (let k = 1; k <= 16; k++) {
     const j = claim[id];
     if (j !== undefined) {
-      const p = list[j];
-      if (String(p.addr) === addr && (Number(p.created) || 0) === created) return id; // the same terminal twice
+      if (same(j)) return id; // the same terminal twice
     } else {
       const h = hs[id];
       if (!h || h.gone || (h.addr === addr && h.created === created)) {
@@ -513,6 +556,15 @@ function claimId(hs, claim, list, o, i) {
     id = saltedId(addr, created, k);
   }
   return undefined;
+}
+
+/** The salt attempt k ≥ 1 behind a present helper's id, or 0 for a plain id (or unknown). */
+function saltOf(h) {
+  if (typeof h.addr !== "string" || h.addr === "") return 0;
+  const created = Number(h.created) || 0;
+  if (helperId(h.addr, created) === h.id) return 0;
+  for (let k = 1; k <= 16; k++) if (saltedId(h.addr, created, k) === h.id) return k;
+  return 0;
 }
 
 function resolveParent(h, o, list, ids, byAddr, byAddrPresent) {
@@ -563,8 +615,8 @@ export function prune(state, t) {
       if (typeof h.missingSince !== "number") continue;
       if (t - h.missingSince > K.kidAlbumMs) foldKid(state, h);
       else kids.push(h);
-    } else if (h.compact !== true) {
-      full.push(h);
+    } else if (h.compact !== true && !(h.salt > 0)) {
+      full.push(h); // a salted record keeps its `salt` (R6), so it is never compacted
     }
   }
   if (kids.length > K.kidAlbumKeep) {
@@ -573,8 +625,11 @@ export function prune(state, t) {
   }
   if (full.length > K.albumKeep) {
     full.sort(byLeft);
-    for (let i = 0, n = full.length - K.albumKeep; i < n; i++) compactRecord(full[i]);
-    rosterChanged(state);
+    // Oldest first; a record that cannot be packed (not an engine-made id) stays whole.
+    let excess = full.length - K.albumKeep;
+    const n0 = excess;
+    for (let i = 0; i < full.length && excess > 0; i++) if (compactRecord(full[i])) excess--;
+    if (excess !== n0) rosterChanged(state);
   }
   for (const w in state.writersSeen) {
     if (t - state.writersSeen[w] > K.writerPruneMs) {

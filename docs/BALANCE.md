@@ -157,7 +157,7 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P1 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 9.1 / 28.1 / 37.6 % |
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
-| P9 | ≥ 0.5 % | ≥ 0.5 % | ≥ 2 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
+| P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
 
@@ -225,7 +225,7 @@ and this file together.
 | Order | Knob (DESIGN ref) | Current value | Moves mostly |
 |---|---|---|---|
 | 1 | prestige scale `Lw` (§9) | 6e6 | M15 for every profile |
-| 2 | bench-pace exponent (§5.3) | 0.07, knee 4 | P5–P7 relative to P1 |
+| 2 | bench-pace exponent (§5.3) | 0.07, knee 4 | P5–P7 relative to P1; every `crowd(N)` payout |
 | 3 | Echo levels (§7.3) | 0.03 base; 0.06 / 0.10 / 0.18 / 0.28 / 0.40 | click share, P2 gap |
 | 4 | chain payouts (§4.4) | 2·Vc per node, 3·k·Vc finish | click share, P8, P11 |
 | 5 | away factor (§10.2) | 0.25 / 0.35 / 0.45 | away share, P9 |
@@ -235,6 +235,14 @@ and this file together.
 Knob 2 was 0.15 while the bench pace scaled the whole sum of `b_i`. Making it marginal (DESIGN
 §5.3, inv. 6) stopped fresh agents diluting warm ones, which sped up P6 and P7 (first wish medians
 12:30 and 10:32 at 0.15); 0.07 puts them back inside their windows (12:42 and 11:21).
+
+The exponent sets `crowd(N)` everywhere it is used, not only in `Hs0`: Bundle envelopes and the
+overflow conversion (`45 · Rp · crowd(N) · units`, DESIGN §6.1), Elsewhere helpers' credit
+(`Hstale`, §12.5) and away gathering (§10.2). Against 0.15 they pay the same up to the knee and
+less above it: about 5 % less at 8 agents (`crowd(8)` 0.525 instead of 0.555), 15 % less at 30
+(0.154 instead of 0.180) and 20 % less at 64 (0.076 instead of 0.095). The simulator rows already
+include this (bundles and away time are part of every profile), so no other knob moved; a profile
+that leans on bundles or away time at 30+ agents is the first place to look if knob 2 changes again.
 
 The calibration prototype was a throwaway script outside the repository; it is not a reference.
 The shipped simulator is.

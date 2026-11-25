@@ -100,6 +100,7 @@ const CHECKS = {
   away: (r) => r.vm.away && r.vm.away.kind === "away",
   busy: (r) => r.vm.away && r.vm.away.kind === "busy",
   narrow: (r) => r.vm.sheet.short === true,
+  "narrow-files": (r) => r.vm.sheet.short === true,
   short: (r) => r.vm.sheet.short === true,
   calm: (r) => r.vm.calm === true,
   "rail-banner": (r) => r.vm.rail.save !== null,

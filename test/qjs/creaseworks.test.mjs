@@ -386,17 +386,27 @@ test.after(() => {
 
 // ---------------------------------------------------------------------------
 // Months of agent churn (DESIGN R13, review r1-02): the Album is compacted, so
-// the save stays far below herdr's 1 MiB write limit and loading it and every
-// save cycle stay inside the 500 ms callback budget. 280 days of 20 agents a
-// day (3 fledglings each) is 5,600 lifetime pane helpers; the full-year size
-// bound is asserted in Node (test/pacing/invariants.test.mjs, inv. 7). Past
-// about 6,000 compacted records this wasm harness fails to free its runtime on
-// dispose even though every step stays in budget (a harness limit, like the
-// one save-backlog.test.mjs notes), so the QuickJS run stops short of a year.
+// the save stays far below herdr's 1 MiB write limit, and loading it and every
+// save cycle stay inside the 500 ms callback budget. Each run gets its own wasm
+// instance (a fresh import of the harness), so its outcome does not depend on
+// what the earlier tests of this file left in the shared wasm heap.
+//
+// OPEN RISK (DESIGN R13): with a save of about 300 KiB this wasm QuickJS-ng
+// build (0.12.1, quickjs-emscripten 0.32) can fail to free its runtime on
+// dispose (`list_empty(&rt->gc_obj_list)` in JS_FreeRuntime) after the first
+// save cycle, although every step is in budget and the game is correct. It is
+// not in the engine: a copy of the mod whose save cycle only writes two
+// 450,000-character "x"/"y".repeat() strings to a mock file (the second a
+// compare-and-swap against the first), with a 280-day save loaded, fails the
+// same way, and one without the save cycle frees cleanly. It depends on the heap's history, not on size alone: the
+// same 280-day save passes in a fresh wasm instance and fails after this
+// file's other tests. herdr runs a different QuickJS build (longbridge
+// quickjs-jit), which cannot be checked here. So the strict run below uses
+// 120 days (a 187 KiB save, well under where the failure was seen); the
+// year-size run asserts the budgets and reports the teardown as a todo.
 
-const DAYS = 280;
-
-test("a save after 280 days of 20 agents a day loads and saves within budget (Album compaction, R13)", { timeout: 120000 }, async () => {
+/** The save text after `days` days of 20 agents a day (3 fledglings each), and the pane helper count. */
+async function churnSave(days) {
   const engine = await import("../../mods/creaseworks/engine/index.js");
   const T0 = Date.UTC(2026, 10, 25, 9);
   const s = engine.newGame({ seed: 5, now: T0, day: "2026-11-25" });
@@ -406,7 +416,7 @@ test("a save after 280 days of 20 agents a day loads and saves within budget (Al
   const ag = (i, extra = {}) => ({ addr: `w1:t${i}`, created: T0 + i * 997, status: "working", raw: "working", turn: 0, parent: null, pane: `p${i}`, title: "claude · refactor the payment module", paneName: "", space: "main", tab: "1", kind: "pane", ...extra });
   let t = T0;
   let n = 0;
-  for (let d = 0; d < DAYS; d++) {
+  for (let d = 0; d < days; d++) {
     const list = [];
     for (let k = 0; k < 20; k++) {
       const i = n++;
@@ -420,15 +430,26 @@ test("a save after 280 days of 20 agents a day loads and saves within budget (Al
     t = T0 + (d + 1) * 86400000;
     engine.advance(s, t);
   }
-  const text = engine.serialize(s);
+  return { engine, text: engine.serialize(s), clock: s.clock, n };
+}
+
+/**
+ * Loads the churned save in a fresh harness (its own wasm instance) with 30
+ * live agents, plays 40 s (save cycles included) and checks every step and the
+ * written save. Returns the slowest step and the dispose error, if any.
+ */
+async function churnRun(days, tag) {
+  const { engine, text, clock, n } = await churnSave(days);
   assert.ok(text.length < 512 * 1024, `${text.length} bytes`);
-  const now = s.clock + 1000;
+  const { createHost: freshHost } = await import(`../../tools/qjs/harness.mjs?${tag}`);
+  const now = clock + 1000;
   const live = roster(30);
   for (const term of live.terminals) term.created_ms = now - 5000 + term.created_ms;
-  const host = await createHost({
+  const host = await freshHost({
     modRoot: MOD,
     scenario: { ...scenario(0), ...live, now, files: { [SAVE]: text } },
   });
+  let slowest;
   try {
     const load = await host.load();
     const steps = [load.ms.init];
@@ -444,8 +465,36 @@ test("a save after 280 days of 20 agents a day loads and saves within budget (Al
     const back = engine.parseSave(disk);
     assert.equal(back.ok, true);
     assert.equal(Object.values(back.state.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
-    log(`qjs ${DAYS}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; slowest step ${f1(Math.max(...steps))} ms`);
-  } finally {
-    host.dispose();
+    slowest = Math.max(...steps);
+    log(`qjs ${days}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; slowest step ${f1(slowest)} ms`);
+  } catch (e) {
+    try {
+      host.dispose();
+    } catch {
+      // the assertion above is the failure to report
+    }
+    throw e;
   }
+  let leak = null;
+  try {
+    host.dispose();
+  } catch (e) {
+    leak = e;
+  }
+  return { slowest, leak };
+}
+
+test("a save after 120 days of 20 agents a day loads, saves within budget and frees cleanly (Album compaction, R13)", { timeout: 120000 }, async () => {
+  const { leak } = await churnRun(120, "churn120");
+  if (leak) throw leak;
+});
+
+let yearLeak = null;
+
+test("a save after a year of 20 agents a day loads and saves within budget (Album compaction, R13)", { timeout: 180000 }, async () => {
+  ({ leak: yearLeak } = await churnRun(365, "churn365"));
+});
+
+test("the QuickJS runtime frees cleanly after the year-size save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
+  if (yearLeak) throw yearLeak;
 });

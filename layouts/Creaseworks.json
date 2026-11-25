@@ -107,7 +107,7 @@
             {
               "id": "main",
               "type": "block",
-              "min": 360,
+              "min": 80,
               "content": {
                 "tab": "active",
                 "pane": {

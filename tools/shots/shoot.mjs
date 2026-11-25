@@ -24,7 +24,7 @@
 // `setup(view, tools)` when given, settles ready host calls, renders, maps the
 // tree to HTML (tools/render/html.mjs) and screenshots it with Playwright
 // chromium to <out>/<view>-<theme>.png. Then whole windows (tools/render/window.mjs)
-// at 1440x900 and 1100x700 in every theme, at each zoom, and four states of the
+// at 1440x900 and 1100x700 (and 1920x1080 expanded) in every theme, at each zoom, and four states of the
 // game's layout (expanded; panel folded to its 64 px rail; panel hidden; herdr's
 // Files panel open): <out>/window-<w>x<h>[-<state>]-<theme>[-z<zoom>].png. A
 // window's game blocks are copies of the View sharing ONE mock herdr window (as
@@ -60,6 +60,7 @@ import { agents, theme as herdrTheme, settings } from "../mock/herdr.js";
 import { renderToHtml, renderDocument } from "../render/html.mjs";
 import { renderWindow, MAIN_LAYOUT, THEMES, REPO_ROOT, loadGame, contentNodes, parseLayout, layoutBoxes } from "../render/window.mjs";
 import { buildContactSheet, loadPlaywright, launchBrowser } from "./contact-sheet.mjs";
+import { RAIL_WEIGHT } from "../layout/build.mjs";
 
 /** Every theme the mock knows (tools/mock/themes.json), with its appearance. */
 export const THEME_LIST = Object.freeze(
@@ -73,7 +74,8 @@ export const PRIMARY_THEMES = Object.freeze(["graphite", "paper"]);
  */
 export const WINDOW_STATES = Object.freeze([
   { name: "", label: "expanded", edit: () => {} },
-  { name: "folded", label: "panel folded to the rail", edit: (l, g) => { const n = findNode(l, g.panel); if (n) n.size = { px: 64 }; } },
+  // What creaseworks.fold runs: the rail weight, held at the panel's 64 px min (ARCHITECTURE B15).
+  { name: "folded", label: "panel folded to the rail", edit: (l, g) => { const n = findNode(l, g.panel); if (n) n.size = { weight: RAIL_WEIGHT }; } },
   { name: "hidden", label: "panel hidden", edit: (l, g) => { const n = findNode(l, g.panel); if (n) n.hidden = true; } },
   { name: "files", label: "Files panel open", edit: (l) => { const n = findNode(l, "panel"); if (n) n.hidden = false; } },
 ]);
@@ -87,9 +89,14 @@ function findNode(node, id) {
   }
   return null;
 }
+/**
+ * Whole-window sizes; `states` (names in WINDOW_STATES) limits a size to those.
+ * 1920 x 1080 shows the game panel Wide and past 440 px (456; B15: no max).
+ */
 export const WINDOW_SIZES = Object.freeze([
   { width: 1440, height: 900 },
   { width: 1100, height: 700 },
+  { width: 1920, height: 1080, states: Object.freeze([""]) },
 ]);
 export const DEFAULT_OUT = resolve(REPO_ROOT, "tools/out/shots");
 const PREVIEW_LIMIT = 1.5 * 1024 * 1024;
@@ -591,6 +598,7 @@ export async function shoot(options = {}) {
       for (const zoom of zooms) {
         for (const size of WINDOW_SIZES) {
           for (const state of states) {
+            if (size.states && !size.states.includes(state.name)) continue;
             for (const { name: themeName } of themes) {
               const name = `window-${size.width}x${size.height}${state.name ? `-${state.name}` : ""}-${themeName}${zoom === 1 ? "" : `-z${zoom}`}`;
               await shot(name, size.width, size.height, (warnings) => windowDocument(target, themeName, size, warnings, state, zoom));

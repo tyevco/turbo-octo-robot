@@ -1107,5 +1107,6 @@ export function saveInfo(slot, t) {
     lastGood: S.savedAt !== null ? localTime(S.savedAt) : null,
     backup,
     damaged: S.damaged.slice(-DAMAGED_MAX),
+    shared: !!slot.paths.shared,
   };
 }

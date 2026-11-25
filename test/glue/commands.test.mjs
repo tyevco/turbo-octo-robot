@@ -2,18 +2,19 @@
 // liveness before any run, pane.focus {pane} / {terminal} or terminal.peek
 // {terminal}, never agent.focus, check-ins, group keys that cycle, each
 // command acting once across the panel and the ribbon, fold via
-// layout.resize / layout.show (rail {px: 64}, unfolded panel a {weight} that
-// gives way in a narrow window or at zoom: ARCHITECTURE B15) with the last
-// weight remembered, and the envelope command.
+// layout.resize / layout.show (rail and unfolded panel both {weight}s that
+// give way in a narrow window or at zoom, and that a drag keeps as weights:
+// ARCHITECTURE B15) with the last weight share remembered, and the envelope
+// command.
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { win, agent, term } from "./_util.mjs";
-import { layoutInfo, DEFAULT_PANEL_WEIGHT, RAIL_PX } from "../../mods/creaseworks/glue/commands.js";
-import { applyLayoutCommand } from "../../tools/mock/commands.js";
+import { layoutInfo, filesEstimate, DEFAULT_PANEL_WEIGHT, RAIL_WEIGHT, FILES_PX_FALLBACK } from "../../mods/creaseworks/glue/commands.js";
+import { applyLayoutCommand, applyDrag } from "../../tools/mock/commands.js";
 import { layoutBoxes } from "../../tools/render/window.mjs";
-import { PANEL_WEIGHT } from "../../tools/layout/build.mjs";
+import { PANEL_WEIGHT, RAIL_WEIGHT as BUILD_RAIL_WEIGHT, MAIN_MIN } from "../../tools/layout/build.mjs";
 
 const SHIPPED = JSON.parse(readFileSync(new URL("../../layouts/Creaseworks.json", import.meta.url), "utf8"));
 
@@ -61,6 +62,11 @@ test("layout() is read tolerantly", () => {
   assert.equal(layoutInfo(LAYOUT({ panelSize: { px: 64 } })).panelWeight, null);
   assert.equal(layoutInfo(SHIPPED).panelWeight, DEFAULT_PANEL_WEIGHT, "the layout's own weight");
   assert.equal(PANEL_WEIGHT, DEFAULT_PANEL_WEIGHT, "tools/layout/build.mjs and glue/commands.js agree");
+  assert.equal(BUILD_RAIL_WEIGHT, RAIL_WEIGHT);
+  assert.equal(i.mainWeight, 1, "main has no size: herdr's weight 1");
+  assert.equal(i.filesWeight, null, "a px Files column");
+  const shipped = layoutInfo(SHIPPED);
+  assert.deepEqual([shipped.filesWeight, shipped.filesMin, shipped.filesMax, shipped.filesPx], [0.66, 280, 900, FILES_PX_FALLBACK]);
   assert.equal(layoutInfo({ id: "root", children: [] }).ribbonHidden, true, "a missing node is hidden");
 });
 
@@ -74,6 +80,18 @@ test("openHelper: pane.focus {pane} for pane helpers, terminal.peek for paneless
   assert.equal(w.ctl.runErrors().length, 0, "the window accepts both");
   assert.equal(byAddr(w.slot, "t1").stats.checkIns, 1, "a needs-you click is a check-in");
   assert.equal(runsOf(w.ctl, "agent.focus").length, 0);
+});
+
+test("the answer key reaches a waiting paneless fledgling through terminal.peek (r1-14)", async () => {
+  const { panel } = await game({
+    agents: [agent(1, "working")],
+    terminals: [term(1, "working"), { address: "k1", status: "blocked", parent: "t1", created_ms: 7 }],
+  });
+  const k1 = byAddr(w.slot, "k1");
+  assert.equal(k1.status, "blocked");
+  await w.handler(panel, "openHelper", "needs");
+  assert.deepEqual(runsOf(w.ctl, "terminal.peek").map((r) => r.args), [{ terminal: "k1" }]);
+  assert.equal(runsOf(w.ctl, "pane.focus").length, 0);
 });
 
 test("openHelper: liveness first — a gone agent says so and runs nothing", async () => {
@@ -95,10 +113,10 @@ test("openHelper: liveness first — a gone agent says so and runs nothing", asy
 
 test("group keys pick the longest waiting and cycle on repeat; answer with nobody waiting", async () => {
   const { panel } = await game();
-  await w.handler(panel, "openHelper", "needs");
-  await w.handler(panel, "openHelper", "needs");
-  await w.handler(panel, "openHelper", "needs");
-  assert.deepEqual(runsOf(w.ctl, "pane.focus").map((r) => r.args.pane), ["p1", "p2", "p1"]);
+  // The waiting fledgling k1 (no pane) is in the cycle too, opened with terminal.peek.
+  for (let i = 0; i < 4; i++) await w.handler(panel, "openHelper", "needs");
+  const opened = w.ctl.runs.map((r) => r.args.pane ?? r.args.terminal);
+  assert.deepEqual(opened, ["p1", "p2", "k1", "p1"]);
   await w.handler(panel, "openHelper", "finished");
   assert.deepEqual(runsOf(w.ctl, "pane.focus").at(-1).args, { pane: "p3" });
   w.ctl.setAgents([agent(3, "idle")]);
@@ -129,10 +147,25 @@ test("each command acts once: the ribbon handles it; the panel only while the ri
   assert.equal(runsOf(w.ctl, "pane.focus").length, 2);
   w.ctl.sendCommand("answer");
   await w.flush();
-  assert.equal(runsOf(w.ctl, "pane.focus").length, 3);
+  // the third waiting helper is the paneless fledgling k1
+  assert.equal(runsOf(w.ctl, "pane.focus").length + runsOf(w.ctl, "terminal.peek").length, 3);
 });
 
-test("fold: layout.resize to a 64 px rail and back to the last weight (never px); a hidden panel is shown first", async () => {
+test("filesEstimate: a weight Files column's real width from the panel's measured width", () => {
+  const tree = JSON.parse(JSON.stringify(SHIPPED));
+  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  const info = layoutInfo(tree);
+  for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
+    const b = layoutBoxes(tree, { width, height });
+    const est = filesEstimate(info, b["cw-panel"].width);
+    assert.ok(Math.abs(est - b.panel.width) <= 1, `${width}: estimate ${est}, Files ${b.panel.width}`);
+  }
+  assert.equal(filesEstimate(info, 64), FILES_PX_FALLBACK, "a folded panel says nothing about Files");
+  assert.equal(filesEstimate(layoutInfo(LAYOUT({ files: true })), 300), 368, "a px Files column is its px");
+  assert.equal(filesEstimate(layoutInfo(null), 300), FILES_PX_FALLBACK);
+});
+
+test("fold: layout.resize to the rail weight and back to the last weight (never px); a hidden panel is shown first", async () => {
   // The player dragged the panel narrower: herdr stores the new weight (src/window.rs drag_to).
   const { panel, ribbon } = await game({ layout: LAYOUT({ panelSize: { weight: 0.3 } }) });
   await w.handler(panel, "click", "sheet", null, null); // nothing to do with folding
@@ -140,17 +173,17 @@ test("fold: layout.resize to a 64 px rail and back to the last weight (never px)
   w.ctl.sendCommand("fold");
   w.ctl.sendCommand("fold");
   await w.flush();
-  assert.deepEqual(runsOf(w.ctl, "layout.resize").map((r) => r.args), [{ id: "cw-panel", px: RAIL_PX }]);
-  w.ctl.layoutValue = LAYOUT({ panelSize: { px: 64 } });
+  assert.deepEqual(runsOf(w.ctl, "layout.resize").map((r) => r.args), [{ id: "cw-panel", weight: RAIL_WEIGHT }]);
+  w.ctl.layoutValue = LAYOUT({ panelSize: { weight: RAIL_WEIGHT } });
   await w.advance(1000);
   w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: 64, height: 784 }, cx));
   await w.handler(ribbon, "fold");
   assert.deepEqual(runsOf(w.ctl, "layout.resize").at(-1).args, { id: "cw-panel", weight: 0.3 }, "the last unfolded weight");
-  w.ctl.layoutValue = LAYOUT({ panelHidden: true, panelSize: { px: 64 } });
+  w.ctl.layoutValue = LAYOUT({ panelHidden: true, panelSize: { weight: RAIL_WEIGHT } });
   await w.advance(1000);
   await w.handler(ribbon, "fold");
   assert.deepEqual(w.ctl.runs.slice(-2).map((r) => [r.name, r.args]), [["layout.show", { id: "cw-panel" }], ["layout.resize", { id: "cw-panel", weight: 0.3 }]]);
-  for (const r of runsOf(w.ctl, "layout.resize")) assert.ok(r.args.px === RAIL_PX || !("px" in r.args), `only the rail is px: ${JSON.stringify(r.args)}`);
+  for (const r of runsOf(w.ctl, "layout.resize")) assert.ok(!("px" in r.args) && typeof r.args.weight === "number", `never px: ${JSON.stringify(r.args)}`);
   assert.equal(w.ctl.runErrors().length, 0);
 });
 
@@ -162,10 +195,10 @@ test("unfold with nothing remembered: the layout's own weight, even from a px-si
   assert.equal(w.ctl.runErrors().length, 0);
 });
 
-test("the panel a fold/unfold leaves stays on screen with the terminals at 360 (herdr's geometry)", async () => {
+test("the panel a fold/unfold leaves stays on screen, Files open, zoom 1 and 1.5 (herdr's geometry)", async () => {
   // The real layout with Files open (r1-32): the copies fold, unfold, hide and show
   // it; every layout.* they run is applied the way herdr's window applies it, then
-  // laid out with herdr's shares() at 1100 x 700, and at zoom 1.5.
+  // laid out with herdr's shares() at 1100 x 700 and 1440 x 900, zoom 1 and 1.5.
   const tree = JSON.parse(JSON.stringify(SHIPPED));
   applyLayoutCommand(tree, "layout.show", { id: "panel" });
   const { panel, ribbon } = await game({ layout: tree });
@@ -180,17 +213,14 @@ test("the panel a fold/unfold leaves stays on screen with the terminals at 360 (
     w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: width ?? Math.round(b["cw-panel"].inner.width), height: 584 }, cx));
   };
   const check = (label) => {
-    for (const [size, zoom] of [[[1100, 700], 1], [[1440, 900], 1], [[1100, 700], 1.5]]) {
-      const files = zoom === 1;
-      const l = JSON.parse(JSON.stringify(tree));
-      if (!files) applyLayoutCommand(l, "layout.hide", { id: "panel" }); // at zoom 1.5 Files alone needs 540 + 420 of 661 px
-      const b = layoutBoxes(l, { width: size[0], height: size[1], zoom });
+    for (const [size, zoom] of [[[1100, 700], 1], [[1440, 900], 1], [[1100, 700], 1.5], [[1440, 900], 1.5]]) {
+      const b = layoutBoxes(tree, { width: size[0], height: size[1], zoom });
       const p = b["cw-panel"];
       const at = `${label} at ${size.join("x")} zoom ${zoom}`;
       assert.ok(p.width >= 64 * zoom - 0.01, `${at}: panel ${p.width}`);
       assert.ok(Math.abs(p.visible.width - p.width) < 0.5, `${at}: panel ${p.width} px, ${p.visible.width} on screen`);
-      assert.ok(b.main.width >= 360 * zoom - 0.01, `${at}: terminals ${b.main.width}`);
-      if (files) assert.ok(b.panel.visible.width >= 280 - 0.01, `${at}: Files ${b.panel.visible.width}`);
+      assert.ok(b.main.width >= (zoom === 1 ? 360 : MAIN_MIN * zoom) - 0.01, `${at}: terminals ${b.main.width}`);
+      assert.ok(b.panel.width >= 280 * zoom - 0.01 && Math.abs(b.panel.visible.width - b.panel.width) < 0.5, `${at}: Files ${b.panel.visible.width} of ${b.panel.width}`);
     }
   };
   await sync();
@@ -207,8 +237,61 @@ test("the panel a fold/unfold leaves stays on screen with the terminals at 360 (
   await sync();
   check("shown again");
   assert.deepEqual(runsOf(w.ctl, "layout.resize").map((r) => r.args), [
-    { id: "cw-panel", px: RAIL_PX }, { id: "cw-panel", weight: DEFAULT_PANEL_WEIGHT }, { id: "cw-panel", weight: DEFAULT_PANEL_WEIGHT },
+    { id: "cw-panel", weight: RAIL_WEIGHT }, { id: "cw-panel", weight: DEFAULT_PANEL_WEIGHT }, { id: "cw-panel", weight: DEFAULT_PANEL_WEIGHT },
   ]);
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("dragging the rail open keeps weights (drag_to); the dragged width is remembered and stays on screen", async () => {
+  // herdr's drag_to keeps a {px} side as px, so a px rail dragged open would never
+  // shrink again. The rail is a weight: the drag stores two weights.
+  const tree = JSON.parse(JSON.stringify(SHIPPED));
+  const { panel, ribbon } = await game({ layout: tree });
+  let applied = 0;
+  const sync = async () => {
+    for (const r of w.ctl.runs.slice(applied)) if (r.name.startsWith("layout.")) assert.equal(applyLayoutCommand(tree, r.name, r.args), null, r.name);
+    applied = w.ctl.runs.length;
+    w.ctl.layoutValue = JSON.parse(JSON.stringify(tree));
+    await w.advance(1000);
+    const b = layoutBoxes(tree, { width: 1440, height: 900 });
+    w.ctl.within("event", panel, (cx) => panel.session.onSize({ width: Math.round(b["cw-panel"].inner.width), height: 784 }, cx));
+    await w.advance(1000);
+    return b;
+  };
+  await sync();
+  await w.handler(ribbon, "fold");
+  let b = await sync();
+  assert.equal(Math.round(b["cw-panel"].width), 64, "folded: the rail");
+  // The player drags the divider between main and the rail 236 px to the left.
+  const drag = { la: b.main.width, lb: b["cw-panel"].width, start: b.main.x, p: b.main.x + b.main.width - 236 };
+  assert.equal(applyDrag(tree, "work-body", 0, drag), null);
+  const cw = tree.children[1].children[1].children.find((n) => n.id === "cw-panel");
+  assert.equal(typeof cw.size.weight, "number", `still a weight: ${JSON.stringify(cw.size)}`);
+  b = await sync();
+  assert.ok(Math.abs(b["cw-panel"].width - 300) < 1, `dragged to ${b["cw-panel"].width}`);
+  const main = tree.children[1].children[1].children.find((n) => n.id === "main");
+  const share = Math.round((cw.size.weight / main.size.weight) * 1000) / 1000;
+  assert.equal(w.slot.widths.lastWeight, share, "remembered as a share of main's weight");
+  // Fold and unfold: back to the dragged width.
+  await w.handler(ribbon, "fold");
+  await sync();
+  await w.handler(ribbon, "fold");
+  b = await sync();
+  assert.ok(Math.abs(b["cw-panel"].width - 300) < 2, `unfolded to ${b["cw-panel"].width}`);
+  // The dragged panel still gives way: a narrow window or zoom 1.5 with Files open keeps it on screen.
+  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  for (const [width, height, zoom] of [[1100, 700, 1], [1100, 700, 1.5]]) {
+    const z = layoutBoxes(tree, { width, height, zoom })["cw-panel"];
+    assert.ok(Math.abs(z.visible.width - z.width) < 0.5 && z.width >= 64 * zoom - 0.01, `${width} zoom ${zoom}: ${z.visible.width} of ${z.width}`);
+  }
+  // A layout reset puts main back to weight 1: the share keeps the dragged proportion.
+  delete main.size;
+  applyLayoutCommand(tree, "layout.hide", { id: "panel" });
+  await w.handler(ribbon, "fold");
+  await sync();
+  await w.handler(ribbon, "fold");
+  b = await sync();
+  assert.ok(Math.abs(b["cw-panel"].width - 300) < 2, `after a reset of main: ${b["cw-panel"].width}`);
   assert.equal(w.ctl.runErrors().length, 0);
 });
 

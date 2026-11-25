@@ -92,7 +92,9 @@ export function newGame({ seed = 1, now = 0, day = "1970-01-01" } = {}) {
     envelopes: makeMap(),
     // highWater: the latest wall time this save has counted (§10.1): after a
     // clock-back, the stretch up to it is never credited a second time.
-    away: { pot: null, capUsedMs: 0, lastLiveAt: now, lastSegmentEnd: null, last: null, busy: { since: now, folds: 0, tasks: 0 }, highWater: now },
+    // skipLeft: how much of a real-looking absence below the mark may still be
+    // skipped (the clock-backs seen, capped at the 8 h away cap; away.js).
+    away: { pot: null, capUsedMs: 0, lastLiveAt: now, lastSegmentEnd: null, last: null, busy: { since: now, folds: 0, tasks: 0 }, highWater: now, skipLeft: 0 },
     notices: [],
     notify: { day, sent: 0, firedFull: false, pileSince: null, pileDay: null, saveEpisode: null },
     garlands: [],

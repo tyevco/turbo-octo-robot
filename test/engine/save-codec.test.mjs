@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "./_util.mjs";
+import { SAVE_VERSION } from "../../mods/creaseworks/engine/save-codec.js";
 
 function played() {
   const s = seeded(21);
@@ -19,7 +20,8 @@ test("serialize: format, version, FNV-1a check over the canonical state; round t
   const text = engine.serialize(s);
   const doc = JSON.parse(text);
   assert.equal(doc.format, "creaseworks-save");
-  assert.equal(doc.version, engine.VERSION);
+  assert.equal(doc.version, SAVE_VERSION);
+  assert.equal(doc.state.version, engine.VERSION);
   assert.equal(doc.check, engine.fnv1a32(JSON.stringify(doc.state)));
   assert.match(doc.check, /^[0-9a-f]{8}$/);
   const back = engine.parseSave(text);
@@ -65,10 +67,30 @@ test("damaged inputs are reported, never thrown (A4, A12)", () => {
   assert.equal(engine.parseSave(JSON.stringify(doc2)).reason, "check");
 });
 
+test("the file format is 2 (packed Album entries): a format-1 build reads it as newer, never as damaged (R13)", () => {
+  // Builds before Album compaction compare the envelope version with their own
+  // VERSION (1): "newer" means read-only and never written, where "shape" would
+  // restore the backup and write it over this save (a rollback).
+  assert.equal(SAVE_VERSION, 2);
+  assert.ok(SAVE_VERSION > engine.VERSION);
+  const doc = JSON.parse(engine.serialize(played()));
+  assert.ok(doc.version > 1);
+  // a format-1 file (no packed entries, or one written while the format was still 1) still loads
+  const s = played();
+  const v1 = engine.serialize(s).replace(`"version":${SAVE_VERSION},`, '"version":1,');
+  const back = engine.parseSave(v1);
+  assert.equal(back.ok, true);
+  assert.equal(back.state.bank, s.bank);
+  // a format newer than this build's is read-only
+  const v3 = engine.serialize(s).replace(`"version":${SAVE_VERSION},`, `"version":${SAVE_VERSION + 1},`);
+  assert.equal(engine.parseSave(v3).reason, "newer");
+  assert.equal(engine.parseSave(v3).state.bank, s.bank);
+});
+
 test("a newer version is detected (state kept for read-only display); migrate() refuses it", () => {
   const s = played();
   const newer = { ...JSON.parse(engine.serialize(s)) };
-  newer.version = engine.VERSION + 1;
+  newer.version = SAVE_VERSION + 1;
   newer.state.version = engine.VERSION + 1;
   newer.check = engine.fnv1a32(JSON.stringify(newer.state));
   const r = engine.parseSave(JSON.stringify(newer));
@@ -243,14 +265,23 @@ test("a compacted helper whose agent returns rejoins with its name and stats; it
   }
   assert.equal(s.helpers[id].compact, true);
   assert.equal(s.helpers[id].stats.tasks, 1);
+  // what compaction gives up (DESIGN R13): the stored rest boost, this run's share, the join time
+  assert.equal(s.helpers[id].rest, 0);
+  assert.equal(s.helpers[id].stats.run, 0);
+  assert.equal(s.helpers[id].joined, 0);
   const units = s.stats.units.created;
-  me.act(observeAction((t += 1000), [{ ...first, turn: 9, status: "working" }]));
+  me.act(observeAction((t += 1000), [agent(500), { ...first, turn: 9, status: "working" }]));
   const h = s.helpers[id];
   assert.equal(h.gone, false);
   assert.equal(h.compact, undefined);
   assert.equal(h.name, name);
   assert.equal(h.stats.tasks, 1);
   assert.equal(h.lastTurn, 9);
+  // it rejoins as the newest in join order, not ahead of every present helper
+  assert.equal(h.joined, t);
+  const present = Object.values(s.helpers).filter((x) => !x.gone);
+  assert.equal(present.length, 2);
+  assert.ok(present.every((x) => x.joined <= h.joined));
   assert.equal(s.stats.units.created, units, "no reward for the turns it did while compacted");
   me.act(observeAction((t += 61000), [{ ...first, turn: 10, status: "idle" }]));
   assert.equal(h.stats.tasks, 2);
@@ -284,4 +315,47 @@ test("a compact record changed after compaction is saved whole; a malformed pack
     const forged = `{"format":"creaseworks-save","version":${engine.VERSION},"check":"${engine.fnv1a32(body)}","state":${body}}`;
     assert.equal(engine.parseSave(forged).reason, "shape", JSON.stringify(bad));
   }
+});
+
+test("compaction skips a gone record whose id is not an engine id (legacy or hand-edited save): it stays whole (R13)", () => {
+  const s = seeded(44);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  let t = T0;
+  for (let k = 0; k < K.albumKeep; k++) {
+    me.act(observeAction((t += 1000), [agent(100 + k)]));
+    me.act(observeAction((t += 1000), []));
+  }
+  // re-key the three oldest Album records under ids validateState accepts but unpackAlbum does not
+  const doc = JSON.parse(engine.serialize(s));
+  const oldest = Object.values(doc.state.helpers).sort((a, b) => a.missingSince - b.missingSince).slice(0, 3);
+  const legacy = oldest.map((h, i) => {
+    delete doc.state.helpers[h.id];
+    h.id = `legacy-${i}`;
+    doc.state.helpers[h.id] = h;
+    return h;
+  });
+  const body = JSON.stringify(doc.state);
+  const loaded = engine.parseSave(`{"format":"creaseworks-save","version":${engine.VERSION},"check":"${engine.fnv1a32(body)}","state":${body}}`);
+  assert.equal(loaded.ok, true);
+  const st = loaded.state;
+  const me2 = writer(st, "wB");
+  for (let k = 0; k < 3; k++) {
+    me2.act(observeAction((t += 1000), [agent(900 + k)]));
+    me2.act(observeAction((t += 1000), []));
+  }
+  for (const h of legacy) {
+    const x = st.helpers[h.id];
+    assert.equal(x.compact, undefined, h.id);
+    assert.equal(x.id, h.id);
+    assert.equal(x.name, h.name);
+    assert.equal(x.stats.tasks, h.stats.tasks);
+  }
+  // the engine-made ones beyond albumKeep are still compacted, and everything round-trips
+  assert.equal(Object.values(st.helpers).filter((h) => h.compact).length, 3);
+  const text = engine.serialize(st);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
+  assert.equal(engine.view(st, st.clock, { writer: "wB" }).helpers.albumCount, K.albumKeep + 3);
 });

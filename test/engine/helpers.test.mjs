@@ -363,6 +363,55 @@ test("a 32-bit id clash between two present agents loses neither: the later one 
   assert.equal(back.state.helpers[salted].addr, `t${b}`);
 });
 
+test("a salted id is kept after the plain id's holder leaves, and each agent of a clashing pair rejoins its own record (R6)", () => {
+  const [a, b, created] = clashingPair();
+  const plain = engine.helperId(`t${a}`, created + a);
+  const salted = saltedId(`t${b}`, created + b, 1);
+  const ag = (i, status, turn = 0) => agent(i, status, turn, { created: created + i });
+  const s = seeded();
+  const me = writer(s);
+  let t = T0;
+  const obs = (list) => me.act(observeAction((t += 1000), list));
+  obs([ag(a, "working", 5), ag(b, "working", 0)]);
+  obs([ag(a, "idle", 6), ag(b, "working", 0)]);
+  const nameA = s.helpers[plain].name;
+  const nameB = s.helpers[salted].name;
+  obs([ag(b, "working", 1)]); // A leaves; B finishes a turn
+  obs([ag(b, "idle", 2)]); // and again: B must not take over A's Album record
+  assert.equal(Object.keys(s.helpers).length, 2);
+  assert.equal(s.helpers[plain].gone, true);
+  assert.equal(s.helpers[plain].name, nameA);
+  assert.equal(s.helpers[plain].stats.tasks, 1);
+  assert.equal(s.helpers[salted].gone, false);
+  assert.equal(s.helpers[salted].addr, `t${b}`);
+  assert.equal(s.helpers[salted].name, nameB);
+  assert.equal(s.helpers[salted].stats.tasks, 2);
+  assert.ok(s.envelopes[salted].units > 1, "both of B's turns fill B's envelope");
+  // both leave; the save keeps which Album record was salted
+  obs([]);
+  assert.equal(s.helpers[salted].salt, 1);
+  assert.equal(s.helpers[plain].salt, undefined);
+  const back = engine.parseSave(engine.serialize(s));
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[salted].salt, 1);
+  // B returns first (A's plain record is gone): it finds its own salted record
+  obs([ag(b, "working", 2)]);
+  assert.equal(s.helpers[salted].gone, false);
+  assert.equal(s.helpers[salted].stats.tasks, 2);
+  assert.equal(s.helpers[plain].gone, true);
+  // A returns next to it: its own plain record, not a new one
+  obs([ag(b, "working", 2), ag(a, "working", 6)]);
+  assert.equal(Object.keys(s.helpers).length, 2);
+  assert.equal(s.helpers[plain].gone, false);
+  assert.equal(s.helpers[plain].addr, `t${a}`);
+  assert.equal(s.helpers[plain].stats.tasks, 1);
+  // B's salted record is never compacted (it would lose `salt`)
+  obs([ag(a, "working", 6)]);
+  for (let i = 0; i < 260; i++) obs([ag(a, "working", 6), agent(20000 + i, "working")]);
+  assert.equal(s.helpers[salted].compact, undefined);
+  assert.equal(s.helpers[salted].salt, 1);
+});
+
 test("display names: a newcomer takes the smallest free number; a returning namesake is renamed only on a clash (§5.1)", () => {
   const ag = (i) => agent(i, "working", 0, { addr: `w1:t${i}` });
   const byName = Object.create(null);

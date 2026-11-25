@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { walk } from "../../tools/mock/gpui-kit.js";
 import { win, SAVE, BAK } from "../glue/_util.mjs";
 import { renderBanner, bannerLayout, detailsText, detailsHeight, DETAILS_H, KEPT_ROWS, BANNER_CLIP } from "../../mods/creaseworks/ui/banner.js";
-import { graphemes } from "../../mods/creaseworks/engine/index.js";
+import { graphemes, cellWidth } from "../../mods/creaseworks/engine/index.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -77,4 +77,17 @@ test("Details without kept files keeps the 3-row card; many kept files are clipp
   const emoji = { T, width: 200, save: { ...none.save, damaged: ["📄".repeat(200)] } };
   const e = detailsText(emoji);
   assert.ok(graphemes(e.kept).every((g) => g === "📄" || /^[ -~…]+$/.test(g)), "whole graphemes only");
+});
+
+test("Details rows fit the card's cell budget, so gpui's own truncation never cuts an emoji (r1-04)", () => {
+  const T = { raised: "#202020", border: "#303030", muted: "#909090", foreground: "#ffffff" };
+  for (const width of [146, 226, 320, 456]) {
+    const perLine = Math.max(8, Math.floor((width - 30) / 6.2));
+    const ctx = { T, width, save: { path: `/home/me/📁📁📁📁📁📁/herdr-app/data/creaseworks/${"🗂".repeat(12)}/save.json`, lastGood: "09:00", backup: "not updated (the disk is full, so 🙁 rotation waits)", damaged: [] } };
+    for (const line of detailsText(ctx).lines) {
+      assert.ok(cellWidth(line) <= perLine, `${width}: "${line}" fits ${perLine} cells`);
+      assert.ok(graphemes(line).every((g) => !/�/.test(g)), "whole clusters only");
+    }
+    assert.ok(detailsText(ctx).lines[0].endsWith(".json"), "the path keeps its tail");
+  }
 });

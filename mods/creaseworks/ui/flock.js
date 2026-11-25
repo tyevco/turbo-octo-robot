@@ -4,7 +4,7 @@
 // scrolling `#cw-content`.
 //
 // Top to bottom: the detail card of the selected tile, the header line
-// ("Flock 30 · 9 working · bench pace 50 %" and the legend "?"), the legend
+// ("Flock 30 · 9 working · bench pace 47 %" and the legend "?"), the legend
 // when asked for, the status groups (fixed order, foldable; the "all" group of
 // workspace order has no header), Elsewhere, the Album; or the empty state.
 // Tiles are 52×64 (dense 40×44) on T.raised with the status badge, the
@@ -108,7 +108,7 @@ export function selectedTile(vm, ui) {
   return allTiles(vm).find((t) => t && t.helperId === id) || null;
 }
 
-/** "Flock 30 · 9 working · bench pace 50 %" (the vm's `pace` when present). */
+/** "Flock 30 · 9 working · bench pace 47 %" (the vm's `pace` when present). */
 export function flockHeadline(vm) {
   const h = (vm && vm.helpers) || {};
   const groups = Array.isArray(h.groups) ? h.groups : [];
@@ -204,7 +204,32 @@ function pipsRow(pips, kids, g, hue, look) {
         ),
     );
   }
-  if (pips.length > 4) row.child(text(`+${clip(String(pips.length - 4), FLOCK_CLIP.count)}`, { size: 11, color: T.muted }, T).line_height("100%"));
+  if (pips.length > 4) {
+    const more = text(`+${clip(String(pips.length - 4), FLOCK_CLIP.count)}`, { size: 11, color: T.muted }, T).line_height("100%");
+    // Waiting fledglings come first (vm order), so one past the 4th pip only
+    // happens with 5+ waiting: "+N" then opens the first of those.
+    let waiting = null;
+    for (let i = 4; i < pips.length && !waiting; i++) {
+      const kid = kids[i];
+      if ((pips[i] === "blocked" || pips[i] === "error") && kid && typeof kid.helperId === "string" && kid.helperId) waiting = kid;
+    }
+    if (!waiting) row.child(more);
+    else {
+      const kidId = waiting.helperId;
+      row.child(
+        div()
+          .id(`cw-flock-kid-more-${kidId}`)
+          .flex_none()
+          .cursor_pointer()
+          .tooltip(clip(str(waiting.tooltip) || "A fledgling needs you: click to open it", FLOCK_CLIP.tooltip))
+          .on_click((e, cx) => {
+            if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+            look.openHelper(kidId, cx);
+          })
+          .child(more),
+      );
+    }
+  }
   return row;
 }
 

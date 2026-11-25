@@ -1,5 +1,5 @@
 // Save file codec (ARCHITECTURE A4): one JSON object
-// { "format": "creaseworks-save", "version": N, "check": "<fnv1a32 hex>", "state": {...} }.
+// { "format": "creaseworks-save", "version": SAVE_VERSION, "check": "<fnv1a32 hex>", "state": {...} }.
 // The check covers the canonical state JSON: JSON.stringify of the state in its
 // own key order, with each compact Album record (DESIGN R13, helpers.js
 // packAlbum) written as its short array. A parse → unpack → rebuild →
@@ -9,6 +9,15 @@ import { SAVE_FORMAT, ENVELOPES } from "./content.js";
 import { fnv1a32 } from "./hash.js";
 import { VERSION, MAP_FIELDS, rebuildMaps, migrate, makeMap } from "./state.js";
 import { packAlbum, unpackAlbum } from "./helpers.js";
+
+/**
+ * The file format version in the envelope. 2 = Album entries may be packed
+ * arrays (R13). The state's own `version` stays VERSION (state.js): the
+ * in-memory state did not change, only its encoding. A build that knows only
+ * format 1 reads a format 2 file as "newer" (read-only, never written), not as
+ * damaged, so it cannot restore its backup over a newer save.
+ */
+export const SAVE_VERSION = 2;
 
 /** Canonical JSON of a state (compact Album records packed). */
 export function canonicalState(state) {
@@ -47,7 +56,7 @@ function unpackHelpers(st) {
 /** The full save file text for `state`. */
 export function serialize(state) {
   const body = canonicalState(state);
-  return `{"format":${JSON.stringify(SAVE_FORMAT)},"version":${VERSION},"check":"${fnv1a32(body)}","state":${body}}`;
+  return `{"format":${JSON.stringify(SAVE_FORMAT)},"version":${SAVE_VERSION},"check":"${fnv1a32(body)}","state":${body}}`;
 }
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -92,7 +101,7 @@ export function validateState(s) {
 /**
  * parseSave(text) → { ok: true, state } | { ok: false, reason, state? }.
  * reason: "parse" (not JSON / truncated), "format" (not a Creaseworks save),
- * "check" (hash mismatch), "newer" (a newer version: `state` is included,
+ * "check" (hash mismatch), "newer" (a newer file format or state version: `state` is included,
  * maps rebuilt, for read-only display), "shape" (failed validation).
  */
 export function parseSave(text) {
@@ -108,7 +117,7 @@ export function parseSave(text) {
   }
   if (fnv1a32(JSON.stringify(doc.state)) !== doc.check) return { ok: false, reason: "check" };
   const unpacked = unpackHelpers(doc.state);
-  if (doc.version > VERSION || doc.state.version > VERSION) {
+  if (doc.version > SAVE_VERSION || doc.state.version > VERSION) {
     const why = unpacked ? validateState(doc.state) : "helpers";
     return why ? { ok: false, reason: "newer" } : { ok: false, reason: "newer", state: rebuildMaps(doc.state) };
   }

@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import {
   validateLayout, layoutIds, walkNodes, pathTo, modStrings, propsValues, referencedMods, paletteEntryError,
 } from "../../tools/layout/schema.mjs";
-import { build, buildLayout, PANEL_WEIGHT, FILES_WEIGHT } from "../../tools/layout/build.mjs";
+import { build, buildLayout, PANEL_WEIGHT, FILES_WEIGHT, MAIN_MIN, RAIL_WEIGHT } from "../../tools/layout/build.mjs";
 import { layoutBoxes, shares } from "../../tools/render/window.mjs";
 import { find, validateArgs, missing } from "../../tools/mock/commands.js";
 import {
@@ -118,7 +118,7 @@ describe(`layouts/${GAME.layout}.json`, () => {
     for (const { node } of walkNodes(l)) {
       if (node.children) node.children = node.children.filter((c) => !ADDED.includes(c.id));
       if (node.id === "main") {
-        assert.equal(node.min, 360);
+        assert.equal(node.min, MAIN_MIN);
         delete node.min;
       }
       if (node.id === "panel") {
@@ -180,29 +180,26 @@ describe(`layouts/${GAME.layout}.json`, () => {
     assert.deepEqual(ribbon.content, { mod: GAME.mod, props: { role: "ribbon" } });
   });
 
-  test("main keeps terminals at least 360 px wide", () => {
+  test("main's min stops a drag at 80 px and still fits 1100 x 700 at zoom 1.5 with Files open", () => {
     const main = walkNodes(LAYOUT).find(({ node }) => node.id === "main").node;
-    assert.equal(main.min, 360);
+    assert.equal(main.min, MAIN_MIN);
+    assert.equal(MAIN_MIN, 80);
   });
 
   // r1-32: laid out with herdr's own geometry (src/window/pane_size.rs shares(),
   // ported in tools/render/window.mjs), in the window states the game can be in.
+  // Folded is what the fold command runs: a tiny weight held at the 64 px min.
   const STATES = {
     expanded: () => {},
-    folded: (l) => { find(l, "cw-panel").size = { px: 64 }; },
+    folded: (l) => { find(l, "cw-panel").size = { weight: RAIL_WEIGHT }; },
     files: (l) => { find(l, "panel").hidden = false; },
-    "files-folded": (l) => { find(l, "panel").hidden = false; find(l, "cw-panel").size = { px: 64 }; },
+    "files-folded": (l) => { find(l, "panel").hidden = false; find(l, "cw-panel").size = { weight: RAIL_WEIGHT }; },
   };
   const find = (l, id) => walkNodes(l).find(({ node }) => node.id === id).node;
   const boxesAt = (state, width, height, zoom) => {
     const l = clone(LAYOUT);
     STATES[state](l);
     return layoutBoxes(l, { width, height, zoom });
-  };
-  /** Whether herdr's own nodes plus the rail can fit: sidebar, gaps and padding, main 360, Files 280 when open, rail 64. */
-  const fits = (state, width, zoom) => {
-    const files = state.startsWith("files");
-    return width >= (268 + 1 + 16 + 360 + 8 + 64 + (files ? 280 + 8 : 0)) * zoom;
   };
 
   test("shares() is herdr's: px first, weights share the rest, min/max freeze, grow stays normalised", () => {
@@ -213,38 +210,70 @@ describe(`layouts/${GAME.layout}.json`, () => {
     assert.deepEqual(shares([n(undefined, 360), n({ weight: 1 }, 64)], 300), [360, 64], "overflows: herdr clips");
     // A weight node at its max: the other keeps its normalised share, the rest is empty.
     assert.deepEqual(shares([n({ weight: 1 }), n({ weight: 1 }, 64, 320)], 1000), [500, 320]);
+    // The rail: a tiny weight at its min leaves no strip; the others share the rest.
+    assert.deepEqual(shares([n(undefined), n({ weight: RAIL_WEIGHT }, 64)], 2000), [1936, 64]);
   });
 
+  // No case is skipped: every tested window has room for everything (MAIN_MIN is
+  // chosen for the tightest one, 1100 x 700 at zoom 1.5 with Files open).
   for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
     for (const zoom of [1, 1.5]) {
       for (const state of Object.keys(STATES)) {
-        test(`${width}x${height} zoom ${zoom}, ${state}: the game panel is on screen and the terminals keep 360`, () => {
+        test(`${width}x${height} zoom ${zoom}, ${state}: everything on screen, no empty strip`, () => {
           const b = boxesAt(state, width, height, zoom);
           const p = b["cw-panel"];
           const wb = b["work-body"].inner;
-          // No empty strip after the panel (a capped weight node would leave one).
-          assert.ok(p.x + p.width >= wb.x + wb.width - 0.5 || !fits(state, width, zoom), `ends at ${p.x + p.width} of ${wb.x + wb.width}`);
-          assert.ok(p.x + p.width <= wb.x + wb.width + 0.5 || !fits(state, width, zoom), `overflows: ${p.x + p.width} > ${wb.x + wb.width}`);
-          if (!fits(state, width, zoom)) return; // herdr's own nodes and the rail need more than the window has
+          // No empty strip after the panel (a capped weight node would leave one), no overflow.
+          assert.ok(Math.abs(p.x + p.width - (wb.x + wb.width)) < 0.5, `ends at ${p.x + p.width} of ${wb.x + wb.width}`);
           assert.ok(Math.abs(p.visible.width - p.width) < 0.5, `panel ${p.width} px, ${p.visible.width} on screen`);
           assert.ok(p.width >= 64 * zoom - 0.01, `panel ${p.width}`);
-          assert.ok(b.main.width >= 360 * zoom - 0.01, `terminals ${b.main.width}`);
-          if (state.startsWith("files")) assert.ok(b.panel.visible.width >= 280 * zoom - 0.01, `Files ${b.panel.visible.width}`);
+          if (state.endsWith("folded")) assert.ok(Math.abs(p.width - 64 * zoom) < 0.01, `the rail is 64 px: ${p.width}`);
+          assert.ok(b.main.width >= MAIN_MIN * zoom - 0.01, `terminals ${b.main.width}`);
+          // At zoom 1 the terminals keep DESIGN §2.2's 360 in every state.
+          if (zoom === 1) assert.ok(b.main.width >= 360 - 0.01, `terminals ${b.main.width} at zoom 1`);
+          if (state.startsWith("files")) {
+            assert.ok(b.panel.width >= 280 * zoom - 0.01, `Files ${b.panel.width}`);
+            assert.ok(Math.abs(b.panel.visible.width - b.panel.width) < 0.5, `Files ${b.panel.width} px, ${b.panel.visible.width} on screen`);
+          }
         });
       }
     }
   }
 
-  test("designed widths: about 320 px at 1440 x 900, Files near its shipped 368, narrow windows shrink the game first", () => {
-    const at1440 = boxesAt("expanded", 1440, 900, 1);
-    assert.ok(Math.abs(at1440["cw-panel"].width - 320) <= 4, `panel ${at1440["cw-panel"].width}`);
+  test("folding gives the terminals room whenever the panel is wider than the rail (the narrow hint's promise)", () => {
+    for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
+      for (const zoom of [1, 1.5]) {
+        for (const files of [false, true]) {
+          const open = boxesAt(files ? "files" : "expanded", width, height, zoom);
+          const shut = boxesAt(files ? "files-folded" : "folded", width, height, zoom);
+          const at = `${width}x${height} zoom ${zoom}${files ? " with Files" : ""}`;
+          // The hint is offered only for a panel of 140 design px or more (session.js narrowHint).
+          if (open["cw-panel"].width / zoom < 140) continue;
+          assert.ok(shut.main.width > open.main.width + 0.5 * (open["cw-panel"].width - 64 * zoom) - 0.5,
+            `${at}: terminals ${open.main.width} -> ${shut.main.width}`);
+        }
+      }
+    }
+  });
+
+  test("designed widths (ARCHITECTURE B15): about 320 at 1440 x 900; Narrow at 1100 x 700; Wide and uncapped on big windows", () => {
+    const px = (state, w, h, z = 1) => Math.round(boxesAt(state, w, h, z)["cw-panel"].width);
+    assert.ok(Math.abs(px("expanded", 1440, 900) - 320) <= 4, `1440: ${px("expanded", 1440, 900)}`);
     const files1440 = boxesAt("files", 1440, 900, 1);
     assert.ok(Math.abs(files1440.panel.width - 368) <= 4, `Files ${files1440.panel.width}`);
-    const files1100 = boxesAt("files", 1100, 700, 1);
-    assert.ok(files1100["cw-panel"].width >= 140, `1100 with Files: still a panel, ${files1100["cw-panel"].width}`);
-    assert.ok(files1100.main.width >= 360 && files1100.panel.width >= 280);
+    // DESIGN §2.4 states: Narrow 140-279, Standard 280-399, Wide 400+.
+    assert.equal(px("expanded", 1100, 700), 226, "1100 x 700: Narrow (the terminals get 581 instead of 488)");
+    assert.equal(px("files", 1440, 900), 217, "1440 x 900 with Files: Narrow");
+    assert.equal(px("files", 1100, 700), 146, "1100 x 700 with Files: still a panel, Narrow");
+    assert.equal(px("expanded", 1920, 1080), 456, "1920: Wide");
+    assert.equal(px("expanded", 2560, 1440), 636, "2560: Wide, past the old 560 cap (no max, B15)");
+    // Zoom 1.5: the panel gives way first; with Files open it is the rail at 1100.
     const z = boxesAt("expanded", 1100, 700, 1.5);
-    assert.ok(z["cw-panel"].width >= 64 * 1.5 && z.main.width >= 540, "1100 at zoom 1.5: the panel gives way, the terminals keep 360");
+    assert.equal(Math.round(z["cw-panel"].width), 185, "1100 at zoom 1.5: the panel gives way (124 design px, drawn as the rail)");
+    assert.equal(Math.round(z.main.width), 475, "the terminals: 317 design px");
+    const zf = boxesAt("files", 1100, 700, 1.5);
+    assert.equal(Math.round(zf["cw-panel"].width), 96, "1100 at zoom 1.5 with Files: the rail, on screen");
+    assert.ok(zf.main.width >= MAIN_MIN * 1.5 && zf.main.width < 140, `terminals ${zf.main.width} (herdr's own layout gives them about 108)`);
   });
 
   test("the preview picture lives in the mod folder (it travels with the copied folder)", () => {

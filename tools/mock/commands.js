@@ -289,3 +289,49 @@ export function applyLayoutCommand(tree, name, args) {
   } else return `${name} is not a layout command`;
   return null;
 }
+
+/**
+ * What a divider drag does to the layout tree (src/window.rs drag_to, ~4890):
+ * the divider after the `index`-th shown child of `containerId` is dragged to
+ * screen x/y `p`; `start` is that child's left/top and `la`/`lb` the two
+ * children's lengths, in screen px as herdr measures them (they are divided by
+ * `zoom` and stored unzoomed). The new length of a clamps to 24 … total − 24 and
+ * a's min/max; a {px} side stays {px} (a first, then b); two weight sides keep
+ * their weight sum, split by length. Changes `tree` in place; returns null, or
+ * why nothing changed.
+ */
+export function applyDrag(tree, containerId, index, { la, lb, start, p, zoom = 1 }) {
+  const findIn = (n, id) => {
+    if (!isPlainObject(n)) return null;
+    if (n.id === id) return n;
+    for (const c of Array.isArray(n.children) ? n.children : []) {
+      const f = findIn(c, id);
+      if (f) return f;
+    }
+    return null;
+  };
+  const node = findIn(tree, containerId);
+  if (!node || !Array.isArray(node.children)) return `no container ${debugString(containerId)}`;
+  if (node.resizable === false) return "not resizable";
+  const shown = node.children.filter((c) => isPlainObject(c) && !c.hidden);
+  const a = shown[index];
+  const b = shown[index + 1];
+  if (!a || !b) return "no such divider";
+  const [A, B, S, P] = [la / zoom, lb / zoom, start / zoom, p / zoom];
+  const total = A + B;
+  if (total <= 48) return "too small";
+  let newA = Math.min(Math.max(P - S, 24), total - 24);
+  if (typeof a.min === "number") newA = Math.max(newA, a.min);
+  if (typeof a.max === "number") newA = Math.min(newA, a.max);
+  newA = Math.min(newA, total - 24);
+  const isPx = (n) => isPlainObject(n.size) && typeof n.size.px === "number";
+  const w = (n) => (isPlainObject(n.size) && typeof n.size.weight === "number" ? n.size.weight : 1);
+  if (isPx(a)) a.size = { px: Math.round(newA) };
+  else if (isPx(b)) b.size = { px: Math.round(total - newA) };
+  else {
+    const sum = w(a) + w(b);
+    a.size = { weight: (sum * newA) / total };
+    b.size = { weight: (sum * (total - newA)) / total };
+  }
+  return null;
+}

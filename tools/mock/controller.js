@@ -1576,7 +1576,14 @@ const HOST = {
     this._notImplemented("pickFolder");
   },
   pickFiles() {
-    this._notImplemented("pickFiles");
+    // scenario.pickFiles: the paths the person picks (an array), null for a
+    // cancel; left out, the picker is not mocked.
+    if (!Object.hasOwn(this.scenario, "pickFiles")) this._notImplemented("pickFiles");
+    const pick = this.scenario.pickFiles;
+    return this._async("pickFiles", () => {
+      this._record("pickFiles", { picked: Array.isArray(pick) ? pick.length : 0 });
+      return Array.isArray(pick) ? pick.slice() : null;
+    });
   },
   feedbackPickImages() {
     this._notImplemented("feedbackPickImages");

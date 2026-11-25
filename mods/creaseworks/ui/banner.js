@@ -7,7 +7,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { clip, graphemes } from "../engine/index.js";
+import { clip, clipCells, clusterCells, graphemes } from "../engine/index.js";
 import { withAlpha, isHex, over, statusColor } from "./color.js";
 import { icon } from "./art.js";
 import { button, text } from "./widgets.js";
@@ -56,6 +56,28 @@ export function middleClip(str, max) {
   return g.slice(0, head).join("") + "…" + g.slice(g.length - tail).join("");
 }
 
+/**
+ * middleClip by display cells (emoji and wide characters count 2): the head
+ * and tail of `str` within `maxCells`, never cut inside a cluster.
+ */
+export function middleClipCells(str, maxCells) {
+  const g = graphemes(String(str ?? ""));
+  const w = g.map(clusterCells);
+  let total = 0;
+  for (const c of w) total += c;
+  const max = Math.max(3, Math.floor(maxCells));
+  if (total <= max) return g.join("");
+  const room = max - 1; // the ellipsis
+  const headRoom = Math.ceil(room / 2);
+  let i = 0;
+  let used = 0;
+  while (i < g.length && used + w[i] <= headRoom) used += w[i++];
+  let j = g.length;
+  let usedTail = 0;
+  while (j > i && used + usedTail + w[j - 1] <= room) usedTail += w[--j];
+  return g.slice(0, i).join("") + "…" + g.slice(j).join("");
+}
+
 /** Background of a banner kind on the panel chrome, as an opaque colour. */
 export function bannerBg(T, kind) {
   const look = Object.hasOwn(LOOK, kind) ? LOOK[kind] : LOOK.error;
@@ -86,17 +108,19 @@ export const KEPT_ROWS = 3;
  */
 export function detailsText(ctx) {
   const save = (ctx && ctx.save) || {};
+  const width = ctx && typeof ctx.width === "number" && ctx.width > 0 ? ctx.width : 320;
+  // card: 8 px margins, 6 px padding and a 1 px border each side; 11 px ≈ 6.2 px a grapheme
+  const perLine = Math.max(8, Math.floor((width - 16 - 12 - 2) / 6.2));
+  // One-line rows are cut to the box's cell budget here, so gpui's own
+  // truncation (which can cut inside an emoji) never has to engage (r1-04).
   const lines = [];
-  lines.push(save.path ? `File: ${middleClip(save.path, BANNER_CLIP.path)}` : "File: the save in herdr's app home");
-  lines.push(clip(save.lastGood ? `Last good save: ${save.lastGood}` : "Last good save: not known yet", BANNER_CLIP.line));
-  lines.push(clip(`Backup: ${save.backup ? String(save.backup) : "see Settings › Save"}`, BANNER_CLIP.line));
+  lines.push(save.path ? `File: ${middleClipCells(middleClip(save.path, BANNER_CLIP.path), perLine - 6)}` : "File: the save in herdr's app home");
+  lines.push(clipCells(clip(save.lastGood ? `Last good save: ${save.lastGood}` : "Last good save: not known yet", BANNER_CLIP.line), perLine));
+  lines.push(clipCells(clip(`Backup: ${save.backup ? String(save.backup) : "see Settings › Save"}`, BANNER_CLIP.line), perLine));
   const names = Array.isArray(save.damaged) ? save.damaged.map(String).filter((x) => x) : [];
   if (!names.length) return { lines, kept: null, keptTip: null, keptRows: 0 };
   const all = `Kept aside: ${names.join(", ")}`;
   const kept = clip(all, BANNER_CLIP.kept);
-  const width = typeof ctx.width === "number" && ctx.width > 0 ? ctx.width : 320;
-  // card: 8 px margins, 6 px padding and a 1 px border each side; 11 px ≈ 6.2 px a grapheme
-  const perLine = Math.max(8, Math.floor((width - 16 - 12 - 2) / 6.2));
   const keptRows = Math.min(KEPT_ROWS, Math.max(1, Math.ceil(graphemes(kept).length / perLine)));
   return { lines, kept, keptTip: clip(all, BANNER_CLIP.keptTip), keptRows };
 }

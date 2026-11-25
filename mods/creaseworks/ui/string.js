@@ -100,7 +100,7 @@ function cardWidth(ctx) {
  * 3 s after a wish, else null): "rise" draws the String as it was wished
  * away and moves each filled strand up 30 px while it fades (900 ms; calm: a
  * single 300 ms fade, in place); "settle" puts the strands back at the new
- * shares with no motion at all, so nothing slides back into view.
+ * shares with no motion at all (0 ms transitions), so nothing slides back.
  */
 export const WISH_RISE = Object.freeze({ ms: 900, calmMs: 300, dy: -30 });
 
@@ -129,14 +129,17 @@ function strands(s, ctx, calm) {
       .h(Math.round(STRAND.h * k * 10) / 10)
       .overflow_hidden()
       .child(svg(path).absolute().bottom(0).left(0).w(sw).h(STRAND.h).text_color(S.sheet));
-    if (!m) fill.transition("height", calm ? 150 : 600);
+    // Transitions are declared on every frame (0 ms where nothing should
+    // move): gpui keeps a motion's keyed state only while it is declared and
+    // adopts the first declared target without animating, so a transition
+    // added on the "rise" frame alone would jump (docs/research/gpui-ui.md §9).
+    fill.transition("height", m ? 0 : calm ? 150 : 600);
     // The fill rides in a full-height "lift" layer: the wish moment moves and
     // fades the lift (same id every render, so gpui animates the change).
     const lift = div().id(`cw-string-lift-${i}`).absolute().left(0).top(rise && !calm ? WISH_RISE.dy : 0).w(sw).h(STRAND.h).opacity(rise ? 0 : 1).child(fill);
-    if (rise) {
-      if (calm) lift.transition("opacity", WISH_RISE.calmMs);
-      else lift.transition("top", { duration: WISH_RISE.ms, easing: "ease-out" }).transition("opacity", WISH_RISE.ms);
-    }
+    const topMs = rise && !calm ? WISH_RISE.ms : 0;
+    const fadeMs = rise ? (calm ? WISH_RISE.calmMs : WISH_RISE.ms) : 0;
+    lift.transition("top", { duration: topMs, easing: "ease-out" }).transition("opacity", fadeMs);
     row.child(
       div()
         .relative()

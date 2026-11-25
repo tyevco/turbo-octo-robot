@@ -381,7 +381,7 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
 function tile(state, t, h, elsewhere, roster, loops) {
   const status = statusOf(h);
   const word = WORD[status];
-  const kids = roster.kidsOf[h.id];
+  const kids = kidsFirstBlocked(roster.kidsOf[h.id]);
   const pips = kids ? kids.map(statusOf) : [];
   const title = h.title ? clip(String(h.title), CLIP.title) : "";
   const where = place(h);
@@ -413,6 +413,21 @@ function tile(state, t, h, elsewhere, roster, loops) {
   };
 }
 
+/**
+ * A tile's fledglings, waiting ones first (longest wait first), then the rest
+ * in join order: the tile draws only the first 4 pips, and a waiting
+ * fledgling must always get one (its own route to terminal.peek, §5.6).
+ */
+function kidsFirstBlocked(kids) {
+  if (!kids || kids.length < 2) return kids;
+  const blocked = [];
+  const rest = [];
+  for (const k of kids) (statusOf(k) === "blocked" ? blocked : rest).push(k);
+  if (!blocked.length) return kids;
+  blocked.sort(byWait);
+  return blocked.concat(rest);
+}
+
 function kidOf(k, t) {
   const status = statusOf(k);
   const word = WORD[status];
@@ -442,29 +457,82 @@ function detail(state, t, h, status, title, where, nKids) {
 }
 
 // The Album grows without limit (§11.1: pane helpers are never dropped), so
-// its rows are memoised: the sorted list per roster (the helper index object,
-// rebuilt on every Album change) and each row per helper until its "left …
-// ago" text would change. A view of an unchanged Album returns the very same
-// frozen array; the output is always what a fresh build would give.
-const ALBUM = new WeakMap(); // helper index → { gone, count, style, items, lo, hi, out }
+// its rows are memoised: the sorted list per roster (the helper index object)
+// and each row per helper until its "left … ago" text would change. The index
+// is rebuilt on every observe with a helper list (any agent status change), so
+// a new index first checks the last Album of the same save: same count and
+// the same leaving times and folds in hs order (a 64-bit fingerprint; no
+// per-record copy) carry the sorted list and rows over, so an observe costs
+// one O(n) pass, not the sort and format. Any Album change moves a leaving
+// time: a record that leaves gets the observe's time, one that rejoins takes
+// its own out, compaction rounds them; name, species and hue do not change
+// while a record stays gone. A view of an unchanged Album returns the very
+// same frozen array; the output is always what a fresh build would give.
+// The memo rides on the state under a symbol, as the helper index does
+// (helpers.js): JSON skips it, so it never reaches the save, and it dies with
+// its state. Per-record memory stays as before (the wasm QuickJS harness
+// fails to free a runtime near 6,000 Album records; test/qjs R13 note).
+const ALBUM = Symbol("creaseworks/album-memo"); // state → rows entry
+const ALBUM_N = Symbol("creaseworks/album-count"); // state → { idx, n }
 
-/** The roster's Album: its gone pane helpers (sorted, most recently left first, when rows are first built). */
-function albumEntry(state, idx) {
-  let c = ALBUM.get(idx);
-  if (c) return c;
+let f64 = null; // [Float64Array(1), Uint32Array view], made on first use (A2 rule 2)
+
+/** The gone pane records (hs order) and their FNV-1a fingerprint, two lanes over the exact bits of each leaving time and folds. */
+function albumScan(state) {
+  if (!f64) {
+    const buf = new Float64Array(1);
+    f64 = [buf, new Uint32Array(buf.buffer)];
+  }
+  const fb = f64[0];
+  const ub = f64[1];
+  let a = 0x811c9dc5 | 0;
+  let b = 0x01000193 | 0;
   const gone = [];
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (h.gone && h.kind === "pane") gone.push(h);
+    if (!(h.gone && h.kind === "pane")) continue;
+    gone.push(h);
+    fb[0] = typeof h.missingSince === "number" ? h.missingSince : NaN;
+    a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
+    b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
+    fb[0] = h.stats && typeof h.stats.folds === "number" ? h.stats.folds : NaN;
+    a = Math.imul(Math.imul(a ^ ub[0], 16777619) ^ ub[1], 16777619);
+    b = Math.imul(Math.imul(b ^ ub[1], 2246822519) ^ ub[0], 2246822519);
   }
-  c = { gone, sorted: false, count: gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
-  ALBUM.set(idx, c);
+  return { gone, a: a >>> 0, b: b >>> 0 };
+}
+
+/** The roster's Album: its gone pane helpers (sorted, most recently left first, when rows are first built). */
+function albumEntry(state, idx) {
+  const prev = state[ALBUM];
+  if (prev && prev.idx === idx) return prev;
+  const scan = albumScan(state);
+  let c;
+  if (prev && prev.count === scan.gone.length && prev.a === scan.a && prev.b === scan.b) {
+    c = prev;
+  } else {
+    c = { idx: null, a: scan.a, b: scan.b, gone: scan.gone, sorted: false, count: scan.gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
+  }
+  c.idx = idx;
+  state[ALBUM] = c;
   return c;
 }
 
+/** How many records the Album holds (no rows, no fingerprint: every view asks). */
 function albumCount(state, idx) {
-  return albumEntry(state, idx).count;
+  const rows = state[ALBUM];
+  if (rows && rows.idx === idx) return rows.count;
+  const memo = state[ALBUM_N];
+  if (memo && memo.idx === idx) return memo.n;
+  let n = 0;
+  const hs = state.helpers;
+  for (const id in hs) {
+    const h = hs[id];
+    if (h.gone && h.kind === "pane") n++;
+  }
+  state[ALBUM_N] = { idx, n };
+  return n;
 }
 
 /** [lo, hi): the elapsed ms over which ago(ms) prints the same text. */
@@ -634,8 +702,9 @@ function matVm(state, t, E, loops, short, calm, roster) {
     const x1 = calm ? x0 : pos.x < MAT.w / 2 ? maxX : MAT.edge;
     const k = life > 0 ? Math.max(0, Math.min(1, 1 - msLeft / life)) : 1;
     crane = { id: sp.crane.id, x: round1(x0 + (x1 - x0) * k), y: round1(pos.y - MAT.craneH / 2), x1: round1(x1), msLeft, bob: loops.crane };
-    // The one-time line (§3.2) until a crane is caught (ui.hints.crane).
-    crane.hint = state.ui.hints.crane === true ? null : CRANE_HINT;
+    // The one-time line (§3.2): on the first crane only (spawn.cranesSeen
+    // counts it in as it appears), caught or missed; never once one is caught.
+    crane.hint = state.ui.hints.crane === true || num(sp.cranesSeen) > 1 ? null : CRANE_HINT;
   }
   let boat = null;
   if (sp.boat) {

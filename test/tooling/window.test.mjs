@@ -159,12 +159,26 @@ test("layoutBoxes: herdr's geometry with separators, padding, borders, zoom and 
   // Zoom scales px, min, max, gaps and padding (settings::z); clipping is reported.
   const z = layoutBoxes(layout, { width: 1000, height: 700, zoom: 1.5 });
   assert.equal(z.sidebar.width, 402);
-  assert.equal(z.main.width, 540, "main keeps min 360 x 1.5");
-  assert.ok(z["cw-panel"].visible.width < z["cw-panel"].width, "a window too narrow for 360 + 64 at zoom 1.5 clips the panel");
-  // What the game's copies measure: content boxes, in zoomed px.
+  const filesOpen = JSON.parse(JSON.stringify(layout));
+  filesOpen.children[1].children[1].children.find((n) => n.id === "panel").hidden = false;
+  const zf = layoutBoxes(filesOpen, { width: 1000, height: 700, zoom: 1.5 });
+  assert.equal(zf.main.width, 80 * 1.5, "main at its min x 1.5");
+  assert.ok(zf["cw-panel"].visible.width < zf["cw-panel"].width, "Files 420 + main 120 + rail 96 do not fit 1000 px at zoom 1.5: the panel is clipped");
+  // What the game's copies measure: content boxes, in zoomed px. Worked by hand
+  // from herdr's rules (not from layoutBoxes) for 1100 x 700 at zoom 1.5:
+  //   sidebar 268 x 1.5 = 402, root divider 1.5 -> work 696.5 wide;
+  //   work-body padding 12 -> 672.5, minus one gap of 12 -> 660.5 for main + panel,
+  //   shared 1 : 0.39 -> panel 660.5 x 0.39 / 1.39 = 185.32, minus 2 x 1.5 border = 182.32;
+  //   height 700 - tabs 63 - ribbon 45 - status 42 = 550, minus 2 x 12 padding = 526,
+  //   minus 2 x 1.5 border = 523.
   const sizes = blockSizes(layout, { width: 1100, height: 700 }, 1.5);
-  assert.equal(sizes["cw-ribbon"].height, 45);
-  assert.equal(sizes["cw-panel"].width, Math.round(z["cw-panel"].width === 0 ? 0 : layoutBoxes(layout, { width: 1100, height: 700, zoom: 1.5 })["cw-panel"].inner.width));
+  assert.deepEqual(sizes["cw-panel"], { width: 182, height: 523 });
+  assert.deepEqual(sizes["cw-ribbon"], { width: 697, height: 45 });
+  assert.deepEqual(sizes.main, { width: 475, height: 526 }, "660.5 / 1.39");
+  // The fold state: the rail weight held at 64 x 1.5, minus the border.
+  const folded = JSON.parse(JSON.stringify(layout));
+  WINDOW_STATES.find((s) => s.name === "folded").edit(folded, { panel: "cw-panel", ribbon: "cw-ribbon" });
+  assert.deepEqual(blockSizes(folded, { width: 1100, height: 700 }, 1.5)["cw-panel"], { width: 93, height: 523 });
   assert.deepEqual(WINDOW_STATES.map((s) => s.name), ["", "folded", "hidden", "files"]);
 });
 
@@ -229,6 +243,9 @@ test("a whole window is screenshot at its size", { skip: noBrowser }, async () =
     assert.ok(!existsSync(join(out, "demo-graphite.png")), "--only window skips the views");
     // the game's layout in four states (expanded, folded to the rail, hidden, Files open)
     for (const state of ["folded", "hidden", "files"]) assert.ok(existsSync(join(out, `window-1440x900-${state}-graphite.png`)), state);
+    // a big window, where the game panel is Wide and past 440 px (expanded only)
+    assert.deepEqual(pngSize(join(out, "window-1920x1080-graphite.png")), { width: 1920, height: 1080 });
+    assert.ok(!existsSync(join(out, "window-1920x1080-folded-graphite.png")), "1920 x 1080: expanded only");
     // and at zoom 1.5, where herdr gives every px, min and max half as much again (r1-32)
     for (const state of ["", "-folded", "-hidden", "-files"]) {
       const file = join(out, `window-1100x700${state}-paper-z1.5.png`);

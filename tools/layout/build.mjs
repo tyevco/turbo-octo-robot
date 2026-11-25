@@ -8,18 +8,25 @@
 // `defaults/layouts/main.json` (Apache-2.0). Every node and root field of it is
 // kept; the build adds and changes exactly:
 //   root      "preview": mods/<mod>/art/layout-preview.png (travels with the mod folder)
-//   main      "min": 360 (neither a drag nor a narrow window squeezes the terminals below 360 px)
+//   main      "min": 80 (MAIN_MIN: a drag never squeezes the terminals below 80 px)
 //   panel     (herdr's Files/Changes column) "size": {"weight": 0.66} instead of {"px": 368}
 //   work-body last child "cw-panel": the game, {"weight": 0.39}, min 64 (folds to a 64 px rail)
 //   work      "cw-ribbon" (30 px) between work-body and status
 // Why weights (ARCHITECTURE B15): herdr makes a {px} node flex_none, and min/max
 // only add min_w/max_w (src/window.rs sized()), so a {px} node never gives way
 // and a narrow window or zoom 1.5 pushes the last node of the row off-screen.
-// Weight nodes shrink to their min first: main keeps 360, Files 280, the game
-// 64. No max on cw-panel: herdr keeps grow factors normalised after a node
-// freezes at its max, so a capped weight node leaves the rest of its share
-// empty (src/window/pane_size.rs shares()). 0.39 gives the game 322 px and Files
-// 367 px at 1440 x 900, close to the shipped 368 and the designed 320.
+// Weight nodes shrink to their min first. No max on cw-panel: herdr keeps grow
+// factors normalised after a node freezes at its max, so a capped weight node
+// leaves the rest of its share empty (src/window/pane_size.rs shares()). 0.39
+// gives the game 322 px and Files 367 px at 1440 x 900, close to the shipped
+// 368 and the designed 320; at 1100 x 700 the game is 226 px (DESIGN §2.4
+// Narrow) and on big windows it keeps growing (1920: 456, 2560: 636).
+// Why main's min is 80, not 360: herdr's main has no min; ours only stops a drag.
+// The smallest window we support, 1100 x 700 at zoom 1.5 with Files open, has
+// 649 px for main + Files (280 x 1.5) + the rail (64 x 1.5): main gets 133 px
+// (88 design px). Any min above 88 makes main hold its min there and push the
+// game off-screen (r1-32); 80 keeps everything on screen with a little slack.
+// At zoom 1 the terminals never come near it (1100 x 700 with Files: 373 px).
 // Field names are src/layout.rs's; tools/layout/schema.mjs checks the result.
 // <mod> and <Name> come from tools/game.json.
 
@@ -68,8 +75,12 @@ function need(root, id) {
   return n;
 }
 
+/** main's min (design px): fits 1100 x 700 at zoom 1.5 with Files open (header). */
+export const MAIN_MIN = 80;
 /** The game panel's weight beside main (weight 1): 322 px at 1440 x 900 (glue/commands.js DEFAULT_PANEL_WEIGHT). */
 export const PANEL_WEIGHT = 0.39;
+/** The folded panel (glue/commands.js RAIL_WEIGHT): a weight so small that cw-panel's 64 px min always wins. */
+export const RAIL_WEIGHT = 0.001;
 /** herdr's Files/Changes column as a weight: 367 px at 1440 x 900 with the game panel open (shipped: 368 px). */
 export const FILES_WEIGHT = 0.66;
 
@@ -102,10 +113,10 @@ export function buildLayout(main, { mod }) {
   }
   if (!workBody.children.includes(mainNode)) throw new Error("main.json changed shape: main is no longer in work-body");
 
-  // main: "min": 360 right after "type", as DESIGN §2.5 writes it.
+  // main: "min" right after "type", as DESIGN §2.5 writes it.
   const mainIndex = workBody.children.indexOf(mainNode);
   const { id, type, ...rest } = mainNode;
-  workBody.children[mainIndex] = { id, type, min: 360, ...rest };
+  workBody.children[mainIndex] = { id, type, min: MAIN_MIN, ...rest };
 
   // herdr's Files/Changes column shrinks by weight (to its own min 280) instead of
   // pushing the game panel off-screen; every other field of it is kept.

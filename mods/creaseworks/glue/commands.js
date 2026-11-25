@@ -3,20 +3,28 @@
 // Keys and palette entries reach every shown copy through nextCommand(). Each
 // command acts once: the ribbon copy handles them; the panel copy handles them
 // only while the ribbon is hidden (layout() says so, or no ribbon copy is
-// alive). `fold` toggles the panel and the 64 px rail with layout.resize: the
-// rail is {px: 64}, the unfolded panel a {weight} (ARCHITECTURE B15: a {px}
-// node never shrinks in herdr, so a px-sized panel would be pushed off-screen
-// by a narrow window or zoom; a weight gives way down to its min). The last
-// unfolded weight is remembered in the slot and localStorage, every call in
-// try/catch; `answer` opens the helper that has needed you longest;
-// `envelope` opens the oldest envelope.
+// alive). `fold` toggles the panel and the 64 px rail with layout.resize, and
+// both are weights (ARCHITECTURE B15): a {px} node never shrinks in herdr, so
+// a px-sized panel would be pushed off-screen by a narrow window or zoom. The
+// rail is a tiny weight held at cw-panel's min (64), so a drag that opens it
+// is stored as weights too (src/window.rs drag_to keeps a {px} side as px).
+// The last unfolded weight, as a share of main's, is remembered in the slot
+// and localStorage, every call in try/catch; `answer` opens the helper that
+// has needed you longest; `envelope` opens the oldest envelope.
 
 import { nextCommand, run } from "herdr";
 import { dispatch, flash, roleAlive } from "./live.js";
 
 export const PANEL_ID = "cw-panel";
 export const RIBBON_ID = "cw-ribbon";
+/** The rail's width: cw-panel's min in layouts/Creaseworks.json. */
 export const RAIL_PX = 64;
+/**
+ * The folded panel's weight: so small that cw-panel's min (64) always wins
+ * (64 px up to a 64 000 px wide work row), yet a weight, so a drag stores
+ * weights (drag_to) and a narrow window can never push it off-screen.
+ */
+export const RAIL_WEIGHT = 0.001;
 export const DEFAULT_PANEL_PX = 320;
 /** layouts/Creaseworks.json's cw-panel weight beside main (tools/layout/build.mjs PANEL_WEIGHT). */
 export const DEFAULT_PANEL_WEIGHT = 0.39;
@@ -67,26 +75,60 @@ const weightOf = (node) => {
 
 const goodWeight = (w) => typeof w === "number" && Number.isFinite(w) && w >= WEIGHT_MIN && w <= WEIGHT_MAX;
 
+/** Files' width when layout() gives no px for it: its width at 1440 x 900 (as a weight it is 280 at 1100). */
+export const FILES_PX_FALLBACK = 368;
+const FILES_MIN = 280;
+const FILES_MAX = 900;
+
+const numberOr = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+
 /**
  * What the commands need from `layout()`: { known, ribbonHidden, panelHidden,
- * filesShown, filesPx, panelWeight }. A node missing from a known tree counts
- * as hidden. `filesPx` is the Files column's px size, else 368 (its width at
- * 1440 x 900 as a weight); `panelWeight` is cw-panel's {weight} or null
- * (px-sized, or not reported).
+ * filesShown, filesPx, panelWeight, mainWeight, filesWeight, filesMin,
+ * filesMax }. A node missing from a known tree counts as hidden. `filesPx` is
+ * the Files column's px size, else FILES_PX_FALLBACK (368): a weight-sized
+ * Files column has no fixed width, so `filesEstimate(info, Wp)` gives the
+ * real one from the panel's measured width. `panelWeight` is cw-panel's
+ * {weight} or null (px-sized, or not reported); `mainWeight` is main's
+ * (herdr's default 1 when it has no size).
  */
 export function layoutInfo(tree) {
-  if (!tree || typeof tree !== "object") return { known: false, ribbonHidden: false, panelHidden: false, filesShown: false, filesPx: 368, panelWeight: null };
+  if (!tree || typeof tree !== "object") {
+    return { known: false, ribbonHidden: false, panelHidden: false, filesShown: false, filesPx: FILES_PX_FALLBACK, panelWeight: null, mainWeight: 1, filesWeight: null, filesMin: FILES_MIN, filesMax: FILES_MAX };
+  }
   const ribbon = findNode(tree, RIBBON_ID);
   const panel = findNode(tree, PANEL_ID);
   const files = findNode(tree, "panel");
+  const main = findNode(tree, "main");
+  const mainPx = pxOf(main);
   return {
     known: true,
     ribbonHidden: !ribbon || ribbon.hidden === true,
     panelHidden: !panel || panel.hidden === true,
     filesShown: !!files && files.hidden !== true,
-    filesPx: pxOf(files) ?? 368,
+    filesPx: pxOf(files) ?? FILES_PX_FALLBACK,
     panelWeight: weightOf(panel),
+    mainWeight: mainPx !== null ? null : weightOf(main) ?? 1,
+    filesWeight: weightOf(files),
+    filesMin: numberOr(files && files.min, FILES_MIN),
+    filesMax: numberOr(files && files.max, FILES_MAX),
   };
+}
+
+/**
+ * The Files column's width (design px) beside a panel measured `Wp` design px
+ * wide. A {px} Files column is its px. A weight one shares the row with the
+ * panel by weight (herdr's shares(): both take free x weight / total), so it is
+ * Wp x filesWeight / panelWeight held to its min and max; exact while the panel
+ * is wider than its min (unfolded). Else FILES_PX_FALLBACK.
+ */
+export function filesEstimate(info, Wp) {
+  if (!info || !info.known) return FILES_PX_FALLBACK;
+  if (info.filesWeight === null || info.filesWeight === undefined) return info.filesPx;
+  const pw = info.panelWeight;
+  if (!goodWeight(pw) || typeof Wp !== "number" || !Number.isFinite(Wp) || Wp < RAIL_BELOW) return info.filesPx;
+  const share = (Wp * info.filesWeight) / pw;
+  return Math.round(Math.max(Math.min(share, info.filesMax), info.filesMin));
 }
 
 // ---------------------------------------------------------------------------
@@ -150,20 +192,32 @@ export function lastWidth(slot) {
   return typeof w === "number" && w >= RAIL_BELOW ? w : recallWidth() ?? DEFAULT_PANEL_PX;
 }
 
-/** The weight an unfold resizes to: the last unfolded weight (slot, then localStorage), else the layout's 0.39. */
+/** main's weight in the latest `layout()` read (herdr's default 1; a drag between main and the panel changes it). */
+function mainWeightOf(slot) {
+  const m = slot.layout ? slot.layout.mainWeight : null;
+  return typeof m === "number" && Number.isFinite(m) && m > 0 ? m : 1;
+}
+
+/**
+ * The unfolded panel's weight as a share of main's (slot, then localStorage),
+ * else the layout's 0.39. A drag changes both weights (drag_to), so the share
+ * is what keeps the width the player chose.
+ */
 export function lastWeight(slot) {
   const w = slot.widths.lastWeight;
   if (goodWeight(w)) return w;
   return recallWeight() ?? DEFAULT_PANEL_WEIGHT;
 }
 
-/** Remembers the panel's current weight (from `layout()`) while it is unfolded at `px`. */
+/** Remembers the panel's current weight share (from `layout()`) while it is unfolded at `px`. */
 function keepWeight(slot, px) {
   const L = slot.layout;
   const w = L ? L.panelWeight : null;
-  if (typeof px !== "number" || px < RAIL_BELOW || !goodWeight(w) || w === slot.widths.lastWeight) return;
-  slot.widths.lastWeight = w;
-  rememberWeight(w);
+  if (typeof px !== "number" || px < RAIL_BELOW || !goodWeight(w)) return;
+  const share = Math.round((w / mainWeightOf(slot)) * 1000) / 1000;
+  if (!goodWeight(share) || share === slot.widths.lastWeight) return;
+  slot.widths.lastWeight = share;
+  rememberWeight(share);
 }
 
 /** Records the panel copy's measured width; an unfolded one (and its weight) is remembered. */
@@ -176,9 +230,14 @@ export function notePanelWidth(slot, px) {
   keepWeight(slot, px);
 }
 
-/** The unfolded panel: a {weight}, never {px}, so a narrow window or zoom shrinks it instead of pushing it off-screen. */
+/** The unfolded panel: a {weight} (the remembered share of main's), never {px}, so a narrow window or zoom shrinks it. */
 function unfoldArgs(slot) {
-  return { id: PANEL_ID, weight: lastWeight(slot) };
+  return { id: PANEL_ID, weight: Math.round(lastWeight(slot) * mainWeightOf(slot) * 1000) / 1000 };
+}
+
+/** The rail: a {weight} held at cw-panel's 64 px min, so dragging it open stores weights. */
+function railArgs() {
+  return { id: PANEL_ID, weight: RAIL_WEIGHT };
 }
 
 /** `creaseworks.fold`: panel ↔ rail; a hidden panel is shown (and unfolded) first. */
@@ -195,7 +254,7 @@ export function fold(slot, info) {
     rememberWidth(w);
     keepWeight(slot, w);
   }
-  return safeRun("layout.resize", { id: PANEL_ID, px: RAIL_PX }) ? "folded" : "failed";
+  return safeRun("layout.resize", railArgs()) ? "folded" : "failed";
 }
 
 /** Shows the full panel (ribbon save chip, Welcome back pill, a rail/ribbon tile): no-op when shown. */
@@ -217,8 +276,11 @@ export function show(slot, info) {
 // ---------------------------------------------------------------------------
 // Picking helpers
 
-/** This window's tiles: present helpers, minus fledglings drawn as pips on a present parent (B10). */
-function present(slot) {
+/**
+ * This window's tiles: present helpers, minus fledglings drawn as pips on a
+ * present parent (B10). `kids`: keep those fledglings too.
+ */
+function present(slot, kids = false) {
   const out = [];
   const hs = slot.state ? slot.state.helpers : null;
   if (!hs) return out;
@@ -226,15 +288,18 @@ function present(slot) {
     const h = hs[id];
     if (!h || h.gone) continue;
     if (h.seenBy && h.seenBy !== slot.writerId) continue; // Elsewhere: another window's agent
-    if (h.kind === "kid" && h.parent && Object.hasOwn(hs, h.parent) && !hs[h.parent].gone) continue;
+    if (!kids && h.kind === "kid" && h.parent && Object.hasOwn(hs, h.parent) && !hs[h.parent].gone) continue;
     out.push(h);
   }
   return out;
 }
 
-/** Needs-you helpers, longest waiting first. */
+/**
+ * Needs-you helpers, longest waiting first. Fledglings drawn as pips count
+ * too: a paneless one is reached only this way or by its pip (terminal.peek, r1-14).
+ */
 export function waiting(slot) {
-  return present(slot)
+  return present(slot, true)
     .filter((h) => h.status === "blocked")
     .sort((a, b) => (a.blockedAt ?? a.joined) - (b.blockedAt ?? b.joined) || a.joined - b.joined);
 }
