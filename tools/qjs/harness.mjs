@@ -41,9 +41,12 @@
 // leak does not depend on when the collector runs, so `gcHeadroom` tells the
 // two apart: it moves the collector's threshold above `gcHeadroom` bytes for
 // the VM's life (one allocation burst at boot, freed again at once, nothing
-// left for the mod to see). The same run that aborts without it and frees
-// cleanly with it carries the engine's signature only; one that aborts both
-// ways holds a real leak.
+// left for the mod to see). A run that aborts without it and frees cleanly
+// with it is consistent with an engine collector-timing fault (there is no
+// reduced repro, and the same await-plus-GC pattern frees cleanly in a
+// minimal mod, so the attribution is an inference); one that aborts both ways
+// holds a real leak. The check cannot rule out a GC-timing-dependent refcount
+// error on the harness side.
 
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import variant from "@jitl/quickjs-ng-wasmfile-release-sync";

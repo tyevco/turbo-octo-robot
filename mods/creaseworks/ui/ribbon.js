@@ -191,13 +191,14 @@ const HINT_TEXT = "Terminals are narrow: fold Creaseworks?";
 export const HINT_FOLD = Object.freeze({ full: "Fold", compact: "Fold panel" });
 
 /**
- * True when the panel shows its full view, with the away card over the mat
- * (`ctx.panelFull` from the glue; else `ctx.panelShown`, which a tight rail
- * also sets).
+ * True only when the glue says the panel shows its full view, with the away
+ * card over the mat (`ctx.panelFull === true`). `ctx.panelShown` is not
+ * enough: a tight rail sets it too and the rail has no away card, so the
+ * pill would hide the away news everywhere (r3-14). Without `panelFull` the
+ * pill shows, as before.
  */
 function panelFull(ctx) {
-  if (!ctx) return false;
-  return typeof ctx.panelFull === "boolean" ? ctx.panelFull : Boolean(ctx.panelShown);
+  return Boolean(ctx && ctx.panelFull === true);
 }
 
 /**

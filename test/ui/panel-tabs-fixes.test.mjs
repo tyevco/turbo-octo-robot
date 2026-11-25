@@ -9,9 +9,11 @@
 //   r1-19  the first gilded crane's one-time callout chip
 //   r1-26  the wish confirm card's buttons sit at its top
 //   r1-28  the rest bar has a track and stops short of the envelope marker
-//   r3-16  the Flock never draws more than TILE_BUDGET tiles across groups
+//   r3-16  the Flock's tile grids never cost more than TILE_BUDGET across
+//          groups, with hysteresis at the edge
 //   r3-17  a waiting fledgling gives its parent a badge-size needs-you flag
-//          (tiles) or a dashed, opening row (virtual list)
+//          (tiles; clear of the left neighbour's badge) or a dashed,
+//          opening row (virtual list)
 //   r3-21  win98's tile badges keep needs-you red (a disc where it reads)
 //
 //   node --import ./tools/node/register.mjs --test test/ui/panel-tabs-fixes.test.mjs
@@ -27,7 +29,7 @@ import * as F from "../fixtures/vm-fixtures.mjs";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "../engine/_util.mjs";
 import { graphemes, cellWidth } from "../../mods/creaseworks/engine/index.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
-import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids } from "../../mods/creaseworks/ui/flock.js";
+import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, TILE_BUDGET_BAND, KID_FLAG_LEFT, tileCost, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids } from "../../mods/creaseworks/ui/flock.js";
 import { statusColor, statusDisc, contrast } from "../../mods/creaseworks/ui/color.js";
 import { renderString, WISH_RISE, KEEPS, CLEARS } from "../../mods/creaseworks/ui/string.js";
 import { renderSettings } from "../../mods/creaseworks/ui/settings.js";
@@ -406,35 +408,117 @@ function tileCount(json) {
   return n;
 }
 
-test("r3-16: four groups of 79 draw at most TILE_BUDGET tiles; the biggest groups become virtual lists", () => {
+/** What the drawn tile grids cost (tileCost of every tile drawn as a tile). */
+function drawnCost(vm, json) {
+  const drawn = new Set();
+  walk(json, (node) => {
+    if (typeof node.id === "string" && node.id.startsWith("cw-flock-tile-")) drawn.add(node.id.slice("cw-flock-tile-".length));
+  });
+  let c = 0;
+  for (const g of vm.helpers.groups) for (const t of g.tiles) if (drawn.has(t.helperId)) c += tileCost(t, Boolean(vm.helpers.dense), false);
+  return c;
+}
+
+const keysOf = (v) => Object.keys(v).sort();
+
+test("r3-16: tileCost counts what a tile builds; four groups of 79 stay within TILE_BUDGET, the biggest groups become lists", () => {
+  const plain = { helperId: "a", status: "working", pips: [], kids: [] };
+  assert.equal(tileCost(plain, true, false), 6);
+  assert.equal(tileCost(plain, false, false), 7);
+  assert.equal(tileCost({ ...plain, pips: ["working", "idle"] }, true, false), 6 + 1 + 2, "a pip row and two pips");
+  assert.equal(tileCost({ ...plain, pips: ["blocked"], kids: [{ helperId: "k", status: "blocked" }] }, true, false), 6 + 1 + 5 + 4, "a waiting pip's target and the flag");
+  assert.equal(tileCost({ ...plain, pips: ["blocked"], kids: [{ helperId: "k", status: "blocked" }] }, true, true), 6 + 1 + 5, "no flag Elsewhere");
+  assert.equal(tileCost({ ...plain, status: "idle", rest: 0.5, envelope: true }, true, false), 6 + 2 + 5);
+  assert.equal(tileCost(null, true, false), 0);
+
   const vm = sizedFlock({ needs: 79, finished: 79, working: 79, resting: 79 });
   const v = virtualGroups(vm, {});
   assert.equal(Object.getPrototypeOf(v), null);
-  assert.deepEqual(Object.keys(v).sort(), ["finished", "resting", "working"], "needs-you keeps its tiles (ties switch the later group)");
+  assert.deepEqual(keysOf(v), ["finished", "resting", "working"], "needs-you keeps its tiles (ties switch the later group)");
   const json = renderFlock(vm, {}, makeCtx()).toJSON();
-  assert.ok(tileCount(json) <= TILE_BUDGET, `${tileCount(json)} tiles`);
+  assert.ok(drawnCost(vm, json) <= TILE_BUDGET, `${drawnCost(vm, json)} > ${TILE_BUDGET}`);
+  assert.equal(tileCount(json), 79);
   for (const k of ["finished", "working", "resting"]) assert.ok(findById(json, `cw-flock-vl-${k}`), `${k} is a virtual list`);
   assert.ok(findById(json, "cw-flock-grid-needs"));
-  // 130 agents in realistic groups: the working group goes, the rest stay tiles.
-  const r = sizedFlock({ needs: 12, finished: 8, working: 70, resting: 40 });
-  assert.deepEqual(Object.keys(virtualGroups(r, {})), ["working"]);
-  assert.ok(tileCount(renderFlock(r, {}, makeCtx()).toJSON()) <= TILE_BUDGET);
-  // A folded group counts nothing; within the budget nothing changes; one group over 80 is always a list.
-  assert.deepEqual(Object.keys(virtualGroups(r, { folded: { working: true } })), []);
-  assert.deepEqual(Object.keys(virtualGroups(sizedFlock({ needs: 5, working: 40, resting: 35 }), {})), []);
-  assert.deepEqual(Object.keys(virtualGroups(sizedFlock({ working: VIRTUAL_ABOVE + 1 }), {})), ["working"]);
+  // 150 agents in realistic groups: the working group goes, the rest stay tiles.
+  const r = sizedFlock({ needs: 12, finished: 8, working: 80, resting: 50 });
+  assert.deepEqual(keysOf(virtualGroups(r, {})), ["working"]);
+  assert.ok(drawnCost(r, renderFlock(r, {}, makeCtx()).toJSON()) <= TILE_BUDGET);
+  // A folded group costs nothing; within the budget nothing changes; one group over 80 is always a list.
+  assert.deepEqual(keysOf(virtualGroups(r, { folded: { working: true } })), []);
+  assert.deepEqual(keysOf(virtualGroups(sizedFlock({ needs: 5, working: 60, resting: 45 }), {})), [], "110 plain tiles stay tiles");
+  assert.deepEqual(keysOf(virtualGroups(sizedFlock({ working: VIRTUAL_ABOVE + 1 }), {})), ["working"]);
   // Needs-you is switched last, even when it is the biggest group.
-  assert.deepEqual(Object.keys(virtualGroups(sizedFlock({ needs: 60, working: 30 }), {})), ["working"]);
-  // Fledgling pips weigh 1/8 each: 70 tiles with 4 pips weigh 105, past the budget.
+  assert.deepEqual(keysOf(virtualGroups(sizedFlock({ needs: 70, working: 50 }), {})), ["working"]);
+  // Fledgling pips cost: 70 working tiles with 4 pips each and 10 needs-you tiles are past the budget.
   const kids = sizedFlock({ needs: 10, working: 70 });
+  assert.deepEqual(keysOf(virtualGroups(kids, {})), []);
   for (const t of kids.helpers.groups[1].tiles) t.pips = ["working", "idle", "working", "idle"];
-  assert.deepEqual(Object.keys(virtualGroups(kids, {})), ["working"]);
+  assert.deepEqual(keysOf(virtualGroups(kids, {})), ["working"]);
   // One group of 80 whose tiles each carry a waiting fledgling (pip target + flag) is a list even alone.
   const heavy = sizedFlock({ working: VIRTUAL_ABOVE });
-  for (const t of heavy.helpers.groups[0].tiles) t.pips = ["blocked"];
-  assert.deepEqual(Object.keys(virtualGroups(heavy, {})), ["working"]);
+  for (const t of heavy.helpers.groups[0].tiles) {
+    t.pips = ["blocked"];
+    t.kids = [{ helperId: `k${t.helperId}`, status: "blocked" }];
+  }
+  assert.deepEqual(keysOf(virtualGroups(heavy, {})), ["working"]);
   for (const t of heavy.helpers.groups[0].tiles) t.pips = ["working"];
-  assert.deepEqual(Object.keys(virtualGroups(heavy, {})), [], "plain pips: 80 tiles stay a grid");
+  assert.deepEqual(keysOf(virtualGroups(heavy, {})), [], "plain pips: 80 tiles stay a grid");
+});
+
+test("r3-16: the 64-dense Flock with 80 working tiles (and their fledgling pips) beside needs-you and finished stays tiles", () => {
+  const s = F.scenario("flock-64-dense");
+  const vm = structuredClone(s.vm);
+  const working = vm.helpers.groups.find((g) => g.key === "working");
+  const base = working.tiles.slice();
+  while (working.tiles.length < VIRTUAL_ABOVE) {
+    const k = working.tiles.length;
+    working.tiles.push({ ...base[k % base.length], helperId: `v${k.toString(16).padStart(7, "0")}` });
+  }
+  assert.deepEqual(keysOf(virtualGroups(vm, s.ui)), [], "the rule of §5.5 item 8: 80 in a group stay tiles");
+  const json = renderFlock(vm, s.ui, makeCtx()).toJSON();
+  assert.ok(findById(json, "cw-flock-grid-working"));
+  assert.ok(drawnCost(vm, json) <= TILE_BUDGET);
+  // Unfolding resting (26 more, fledgling-heavy) is past the budget: working, the biggest, goes.
+  assert.deepEqual(keysOf(virtualGroups(vm, { ...s.ui, folded: { resting: false } })), ["working"]);
+});
+
+test("r3-16: hysteresis: a group the last render listed goes back to tiles only well inside the budget", () => {
+  // Plain dense tiles cost 6: 74 working + 60 resting = 804 > 800.
+  const plainDense = (vm) => {
+    vm.helpers.dense = true;
+    for (const g of vm.helpers.groups) for (const t of g.tiles) Object.assign(t, { envelope: false, rest: undefined });
+    return vm;
+  };
+  const over = plainDense(sizedFlock({ working: 74, resting: 60 }));
+  const cost = (vm) => vm.helpers.groups.reduce((c, g) => c + g.tiles.reduce((d, t) => d + tileCost(t, true, false), 0), 0);
+  assert.ok(cost(over) > TILE_BUDGET, `${cost(over)}`);
+  const first = virtualGroups(over, {});
+  assert.deepEqual(keysOf(first), ["working"]);
+  // One agent finishes: just under the budget. Without memory both are tiles;
+  // with the last render's lists the working group stays a list.
+  const under = structuredClone(over);
+  under.helpers.groups[0].tiles.pop();
+  assert.ok(cost(under) <= TILE_BUDGET && cost(under) > TILE_BUDGET - TILE_BUDGET_BAND);
+  assert.deepEqual(keysOf(virtualGroups(under, {})), []);
+  assert.deepEqual(keysOf(virtualGroups(under, {}, first)), ["working"], "no flip at the edge");
+  // The glue's ui.flockLists feeds renderFlock the same memory.
+  const ui = { flockLists: first };
+  assert.ok(findById(renderFlock(under, ui, makeCtx()).toJSON(), "cw-flock-vl-working"));
+  // A group that changes size does not trade places with the listed one: resting grows past working.
+  const swap = structuredClone(under);
+  for (let i = 0; i < 16; i++) swap.helpers.groups[1].tiles.push({ ...swap.helpers.groups[1].tiles[0], helperId: `r${i}` });
+  swap.helpers.groups[0].tiles.splice(0, 16);
+  assert.ok(swap.helpers.groups[1].tiles.length > swap.helpers.groups[0].tiles.length);
+  assert.deepEqual(keysOf(virtualGroups(swap, {}, first)), ["working"], "the listed group stays the list");
+  // Well inside the budget the list goes back to tiles.
+  const small = plainDense(sizedFlock({ working: 40, resting: 60 }));
+  assert.ok(cost(small) <= TILE_BUDGET - TILE_BUDGET_BAND);
+  assert.deepEqual(keysOf(virtualGroups(small, {}, first)), []);
+  // The per-group rule has no memory: 80 tiles are a grid again whatever was listed.
+  assert.deepEqual(keysOf(virtualGroups(sizedFlock({ working: VIRTUAL_ABOVE }), {}, { working: true })), []);
+  // Junk memory is ignored.
+  for (const junk of [null, 7, "working", { working: 1 }]) assert.deepEqual(keysOf(virtualGroups(under, {}, junk)), []);
 });
 
 test("r3-17: a parent whose fledgling waits gets a badge-size needs-you flag that opens the fledgling, dense or not", () => {
@@ -452,6 +536,16 @@ test("r3-17: a parent whose fledgling waits gets a badge-size needs-you flag tha
     assert.equal(styleVal(flag, "w"), g.badge, "as big as the status badge");
     assert.equal(styleVal(flag, "border_color"), statusColor(ctx.T, "blocked", "raised"), "ringed in needs-you (guarded for the tile)");
     assert.match(styleVal(flag, "tooltip"), /click to open it/);
+    // Inside its own tile, clear of the left neighbour's status badge (which
+    // pokes out past that tile's right edge across the grid gap), so it never
+    // reads as the neighbour's and its click target takes none of that badge.
+    const badge = findById(tree.toJSON(), `cw-flock-badge-${tileId(1)}`);
+    const poke = -styleVal(badge, "right");
+    assert.equal(styleVal(flag, "left"), KID_FLAG_LEFT);
+    assert.equal(styleVal(flag, "top"), styleVal(badge, "top"), "level with the badge");
+    const clear = g.gap + styleVal(flag, "left") - poke;
+    assert.ok(clear >= 2, `dense ${dense}: ${clear} px from the neighbour's badge`);
+    assert.ok(styleVal(flag, "left") + g.badge + 2 <= g.w - poke - g.badge, "clear of its own badge");
     const cx = fakeCx();
     fire(tree, `cw-flock-kidflag-${tileId(1)}`, "on_click", {}, cx);
     assert.deepEqual(ctx.calls, [["openHelper", kidId]]);

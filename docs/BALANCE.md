@@ -92,19 +92,20 @@ Buy the candidate with the smallest payback if affordable; repeat until it is no
 | P10 busy agents | working blocks 15 min (3 × [15 working, 2 needs you], then 9 resting) |
 | P11 fast hands | 3 hand hits per second |
 | P12 calm | P1 with calm mode on |
-| P13 short turns | short turns and a burst of sub-agents: 12 × [**3 min working, 1 min needs you**], then 12 resting (still 36 working minutes an hour, but **12 finished tasks an hour**); each block's fledgling is a **new sub-agent** (a new address) that works the first 45 s, finishes, and is gone when the block ends |
+| P13 short turns | sub-minute turns and a burst of sub-agents: 48 × [**45 s working, 15 s needs you**], then 12 resting (still 36 working minutes an hour, but **48 finished tasks an hour**); each block starts **4 new sub-agents** (new addresses) one after another in its first 12 s, each working 3 s and then done until the block ends (one fledgling working at a time and about P1's share of working time, but **192 fledgling finishes an hour** per agent) |
 
-P13 guards the envelope-unit rule (DESIGN §6.1, review r3-24): a finish earns a share of a unit
-that follows the time since the helper's previous credited finish (12 min or more = a whole
-unit), and every fledgling of a parent draws on that parent's one budget. Before it, every finish
-more than 60 s after the last earned a whole unit and each new sub-agent address its own half
-unit, so short turns about doubled the units created and moved the first wish before day 3
-(3 min / 1 min turns with no rest: 15:42 on seed 1). With the rule, short-turn variants of P1 on
-seed 1 reach the first wish on day 3 (5/1, 3/1 and 1/1 minutes with no rest: 19:47, 20:15 and
-22:42), each with day 1-3 click shares above P1's floors, and P2's never-click policy on 1/1
-turns (25:56) stays slower than P1's. Adding a new sub-agent every 2-minute block to the 1/1 case
-only slows it (first wish at the end of day 3), since every sub-agent draws on its parent's one
-budget.
+P13 guards the envelope-unit rule (DESIGN §6.1, review r3-24): every finish draws on a budget, a
+token bucket of at most one unit that refills one unit per 12 minutes, and every fledgling of a
+parent draws on that parent's one budget, so the units an agent and its sub-agents earn follow
+time, not the number of turns (at most 6 and 3 an hour; P13's agents earn ≈ 7.4 an hour each with
+fledglings against P1's 4.5, from 37 times the finishes). Before it, every finish more than 60 s
+after the last earned a whole unit and each new sub-agent address its own half unit, so short
+turns about doubled the units created and moved the first wish before day 3 (3 min / 1 min turns
+with no rest: 15:42 on seed 1); a per-finish minimum of 1/8 that replaced it still grew with the
+number of turns below about 1.5 minutes apart, and on it this P13 reached the first wish at 17:35
+(seeds 1-3). Sub-agents add to their parent's gathering by how many work at once (DESIGN §5.3), not
+by how many finish, so P13 keeps one working at a time: four at once would be four times the
+fledgling help, a different profile.
 
 ---
 
@@ -148,7 +149,7 @@ M17 is provisional: if it fails, retune the later-wish gate `max(5, ceil(0.25·W
 | P10 busy agents | 19:20 | 17:00 – 22:00 | 16:00 – 23:00 | P10 ≤ P1 | 19:22 (18:54–20:01) |
 | P11 fast hands | 18:30 | 16:30 – 21:00 | **≥ 16:00** and ≤ 22:00 | — | 18:30 (17:29–19:18) |
 | P12 calm | = P1 | each seed within ±3 % of the same P1 seed | | calm changes no earnings | (= P1 by construction) |
-| P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 22:00 (21:41–22:09) |
+| P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 21:56 (21:24–22:21) |
 
 Monotonicity (medians): P3 ≥ P4 ≥ P1 ≥ P5 ≥ P6 ≥ P7. More agents never make the game slower,
 and 30 or 64 agents never reach the first wish on the first day of open time.
@@ -172,7 +173,7 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
 | P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
-| P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 10.1 / 19.1 / 22.6 % |
+| P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 10.8 / 20.1 / 25.3 % |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
 

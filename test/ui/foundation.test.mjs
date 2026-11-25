@@ -609,15 +609,18 @@ test("ribbon: level-C tally chips show the whole count and the middle reserves i
   }
 });
 
-test("widgets: glyph badges use the guarded colour on T.popover; envelope marker is ink on sheet", () => {
+test("widgets: glyph badges use the guarded colour on the status disc (T.popover but win98); envelope marker is ink on sheet", () => {
   for (const name of ALL) {
     const T = THEMES[name];
     const S = P.pickScene(isDark(name));
+    const disc = C.statusDisc(T);
     for (const status of ["working", "blocked", "done", "idle"]) {
       const b = W.glyph(status, {}, T, S).toJSON();
-      assert.equal(b.styles.find((s) => s[0] === "bg")[1], T.popover);
+      assert.equal(b.styles.find((s) => s[0] === "bg")[1], disc);
       const c = b.children[0].styles.find((s) => s[0] === "text_color")[1];
-      assert.ok(C.contrast(c, T.popover) >= 3, `${name} ${status}`);
+      assert.ok(C.contrast(c, disc) >= 3, `${name} ${status}`);
+      // r3-21: the needs-you glyph keeps the theme's own red on every bundled theme.
+      if (status === "blocked") assert.equal(c, C.hex6(T.blocked), `${name}: needs-you keeps its colour`);
       assert.equal(b.styles.find((s) => s[0] === "w")[1], 18);
     }
     const env = W.glyph("envelope", {}, T, S).toJSON();

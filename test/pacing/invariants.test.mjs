@@ -386,6 +386,16 @@ test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still
   const arch = rows.filter((r) => /^past-/.test(r.helperId));
   assert.equal(arch.length, archives.length);
   for (const r of arch) assert.equal(r.name, `${engine.formatInt(s.helpers[r.helperId].archive)} helpers`.slice(0, 16));
+  // and says when its helpers left as a range, newest to oldest ("34–63 d"), not the newest alone
+  const fmt = (ms) => engine.formatDuration(ms, { spaced: true, parts: 1 });
+  for (const r of arch) {
+    const a = s.helpers[r.helperId];
+    const newest = fmt(t - a.missingSince);
+    const oldest = fmt(t - a.from);
+    assert.ok(a.from < a.missingSince, r.helperId);
+    if (newest === oldest) assert.equal(r.leftAgo, newest);
+    else assert.equal(r.leftAgo, `${newest.split(" ")[0]}–${oldest}`, r.helperId);
+  }
   assert.ok(/^past-/.test(rows.at(-1).helperId), "archives hold the helpers who left longest ago");
   const text = engine.serialize(s);
   assert.ok(text.length < I.heavyKiB * 1024, `${(text.length / 1024).toFixed(0)} KiB`);

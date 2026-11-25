@@ -87,15 +87,20 @@ export function demoState(t) {
 export class Session {
   /**
    * role: "panel" | "ribbon" | null (null: read props().role in init).
-   * opts: { isFolded(vm, ui, key), sectionIndex(vm, ui, key) } (from
-   * ui/flock.js) and `scroll`, a ScrollHandle created in init (all passed by
-   * main.js). With both of the last two, a counts-chip ● / ◗ or a ribbon tally
-   * scrolls the Flock to its group (DESIGN §3.1).
+   * opts: { isFolded(vm, ui, key), sectionIndex(vm, ui, key),
+   * virtualGroups(vm, ui, prev) } (from ui/flock.js) and `scroll`, a
+   * ScrollHandle created in init (all passed by main.js). With `sectionIndex`
+   * and `scroll`, a counts-chip ● / ◗ or a ribbon tally scrolls the Flock to
+   * its group (DESIGN §3.1). With `virtualGroups`, the panel keeps the last
+   * render's Flock lists in `ui.flockLists` (the r3-16 hysteresis).
    */
   constructor(role = null, opts = {}) {
     this.role = role === "ribbon" ? "ribbon" : role === "panel" ? "panel" : null;
     this.isFolded = typeof opts.isFolded === "function" ? opts.isFolded : null;
     this.sectionIndex = typeof opts.sectionIndex === "function" ? opts.sectionIndex : null;
+    this.virtualGroups = typeof opts.virtualGroups === "function" ? opts.virtualGroups : null;
+    // The Flock lists the last panel render drew (handed to the next one as ui.flockLists).
+    this.flockDrawn = null;
     this.scroll = opts.scroll && typeof opts.scroll.scroll_to_item === "function" ? opts.scroll : null;
     this.popRise = null;
     this.popPrune = null;
@@ -337,11 +342,12 @@ export class Session {
     // automation buying or opening) is shown at once.
     const before = slot.state.rev;
     const ev = advance(slot.state, t, slot.writerId);
+    const more = ev.some((e) => e.kind !== "earn");
     if (slot.state.rev !== before) {
-      slot.timeRev = (slot.timeRev || 0) + (slot.state.rev - before);
+      if (!more) slot.timeRev = (slot.timeRev || 0) + (slot.state.rev - before);
       markDirty(slot, t, false);
     }
-    if (ev.some((e) => e.kind !== "earn")) touch(slot);
+    if (more) touch(slot);
 
     // Notifications (opt-in, ≤ 3 a day) and the save-problem ribbon rescue.
     notifier.check(slot, t, { day, quiet: panelShown && active, layout: L }, () => {
@@ -530,7 +536,7 @@ export class Session {
     // a folded Album with thousands of records costs nothing to render).
     const album = this.role === "panel" && tab === "flock" && this.albumOpen();
     const key = [
-      this.stateId(s), s.rev - (slot && slot.state === s && slot.timeRev ? slot.timeRev : 0), slot ? slot.writerId : "", width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}` : "",
+      this.stateId(s), s.rev - (slot && slot.state === s && slot.timeRev ? slot.timeRev : 0), slot ? slot.writerId : "", width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}@${notice.text ?? ""}@${notice.message ?? ""}` : "",
       bucket(at, !!s.settings.calm), short, fl ?? "", album,
     ].join("|");
     if (this.cache && this.cache.key === key) return this.cache.vm;
@@ -593,9 +599,21 @@ export class Session {
   }
 
   /** This copy's ui with a fresh `now` (confirm arming compares it; renderers never read a clock). */
-  uiForRender() {
-    this.ui.now = this.demo ? this.demo.t : clockNow();
-    return this.ui;
+  uiForRender(vm) {
+    const u = this.ui;
+    u.now = this.demo ? this.demo.t : clockNow();
+    // r3-16: the Flock's grid-or-list choice remembers the last render's lists.
+    // ui.flockLists is that memory; flockParts computes the same pure value
+    // from it, which is kept here for the next render.
+    if (this.role === "panel" && this.virtualGroups && vm && u.tab === "flock") {
+      u.flockLists = this.flockDrawn;
+      try {
+        this.flockDrawn = this.virtualGroups(vm, u, this.flockDrawn);
+      } catch {
+        this.flockDrawn = null;
+      }
+    }
+    return u;
   }
 
   /** A ribbon / rail click asked the panel to select a tile or show a group (applied by the panel copy). */
@@ -650,6 +668,8 @@ export class Session {
       if (this.role === "panel") ctx.folded = panelState(slot) === "folded";
       if (this.role === "ribbon") {
         ctx.panelShown = !!slot.presence.panelShown;
+        // r3-14: only a full panel shows the away card (a tight rail has none).
+        ctx.panelFull = ctx.panelShown && panelState(slot) === "full";
         ctx.narrowHint = this.narrowHint(t);
       }
     } else if (this.role === "ribbon") {

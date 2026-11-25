@@ -38,3 +38,40 @@ test("P7 (64 agents and their fledglings): same milestones within 1 %", () => co
 test("idle steps above 60 s are refused (a longer step would be an away segment)", () => {
   assert.throws(() => runProfile("P3", 1, { idleStep: 61 }), /idleStep/);
 });
+
+test("r3-24: P13's agents give 48 sub-minute turns and 192 new sub-agents an hour each, one working at a time, and earn units by time", async () => {
+  const { agentObservation } = await import("../../tools/sim/pacing.mjs");
+  const { seeded, writer, observeAction, T0 } = await import("../engine/_util.mjs");
+  const s = seeded();
+  const me = writer(s);
+  const turns = new Map();
+  const kids = new Map(); // address → finished
+  let maxWorking = 0;
+  const start = 7200; // a whole cycle of every agent, from the second hour
+  for (let sec = start; sec < start + 3600; sec++) {
+    const list = agentObservation("P13", sec);
+    const working = new Map();
+    for (const o of list) {
+      if (o.kind === "pane") {
+        if (!turns.has(o.addr)) turns.set(o.addr, [o.turn, o.turn]);
+        turns.get(o.addr)[1] = o.turn;
+      } else {
+        if (o.status === "working") working.set(o.parent, (working.get(o.parent) || 0) + 1);
+        kids.set(o.addr, (kids.get(o.addr) || false) || o.turn === 1);
+      }
+    }
+    for (const v of working.values()) maxWorking = Math.max(maxWorking, v);
+    me.act(observeAction(T0 + sec * 1000, list));
+  }
+  assert.equal(turns.size, 4);
+  for (const [a, [t0, t1]] of turns) assert.equal(t1 - t0, 48, a);
+  const done = [...kids.values()].filter(Boolean).length;
+  // 192 an hour each, give or take the blocks cut by the hour's two ends
+  assert.ok(Math.abs(done - 4 * 192) <= 16, `${done} sub-agents finished`);
+  assert.equal(maxWorking, 1, "one fledgling works at a time, as in P1");
+  // the unit budgets' bound over the hour: per agent 1 + 60/12 (pane) and
+  // 0.5 · (1 + 60/12) (its fledglings), whatever the number of finishes
+  const u = s.stats.units.created;
+  assert.ok(u <= 4 * (6 + 3), `${u} units from ${4 * 48} turns and ${done} fledgling finishes`);
+  assert.ok(u >= 4 * 5, `${u}`);
+});

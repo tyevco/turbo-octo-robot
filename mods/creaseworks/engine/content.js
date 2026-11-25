@@ -182,7 +182,7 @@ export const K = f({
   restFullMin: 30, restMax: 1, warmMs: 20 * 60000, kidBonus: 0.25, kidMax: 4,
   thanksMs: 5 * 60000, thanksWindowMs: 5 * 60000, thanksMult: 1.5,
   songMult: 3, chorusMult: 2,
-  unitRefillMs: 12 * 60000, unitMinShare: 0.125, unitPane: 1, unitKid: 0.5, // r3-24: units follow time between finishes
+  unitRefillMs: 12 * 60000, unitPane: 1, unitKid: 0.5, // r3-24: a token bucket per budget, at most 1 share, refilled 1 per 12 min
   envCap: 9, envCapPerk: 15, envRp: 45, envV: 75, stackStep: 0.25, extendShare: 0.25,
   awayAfterMs: 60000, awayCapMs: 8 * 3600000, capShareLiveMs: 5 * 60000, awayF: 0.25, // awayF †
   awayCardMs: 5 * 60000, potAutoMs: 10 * 60000, clockBackMs: 5000,

@@ -410,7 +410,10 @@ test.after(() => {
 //   * the same year and two-year saves and play with the collector held back
 //     (createHost gcHeadroom, which changes only WHEN garbage is collected):
 //     must free cleanly. A leaked handle, or anything the mod or harness kept
-//     alive for real, fails here; only the collector-timing fault passes.
+//     alive for real, fails here; passing is consistent with an engine
+//     collector-timing fault. (The limit of this check: it catches leaks that
+//     do not depend on when the collector runs, not a GC-timing-dependent
+//     refcount error on the harness side.)
 // herdr runs a different QuickJS (longbridge quickjs-jit), not checked here.
 
 /**

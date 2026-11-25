@@ -292,7 +292,7 @@ export function renderSettings(vm, ui, ctx) {
   // 5. Roster
   root.child(heading("cw-set-h-roster", "ROSTER", T));
   root.child(radioBlock("cw-set-order", "Order", "Workspace order follows herdr's sidebar", CHOICES.order, s.order === "workspace" ? "workspace" : "urgency", ctx));
-  root.child(radioBlock("cw-set-density", "Dense tiles", "Auto: dense at 21 or more helpers", CHOICES.density,
+  root.child(radioBlock("cw-set-density", "Dense tiles", "Auto: dense at 21+ helpers or when narrow", CHOICES.density,
     s.density === "always" || s.density === "never" ? s.density : "auto", ctx));
 
   // 6. Number style

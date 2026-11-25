@@ -46,11 +46,19 @@ const draw = (seed, key) => mulberry((engine.fnv1a32n(key) ^ (seed * 2654435761)
 
 function agentModel(prof) {
   const c = prof.cycle;
-  const block = (c.work + c.needs) * 60;
+  // seconds (a cycle may use sub-minute turns: work 0.75 = 45 s)
+  const block = Math.round((c.work + c.needs) * 60);
   const cycleLen = c.blocks * block + c.rest * 60;
   if (cycleLen !== HOUR) throw new Error(`${prof.id}: agent cycle is ${cycleLen} s, not an hour`);
-  const work = c.work * 60;
+  const work = Math.round(c.work * 60);
   const kidLen = Math.round(prof.kidShare * work);
+  // freshKids: how many new sub-agents each block starts (true = 1; false/0 =
+  // one lasting fledgling). With k > 1 they work one after another, each for
+  // kidLen / k s of the block's first kidLen s, so one works at a time (the
+  // same gathering as one fledgling) and each is done until the block ends.
+  const fresh = prof.freshKids === true ? 1 : Math.max(0, Math.floor(Number(prof.freshKids) || 0));
+  const seg = fresh > 1 ? kidLen / fresh : kidLen;
+  if (fresh > 1 && seg !== Math.floor(seg)) throw new Error(`${prof.id}: ${kidLen} s of fledgling work do not split into ${fresh} whole seconds`);
   const offsets = [];
   // agents are numbered 1…n (agent 0 would sit at offset 0, on the same second as every
   // third session start, which no real agent does)
@@ -60,11 +68,12 @@ function agentModel(prof) {
   for (const off of offsets) {
     for (let j = 0; j < c.blocks; j++) {
       for (const x of [j * block, j * block + kidLen, j * block + work]) marks.add((x + off) % HOUR);
+      for (let q = 1; q < fresh; q++) marks.add((j * block + q * seg + off) % HOUR);
     }
     marks.add((c.blocks * block + off) % HOUR);
   }
   const sorted = [...marks].sort((a, b) => a - b);
-  return { c, block, work, kidLen, offsets, sorted, freshKids: prof.freshKids === true };
+  return { c, block, work, kidLen, seg, offsets, sorted, freshKids: fresh };
 }
 
 /** Status and turn of agent i and its fledgling at play-clock second `s`. */
@@ -88,7 +97,7 @@ function agentAt(m, i, s) {
   const base = 1000 + m.c.blocks * cyc;
   // the block's own fledgling (freshKids): its index, or -1 while the agent rests
   const blk = j >= m.c.blocks ? -1 : m.c.blocks * cyc + j;
-  return { status, turn: base + done, kid, kidTurn: base + kidDone, blk };
+  return { status, turn: base + done, kid, kidTurn: base + kidDone, blk, z: blk >= 0 ? y - j * m.block : -1 };
 }
 
 /** The next play-clock second > s at which some agent changes. */
@@ -109,12 +118,20 @@ function observation(m, agents, s, withKids = true) {
       pane: `p${i}`, title: `agent ${i}`, paneName: `pane ${i}`, space: "main", tab: "1", kind: "pane",
     });
     if (withKids && m.freshKids) {
-      // a new sub-agent each block (r3-24): working, then done (+1 turn) until the block ends
+      // new sub-agents each block (r3-24): working, then done (+1 turn) until the block ends
       if (a.blk >= 0) {
-        list.push({
-          addr: `k${i}.${a.blk}`, created: 5000 + i + 7 * a.blk, status: a.kid, raw: a.kid, turn: a.kid === "working" ? 0 : 1, parent: `a${i}`,
-          pane: null, title: `sub-agent ${i}`, paneName: null, space: "main", tab: "1", kind: "kid",
-        });
+        for (let q = 0; q < m.freshKids; q++) {
+          // sub-agent q of the block: absent until its start, then working, then done
+          const st = a.z < m.work ? q * m.seg : 0;
+          if (a.z < st) break;
+          const working = a.z < m.work && a.z < st + m.seg;
+          const n = a.blk * m.freshKids + q;
+          list.push({
+            addr: m.freshKids === 1 ? `k${i}.${a.blk}` : `k${i}.${a.blk}.${q}`, created: 5000 + i + 7 * n,
+            status: working ? "working" : "idle", raw: working ? "working" : "idle", turn: working ? 0 : 1, parent: `a${i}`,
+            pane: null, title: `sub-agent ${i}`, paneName: null, space: "main", tab: "1", kind: "kid",
+          });
+        }
       }
     } else if (withKids) {
       list.push({

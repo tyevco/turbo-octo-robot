@@ -228,7 +228,7 @@ export function chargeRest(idx, E, dtMs) {
 // is the hash of addr#created, so a returning agent finds its record).
 const LIVE_FIELDS = {
   addr: "", created: 0, lastSeen: 0, seenBy: null, group: "resting",
-  lastFinishAt: null, kidFinishAt: null, blockedAt: null, warm: 1, warmUntil: 0, thanksUntil: 0,
+  lastFinishAt: null, unitAt: null, kidUnitAt: null, blockedAt: null, warm: 1, warmUntil: 0, thanksUntil: 0,
   title: null, pane: null, paneName: null, space: null, tab: null,
 };
 
@@ -243,6 +243,7 @@ function toAlbum(h, t) {
   else delete h.salt;
   if (typeof h.addr === "string" && h.addr !== "") h.key = albumKey(h.addr, Number(h.created) || 0);
   for (const k of Object.keys(LIVE_FIELDS)) delete h[k];
+  delete h.kidFinishAt; // the fledgling budget's field before kidUnitAt (r3-24)
   h.gone = true;
   h.missingSince = t;
   h.rest = Math.round(h.rest * 1e4) / 1e4;
@@ -423,7 +424,7 @@ function newRecord(o, id, t, w, slots) {
     kind: o.kind === "kid" ? "kid" : "pane", parent: null,
     species: look.species, hue: look.hue, name,
     joined: t, lastSeen: t, seenBy: w,
-    status, lastTurn: Number(o.turn) || 0, lastFinishAt: null, kidFinishAt: null,
+    status, lastTurn: Number(o.turn) || 0, lastFinishAt: null, unitAt: null, kidUnitAt: null,
     blockedAt: status === "blocked" ? t : null,
     rest: 0, warm: 1, warmUntil: 0, thanksUntil: 0, env: 0,
     stats: { tasks: 0, folds: 0, run: 0, envelopes: 0, checkIns: 0 },
@@ -450,18 +451,32 @@ function transition(h, next, t, E) {
   h.status = next;
 }
 
+const numOr = (x, d) => (typeof x === "number" && Number.isFinite(x) ? x : d);
+
 /**
- * The share of a full unit a finish earns (§6.1, r3-24): the time since the
- * last credited finish on the same budget over K.unitRefillMs (12 min), in
- * 64ths, at least K.unitMinShare (1/8), a whole unit for the first one. Envelope units follow
- * time, not the number of turns: an agent answering every minute earns about
- * what one finishing every 12 minutes does.
+ * Draw on an envelope-unit budget (§6.1, r3-24): a token bucket that holds at
+ * most one unit and refills one unit per K.unitRefillMs (12 min). `o[key]` is
+ * the time the bucket was last empty (its level at `t` is
+ * `min(1, (t − o[key]) / 12 min)`); `empty` is that time for a budget never
+ * drawn on (null: it starts full). A finish takes all the bucket holds, in
+ * 64ths (unit counts stay exact binary fractions, inv. 9 sums them); the
+ * remainder below 1/64 stays in the bucket. So a budget pays at most one unit
+ * per 12 minutes plus the one it starts with, however many finishes draw on
+ * it: envelope units follow time, not the number of turns, and a finish soon
+ * after another (or a stream of them) earns little or nothing. Returns the
+ * share drawn (0 to 1).
  */
-function unitShare(last, t) {
-  if (typeof last !== "number" || !Number.isFinite(last)) return 1;
-  // in 64ths, so unit counts stay exact binary fractions (inv. 9 sums them)
-  const x = Math.floor(((t - last) / K.unitRefillMs) * 64) / 64;
-  return Math.max(K.unitMinShare, Math.min(1, x));
+function drawUnits(o, key, t, empty = null) {
+  let at = o[key];
+  if (typeof at !== "number" || !Number.isFinite(at)) at = empty;
+  if (typeof at !== "number" || !Number.isFinite(at)) {
+    o[key] = t;
+    return 1;
+  }
+  const from = Math.max(at, t - K.unitRefillMs);
+  const share = Math.max(0, Math.floor(((t - from) / K.unitRefillMs) * 64) / 64);
+  o[key] = from + share * K.unitRefillMs;
+  return share;
 }
 
 function finish(state, ctx, h, t, ev) {
@@ -476,18 +491,22 @@ function finish(state, ctx, h, t, ev) {
     // the parent gone (or unknown) they stay with the fledgling itself, so no
     // envelope is ever filed under an Album record (R13, review r2-18). Every
     // fledgling of a parent draws on the parent's one fledgling budget
-    // (`kidFinishAt`), so a burst of short-lived sub-agents with new
-    // addresses earns what one does (r3-24).
+    // (`kidUnitAt`, r3-24), so a burst of short-lived sub-agents with new
+    // addresses earns what one busy fledgling does: at most half a unit per
+    // 12 minutes. A fledgling on its own budget starts it empty when it
+    // joined, so short-lived orphans with new addresses earn by their time too.
     const p = h.parent ? state.helpers[h.parent] : null;
     if (p && !p.gone) {
       to = p;
-      units = K.unitKid * unitShare(p.kidFinishAt, t);
-      p.kidFinishAt = t;
+      // kidFinishAt: the same budget's field in saves before kidUnitAt
+      units = K.unitKid * drawUnits(p, "kidUnitAt", t, numOr(p.kidFinishAt, null));
+      delete p.kidFinishAt;
     } else {
-      units = K.unitKid * unitShare(h.lastFinishAt, t);
+      units = K.unitKid * drawUnits(h, "unitAt", t, numOr(h.lastFinishAt, numOr(h.joined, null)));
     }
   } else {
-    units = K.unitPane * unitShare(h.lastFinishAt, t);
+    // lastFinishAt: where a save before unitAt left this budget empty
+    units = K.unitPane * drawUnits(h, "unitAt", t, numOr(h.lastFinishAt, null));
   }
   h.lastFinishAt = t;
   if (units > 0) addUnits(state, ctx, to, units, t, ev, `${h.id}:${h.lastTurn}`);
@@ -704,14 +723,30 @@ function resolveParent(h, o, list, ids, byAddr, byAddrPresent) {
   }
 }
 
-/** A gone fledgling folds into its parent's record (kidsPast, kidsFolds) and leaves the save. */
+/**
+ * A gone fledgling folds into its parent's record (kidsPast, kidsFolds) and
+ * leaves the save. Nothing is dropped when that record is no longer in the
+ * save (its parent was merged into an Album archive entry, r3-04) or it never
+ * had a parent: it folds into the archive entry of the 30 days it left in when
+ * there is one, else it stays as a helper of its own (a gone pane record,
+ * compacted and archived like any other), so its folds stay in the Album.
+ */
 function foldKid(state, h) {
   const hs = state.helpers;
-  const p = h.parent ? hs[h.parent] : null;
-  if (p) {
-    p.stats.kidsPast = (p.stats.kidsPast || 0) + 1;
-    p.stats.kidsFolds = (p.stats.kidsFolds || 0) + h.stats.folds;
+  let p = h.parent && Object.hasOwn(hs, h.parent) ? hs[h.parent] : null;
+  if (!p && typeof h.missingSince === "number") {
+    const aid = archiveId(h.missingSince);
+    const a = Object.hasOwn(hs, aid) ? hs[aid] : null;
+    if (a && a.archive > 0 && a.gone) p = a;
   }
+  if (!p) {
+    h.kind = "pane";
+    h.parent = null;
+    rosterChanged(state);
+    return;
+  }
+  p.stats.kidsPast = (p.stats.kidsPast || 0) + 1;
+  p.stats.kidsFolds = (p.stats.kidsFolds || 0) + h.stats.folds;
   delete hs[h.id];
   rosterChanged(state);
 }

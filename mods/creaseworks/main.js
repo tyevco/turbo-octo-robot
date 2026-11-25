@@ -8,13 +8,13 @@ import { View, div } from "gpui-kit";
 import { Session } from "./glue/session.js";
 import { renderPanel } from "./ui/panel.js";
 import { renderRibbon } from "./ui/ribbon.js";
-import { isFolded, sectionIndex, newFlockScroll } from "./ui/flock.js";
+import { isFolded, sectionIndex, virtualGroups, newFlockScroll } from "./ui/flock.js";
 import { pickScene, pickHues } from "./ui/palette.js";
 
 export default class Creaseworks extends View {
   init(_props, cx) {
     // The session reads props().role (never init's argument, A2 rule 10).
-    this.session = new Session(null, { isFolded, sectionIndex, scroll: newFlockScroll() });
+    this.session = new Session(null, { isFolded, sectionIndex, virtualGroups, scroll: newFlockScroll() });
     this.session.init(cx);
   }
 
@@ -36,7 +36,7 @@ export default class Creaseworks extends View {
       const fg = typeof T.muted === "string" ? T.muted : "#9a9aa2";
       return root.bg(bg).flex().items_center().justify_center().text_size(11).text_color(fg).child(s.loadingText());
     }
-    const ui = s.uiForRender();
+    const ui = s.uiForRender(vm);
     const content = s.role === "ribbon" ? renderRibbon(vm, ui, ctx) : renderPanel(vm, ui, ctx);
     return root.child(content);
   }

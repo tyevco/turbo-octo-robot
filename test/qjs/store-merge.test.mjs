@@ -1,5 +1,5 @@
 // Compare-and-swap merges of a large save in the QuickJS-ng harness (review
-// r2-03; ARCHITECTURE A4, A5; BALANCE item 7: a save stays < 512 KiB). After
+// r2-03; ARCHITECTURE A4, A5; BALANCE item 7: a save stays < 640 KiB). After
 // a CAS rejection the store reads the other window's file, parses it,
 // replays this window's unconfirmed actions, advances and serialises again.
 // On a save a year or more old each of those is a large share of herdr's
@@ -68,7 +68,7 @@ async function mergeRounds(days, minKiB) {
   const state = heavySave(days);
   const text = engine.serialize(state);
   const kib = text.length / 1024;
-  assert.ok(kib >= minKiB && kib < 512, `a ${days}-day save of ${kib.toFixed(0)} KiB (inside the 512 KiB envelope)`);
+  assert.ok(kib >= minKiB && kib < 640, `a ${days}-day save of ${kib.toFixed(0)} KiB (inside the 640 KiB envelope)`);
   const now = state.clock + 1000;
   const agents = [];
   const terminals = [];

@@ -13,7 +13,7 @@
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Switch, Checkbox } from "gpui-base";
-import { contrast, isHex, over, statusColor, statusKey, GUARD_MIN } from "./color.js";
+import { contrast, hex6, isHex, over, statusColor, statusDisc, statusKey, GUARD_MIN } from "./color.js";
 import { icon, pipPath, sprite, spritePath, statusGlyphPath } from "./art.js";
 
 /** Minimum text size anywhere in the game (DESIGN §3, §14.3). */
@@ -342,7 +342,9 @@ export function checkbox(id, checked, label, opts = {}, T, _S = undefined) {
  * A pill chip (DESIGN §3.2 item 10, §3.10): height 22, `rounded(11)`, px 8,
  * T.popover, 1 px border (`opts.border`, default S.sheet: separates it from
  * the mat), optional status glyph (`opts.status`, 12 px, colour guarded on
- * T.popover) or ui glyph (`opts.icon`), label 11/600 T.foreground.
+ * the pill) or ui glyph (`opts.icon`), label 11/600 T.foreground. A
+ * needs-you pill whose red fails on T.popover (win98) takes the status disc
+ * colour instead (`statusDisc`, r3-21), so the pennant keeps its red.
  * `opts`: `onClick` (then `id` is required), `stop`, `tooltip`, `dashed`,
  * `pulse` (needs-you loop, DESIGN §13.5), `bg`, `maxW` (px: the pill never
  * grows past it and its label truncates). Without `maxW` the pill fits its
@@ -351,7 +353,8 @@ export function checkbox(id, checked, label, opts = {}, T, _S = undefined) {
 export function chip(id, label, opts = {}, T, S) {
   const clickable = Boolean(opts.onClick);
   if (clickable || opts.tooltip || opts.pulse) requireId(id, "chip");
-  const bg = opts.bg ?? T.popover;
+  const needsDisc = opts.bg == null && statusKey(opts.status) === "blocked" && isHex(T.blocked) && statusColor(T, "blocked", "popover") !== hex6(T.blocked);
+  const bg = opts.bg ?? (needsDisc ? statusDisc(T) : T.popover);
   const el = h_flex()
     .h(22)
     .flex_none()
@@ -480,9 +483,10 @@ export function statusGlyph(status, size, surface, opts = {}, T, _S = undefined)
 }
 
 /**
- * A status badge (DESIGN §3.3): a `size` disc (18; dense 16) in T.popover
- * with a 1 px T.border ring holding the `glyphSize` (12) status glyph in the
- * guarded colour for T.popover. `status` "envelope" draws the envelope
+ * A status badge (DESIGN §3.3): a `size` disc (18; dense 16) in
+ * `statusDisc(T)` (T.popover, or on win98 a surface where the needs-you red
+ * passes, r3-21) with a 1 px T.border ring holding the `glyphSize` (12)
+ * status glyph in the guarded colour for that disc. `status` "envelope" draws the envelope
  * marker instead: S.ink glyph (11) on a S.sheet disc (14; dense 12).
  * `opts`: `size`, `glyphSize`, `spin` (true = 1200 ms, or a period; working
  * only), `pulse` (needs-you only: opacity loop 0.55↔1 / 1200 ms), `id`
@@ -492,8 +496,8 @@ export function glyph(status, opts = {}, T, S) {
   const envelope = status === "envelope";
   const size = opts.size ?? (envelope ? 14 : 18);
   const glyphSize = opts.glyphSize ?? (envelope ? 11 : 12);
-  const discBg = envelope ? S.sheet : T.popover;
-  const color = envelope ? S.ink : statusColor(T, status, "popover");
+  const discBg = envelope ? S.sheet : statusDisc(T);
+  const color = envelope ? S.ink : statusColor(T, status, discBg);
   const g = svg(envelope ? spritePath("status", "envelope") : statusGlyphPath(status)).w(glyphSize).h(glyphSize).text_color(color);
   if (!envelope && opts.spin && status === "working") g.spin(opts.spin === true ? 1200 : opts.spin);
   const el = h_flex()

@@ -236,3 +236,50 @@ test("r3-12: renders between calm buckets read the cached vm; the counters hold 
   P.render();
   assert.equal(P.inRender, inRender, "render reads it");
 });
+
+// r3-12: in calm mode a piece the clock brings (a chain of nodes here) shows
+// on the tick it appears, not at the next 5 s bucket: advance's events other
+// than earnings touch the slot.
+test("r3-12: calm mode shows a node the clock brings on that tick, not at the next bucket", async () => {
+  w = win(flockScenario(6, 0, () => "working"));
+  const panel = await w.copy("panel");
+  await w.advance(2000);
+  await w.handler(panel, "setting", "calm", true);
+  await w.hits(panel, 3); // (the mat is in use: active time runs)
+  const sp = w.slot.state.spawn;
+  assert.equal(sp.chain, null);
+  sp.nextChainAt = sp.activeMs + 1;
+  let seen = false;
+  for (let i = 0; i < 6 && !seen; i++) {
+    await w.advance(1000);
+    if (w.slot.state.spawn.chain) {
+      seen = true;
+      const vm = panel.session.cache.vm;
+      assert.ok(vm.mat.nodes.length > 0, "the vm the tick built shows the chain");
+      w.render(panel);
+      assert.equal(panel.session.cache.vm, vm, "render reads it");
+    }
+  }
+  assert.ok(seen, "the chain came");
+});
+
+test("r3-16: the panel hands the last render's Flock lists to the next render (ui.flockLists)", async () => {
+  const { virtualGroups } = await import("../../mods/creaseworks/ui/flock.js");
+  w = win(flockScenario(200, 0));
+  const panel = await w.copy("panel");
+  await w.advance(2000);
+  w.render(panel);
+  const vm = panel.session.vm();
+  const first = panel.session.flockDrawn;
+  assert.ok(first && typeof first === "object", "the drawn lists are kept");
+  assert.equal(Object.getPrototypeOf(first), null, "a null-prototype map");
+  assert.deepEqual({ ...first }, { ...virtualGroups(vm, panel.session.ui, null) }, "the first render has no memory");
+  assert.ok(Object.keys(first).length > 0, "200 open tiles (50 per status) are over the budget: some group is a list");
+  w.render(panel);
+  assert.equal(panel.session.ui.flockLists, first, "the next render reads the last one's lists");
+  // Another tab keeps the memory as it was.
+  await w.handler(panel, "tab", "shop");
+  const kept = panel.session.flockDrawn;
+  w.render(panel);
+  assert.equal(panel.session.flockDrawn, kept);
+});

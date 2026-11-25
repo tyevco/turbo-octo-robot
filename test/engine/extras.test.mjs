@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, close, T0 } from "./_util.mjs";
+import { rosterChanged, archiveId } from "../../mods/creaseworks/engine/helpers.js";
 
 test("Thrifty Fox buys the best-payback workshop at 4× its cost, at most once per 10 s", () => {
   const s = seeded();
@@ -137,6 +138,45 @@ test("fledglings in the Album for 30 days fold into their parent", () => {
   const p = s.helpers[engine.helperId("t1", 1001)];
   assert.equal(p.stats.kidsPast, 1);
   assert.equal(p.stats.kidsFolds, 123);
+});
+
+test("r3-04: a fledgling whose parent's record left the save folds into its archive entry, or stays as a helper of its own, never dropped", () => {
+  for (const withArchive of [true, false]) {
+    const s = seeded();
+    const me = writer(s);
+    me.act(observeAction(T0, [agent(1, "working", 0), agent(3, "working", 0), kid(2, 1, "working", 0)]));
+    const kidId = engine.helperId("t2", 1002);
+    const pid = engine.helperId("t1", 1001);
+    s.helpers[kidId].stats.folds = 123;
+    me.act(observeAction(T0 + 1000, [agent(3, "working", 0)]));
+    assert.equal(s.helpers[kidId].gone, true);
+    // the parent's record merged into an Album archive entry (r3-04) and left the save
+    delete s.helpers[pid];
+    const aid = archiveId(T0 + 1000);
+    if (withArchive) {
+      s.helpers[aid] = {
+        id: aid, kind: "pane", parent: null, species: "crane", hue: 0, name: "",
+        joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0,
+        stats: { tasks: 5, folds: 1000, run: 0, envelopes: 0, checkIns: 0 },
+        missingSince: T0 + 1000, gone: true, archive: 2, from: T0,
+      };
+    }
+    rosterChanged(s); // the records changed by hand
+    me.act(observeAction(T0 + 31 * 86400000, [agent(3, "working", 0)], { day: "2026-12-26" }));
+    if (withArchive) {
+      assert.equal(s.helpers[kidId], undefined);
+      assert.equal(s.helpers[aid].stats.kidsPast, 1);
+      assert.equal(s.helpers[aid].stats.kidsFolds, 123);
+    } else {
+      const h = s.helpers[kidId];
+      assert.ok(h, "kept in the save");
+      assert.equal(h.kind, "pane");
+      assert.equal(h.parent, null);
+      assert.equal(h.gone, true);
+      assert.equal(h.stats.folds, 123);
+      assert.ok(engine.parseSave(engine.serialize(s)).ok);
+    }
+  }
 });
 
 test("checkin counts a visit; dismiss removes notices; unknown actions are ignored", () => {

@@ -80,12 +80,16 @@ test("§5 first wish: one row per profile, every extra assertion understood, mon
   assert.equal(P2.check({ P1: 10, P2: 10 + 7199 }), false);
 });
 
-test("r3-24: P13 short turns: 12 short tasks an hour with a new sub-agent each block, held to P1's day-3 bound and click floors", () => {
+test("r3-24: P13 short turns: 48 sub-minute tasks and 192 new sub-agents an hour per agent, held to P1's day-3 bound and click floors", () => {
   const P13 = PROFILES.P13;
-  assert.deepEqual({ ...P13.cycle }, { work: 3, needs: 1, blocks: 12, rest: 12 });
-  assert.equal(P13.freshKids, true);
-  // the same 36 working minutes an hour as P1, four times the finished tasks
+  assert.deepEqual({ ...P13.cycle }, { work: 0.75, needs: 0.25, blocks: 48, rest: 12 });
+  assert.equal(P13.freshKids, 4);
+  // the same 36 working minutes an hour as P1, sixteen times the finished tasks
   assert.equal(P13.cycle.work * P13.cycle.blocks, PROFILES.P1.cycle.work * PROFILES.P1.cycle.blocks);
+  assert.equal(P13.cycle.blocks / PROFILES.P1.cycle.blocks, 16);
+  // fledgling work: the same share of working time as P1's (one at a time), 12 s a block
+  assert.equal(Math.round(P13.kidShare * P13.cycle.work * 60), 12);
+  assert.ok(Math.abs(P13.kidShare - PROFILES.P1.kidShare) < 0.02);
   const row = bal.firstWish.find((r) => r.id === "P13");
   assert.ok(row.every.lo >= parseClock("16:00") && row.every.hi <= parseClock("24:00"), "first wish always on day 3");
   assert.deepEqual(row.extra.map((e) => e.text), ["median ≥ P1 median − 1:30"]);

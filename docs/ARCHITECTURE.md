@@ -127,7 +127,16 @@ of 64). A writer caches each chunk's digest by its text (plain data under the re
 only what changed. Formats 1–2 (FNV-1a of the whole state text) still load. A mismatch, a parse
 error, an unknown `format` or a failed validation = **damaged**; a higher format or state
 `version` than the code knows = **newer** (read-only; from format 3 on it is tested before the
-check, DESIGN §12.1). Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
+check, DESIGN §12.1). Format 4 (current `SAVE_VERSION`) keeps format 3's check rule. A compact
+Album record is written as `[name|0, folds, tasks, minuteLeft, (kidsPast, kidsFolds), key]`: 4 or
+6 items, or 5 or 7 with a trailing 16-bit terminal key `albumKey(addr, created)` (DESIGN R6, review
+r3-18). A newcomer rejoins a gone record only when its key matches; otherwise it takes a salted
+id. The helpers map may also hold archive entries with id `past-<n>` (n = floor(leftMs / 30 d),
+never 8 hex digits): each is a gone pane record with `archive` (how many helpers it holds), their
+summed stats, `missingSince` (the newest left) and `from` (the oldest left). `prune` never
+compacts them, Album counts add up `archive`, and fledglings whose parent's record was archived
+fold into them. A format-3 build reads format 4 as newer (read-only). Live records carry `unitAt`
+and `kidUnitAt` (the envelope-unit budgets, DESIGN §6.1). Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
 by `engine/index.js`) yields after the JSON parse and after every 1,500 helpers, and the store's
 `parseIn` drives it with a task yield between steps for any save of 64 KiB or more
 (`STEP_PARSE_CHARS`) on the load, merge, overwrite, check, restore and share paths (a two-year
@@ -143,8 +152,10 @@ Load order: `save.json` → if damaged, keep it aside as `save.damaged-<n>.json`
 (banner in the game with what happened and what was kept) — never silent. A load that stops (its
 task interrupted by herdr's budget, or cancelled with a closed view: neither settles) is started
 again by the session's watchdog once it has made no progress for `LOAD_STALL_MS` (15 s) or its
-copy has gone; the placeholder says so ("Opening the save stopped partway; trying again…") and,
-once loaded, a `recovered` load notice does (r3-01).
+copy has gone. A stall counts as a try: the placeholder says so ("Opening the save stopped partway;
+trying again…") and, once loaded, a `recovered` load notice does (r3-01). A load whose copy simply
+closed (another copy stays open) is no save problem: the next copy's tick takes it over quietly,
+with no try counted, the plain placeholder and no notice (`Session.loadStop`: `stalled` / `gone`).
 
 Write protocol (one writer per process, see A6):
 
@@ -568,7 +579,11 @@ The data tick (every 1000 ms visible / 5000 ms hidden, per copy): heartbeat; if 
 re-render (`cx.notify()`) when `slot.rev` or the formatted clock bucket changed (5 s buckets in
 calm mode). Time alone moving the counters (`advance` bumping `state.rev`) does not touch the
 slot: the bucket decides those re-renders, so calm mode really re-renders every 5 s; a player
-action, a roster change, a notice or a flash touches the slot and re-renders at once (r3-12).
+action, a roster change, a notice or a flash touches the slot and re-renders at once, and so does
+an `advance` whose events are more than earnings (a node or pickup appearing, an automation
+buying or opening an envelope) (r3-12). The bumps time alone makes are counted in `slot.timeRev`
+and left out of the vm key, so a render herdr runs for its own live data (agents, terminals, focus,
+theme) between buckets reads the cached vm and shows the same counters.
 
 Save notices (`recovered fresh conflict merged error newer`) live in the slot (`slot.notice`),
 not in the engine state; `view()` receives them via `opts.saveNotice` so the vm is complete.
@@ -795,6 +810,8 @@ renderers default it:
   width,        // this copy's logical width (panel Wp, rail 64, ribbon work width W)
   height,       // logical height (panel H; ribbon 30), optional
   panelShown,   // ribbon only: panel copy visible and unfolded (hides the ribbon mini Sheet)
+  panelFull,    // ribbon only: that panel is full width (it shows the away card, so the ribbon's
+                //   Welcome pill hides; a tight rail has no away card, r3-14)
   save,         // optional, from the slot: { state: "saved"|"saving"|"problem", text: "Saved 12 s ago",
                 //   path, lastGood, backup, damaged: [names] } (footer glyph, banner Details, Settings)
   narrowHint,   // ribbon only, optional: true shows "Terminals are narrow: fold Creaseworks?" (§2.3)
@@ -867,9 +884,11 @@ sub-rows and upgrades. The two-step confirms (wish, restore, reset) are armed wh
 ui.armedAt ≥ 1500` (`ui/string.js` `isArmed`, `ARM_MS`); without both numbers they stay disarmed,
 so the glue must re-render with a fresh `ui.now` (its 1 s data tick does). Exports besides the
 renderers: `ui/flock.js` `isFolded allTiles selectedTile flockHeadline tileLook tileElement TILE
-VIRTUAL_ABOVE VLIST FLOCK_CLIP`; `ui/shop.js` `activeSegment buyCount rowIconPath SEGMENTS
+VIRTUAL_ABOVE TILE_BUDGET TILE_BUDGET_BAND tileCost virtualGroups KID_FLAG_LEFT VLIST FLOCK_CLIP`
+(the glue passes `virtualGroups` to the Session, which keeps the last panel render's lists in
+`ui.flockLists` for the next one, r3-16); `ui/shop.js` `activeSegment buyCount rowIconPath SEGMENTS
 BUY_COUNTS SILHOUETTES SHOP_CLIP`; `ui/string.js` `isArmed wishConfirming strandShares
-stringLines STRAND ARM_MS CLEARS KEEPS STRING_CLIP`; `ui/settings.js` `CHOICES SETTINGS_CLIP`.
+strandSize strandFill stringLines STRAND ARM_MS CLEARS KEEPS STRING_CLIP`; `ui/settings.js` `CHOICES SETTINGS_CLIP`.
 Ids: tiles `cw-flock-tile-<helperId>` (badge `-badge-`, envelope marker `-env-`, rest bar
 `-rest-`), group headers `cw-flock-grp-<key>`, virtual lists `cw-flock-vl-<key>`, shop rows
 `cw-shop-row-<id>` / buttons `cw-shop-buy-<id>` / silhouettes `cw-shop-unknown-<id>`, settings
@@ -925,20 +944,29 @@ returns `div#root` (`size_full`, `on_size_change` → `Session.onSize`) around `
 `"ribbon"`) or `renderPanel` (which draws the rail when folded or under 200 px); while the save loads it draws a
 one-line placeholder.
 
-**Session (B7).** `new Session(role = null, { isFolded })`: a null role is read from
-`props().role` in `init`. Extra members: `ctx()` (the B11 ctx minus `S`/`hues`: `T` = `theme()`,
-`dark`/`zoom` from `settings()`, `calm`, `width`, `height`, `save`, `handlers`, and for the ribbon
-`panelShown`, `narrowHint`), `uiForRender()` (the copy's `ui` with `ui.now` set), `loading()`,
+**Session (B7).** `new Session(role = null, { isFolded, sectionIndex, virtualGroups, scroll })`:
+a null role is read from `props().role` in `init`. Extra members: `ctx()` (the B11 ctx minus
+`S`/`hues`: `T` = `theme()`, `dark`/`zoom` from `settings()`, `calm`, `width`, `height`, `save`,
+`handlers`, and for the ribbon `panelShown`, `panelFull`, `narrowHint`), `uiForRender(vm)` (the
+copy's `ui` with `ui.now` set and, on the panel's Flock tab, `ui.flockLists` = the lists the last
+render drew), `loading()`,
 `changed(cx)` (builds the vm in the tick / handler, then `cx.notify()`, so render only reads the
 cache; the load task calls it once the game is loaded, so the first render after a load reads a
 built vm too: r3-03), `dispatch(action, cx)`, `openHelper(idOrGroup, cx)`, `loadingText()` (the
 placeholder's text; it says when a load is being started again). `ui` also carries `buyCount` (the
 Works toggle; `handlers.setting("buyCount", v)`). Handlers add `resetGame` (B11 tabs builder).
-The vm cache key is `state.rev | slot.rev | width | tab | buyCount | notice kind@at@retry |
-clock bucket (1 s, 5 s calm) | short | flash`; `short` = panel height < 640.
+The vm cache key is exactly what `view()` reads: `state object | state.rev − slot.timeRev |
+writerId | width | tab | buyCount | notice kind@at@retry@text@message | clock bucket (1 s, 5 s
+calm) | short | Album open | flash`; `short` = panel height < 640. Not `state.rev` itself (advance
+bumps it every second) and not `slot.rev` (a save landing or a notice-free touch changes no vm):
+either rebuilt the whole vm inside render between buckets (r3-12 review: 18-39 ms of 50 at 1-2
+years). `state object` is a per-copy number for each state object (a load or merge puts a new
+one in the slot). Render (`vm()` with no time) builds for the time of this copy's last tick or
+handler while it is within one data tick (`vmTime`), so a render between a bucket's start and the
+copy's next tick reads the cache too; handlers build for the time now.
 
 **Slot (A6) fields beyond the A6 list** (all plain data): `home` (a slot from another app home is
-never adopted), `rev` (glue change counter), `paths` (`save bak location dir shared`),
+never adopted), `rev` (glue change counter: re-renders, not the vm key), `timeRev` (the `state.rev` bumps time alone made), `paths` (`save bak location dir shared`),
 `loading` (load generation), `readOnly` (newer save), `save` (`status baseOk gen writing savedAt
 dirtyAt urgentAt writtenRev confirmed errors retryAt damaged[] problemSince`), `notices {load,
 write}` (`notice` is the one on show: error > conflict > newer > fresh > recovered > merged),

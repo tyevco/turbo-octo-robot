@@ -454,9 +454,13 @@ test("r2-14: a tight rail uses its column (more pip columns) and the ribbon offe
   const grid = findById(w.render(panel).tree, "cw-rail-pips").children[0];
   assert.equal(styleOf(grid, "w")[1], 9 * 14);
   assert.equal(ribbon.session.ctx().narrowHint, true);
+  // r3-14: a tight rail has no away card, so the ribbon keeps its Welcome pill.
+  assert.equal(ribbon.session.ctx().panelShown, true);
+  assert.equal(ribbon.session.ctx().panelFull, false, "a tight rail is not a full panel");
   sizeOf(panel, 320, 584);
   await w.advance(1000);
   assert.equal(ribbon.session.ctx().narrowHint, false, "a full panel with room to spare");
+  assert.equal(ribbon.session.ctx().panelFull, true, "a full panel shows the away card");
 });
 
 test("r2-12: a panel made tight by a drag on a wide window unfolds to the remembered weight; one that has it says to drag or widen", async () => {

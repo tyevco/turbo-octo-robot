@@ -8,7 +8,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { clip } from "../engine/index.js";
-import { statusColor } from "./color.js";
+import { statusColor, statusDisc, hex6, isHex } from "./color.js";
 import { icon, sheetPaths, spritePath, sprite, statusGlyphPath } from "./art.js";
 import { iconButton, text, hoverOn } from "./widgets.js";
 import { bannerNotices } from "./banner.js";
@@ -68,6 +68,25 @@ function railButton(id, glyphEl, n, tooltip, onClick, T) {
   if (onClick) el.cursor_pointer().hover((s) => s.bg(hoverOn(T, T.raised))).on_click(onClick);
   else el.opacity(0.7);
   return el;
+}
+
+/**
+ * The needs-you button's glyph: on T.raised, unless the needs-you colour
+ * fails there (win98: #ff0000 on #dfdfdf fell back to grey #404040, r3-21);
+ * then on a 16 px `statusDisc(T)` disc, as the Flock badges are.
+ */
+function needsGlyph(T) {
+  const onRaised = statusColor(T, "blocked", T.raised);
+  if (!isHex(T.blocked) || onRaised === hex6(T.blocked)) return sprite(statusGlyphPath("blocked"), 12, onRaised);
+  const disc = statusDisc(T);
+  return h_flex()
+    .flex_none()
+    .w(16)
+    .h(16)
+    .rounded(8)
+    .justify_center()
+    .bg(disc)
+    .child(sprite(statusGlyphPath("blocked"), 12, statusColor(T, "blocked", disc)));
 }
 
 function pipGrid(marks, T, openHelper, select, cols) {
@@ -172,7 +191,7 @@ export function renderRail(vm, ui, ctx) {
   const needs = num(rail.needs, num(counts.needs, 0));
   root.child(railButton(
     "cw-rail-needs",
-    sprite(statusGlyphPath("blocked"), 12, statusColor(T, "blocked", T.raised)),
+    needsGlyph(T),
     needs,
     needs > 0 ? `${needs} need${needs === 1 ? "s" : ""} you: open the longest waiting` : "Nobody needs you",
     needs > 0 ? (e, cx) => openHelper("needs", cx) : null,

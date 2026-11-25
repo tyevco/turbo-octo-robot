@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, close, T0 } from "./_util.mjs";
 import { saltedId, rosterChanged, albumKey, archiveId } from "../../mods/creaseworks/engine/helpers.js";
+const K = engine.CONTENT.K;
 
 test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
   const id = engine.helperId("t1", 1001);
@@ -110,21 +111,24 @@ test("turn deltas: first sighting and turn < lastTurn rebaseline; d > 0 is one f
   me.act(observeAction(T0 + 3000, [agent(1, "working", 0)]));
   assert.equal(s.helpers[id].lastTurn, 0);
   assert.equal(s.envelopes[id].units, 1);
-  // Units follow the time since the previous credited finish (r3-24): 3 s
-  // later is the 1/8 minimum, 6 min later half a unit, 12 min or more a whole one.
+  // Units come from a token bucket per budget (r3-24): at most 1 unit, refilled
+  // 1 unit per 12 min, and a finish takes what it holds in 64ths. The first
+  // finish emptied it at T0 + 1 s; 3 s later it holds under 1/64, so this
+  // finish adds nothing (the 3 s stay in the bucket); 6 min after that it holds
+  // half a unit, and 12 min or more later a whole one (never more).
   me.act(observeAction(T0 + 4000, [agent(1, "idle", 1)]));
-  assert.equal(s.envelopes[id].units, 1.125);
+  assert.equal(s.envelopes[id].units, 1);
   me.act(observeAction(T0 + 4000 + 360000, [agent(1, "idle", 3)]));
-  assert.equal(s.envelopes[id].units, 1.625);
+  assert.equal(s.envelopes[id].units, 1.5);
   me.act(observeAction(T0 + 4000 + 360000 + 3600000, [agent(1, "idle", 4)]));
-  assert.equal(s.envelopes[id].units, 2.625);
+  assert.equal(s.envelopes[id].units, 2.5);
   assert.equal(s.helpers[id].stats.tasks, 4);
   // A new created_ms is a new helper (rebaselined), and the old one goes to the Album.
   me.act(observeAction(T0 + 8000000, [agent(1, "idle", 9, { created: 5000 })]));
   assert.equal(s.helpers[id].gone, true);
   assert.equal(engine.groupFor(s.helpers[id], "wA"), "album");
   assert.equal(s.helpers[engine.helperId("t1", 5000)].lastTurn, 9);
-  assert.equal(s.envelopes[id].units, 2.625); // the envelope stays on the tray
+  assert.equal(s.envelopes[id].units, 2.5); // the envelope stays on the tray
 });
 
 test("fledglings add 0.5 unit to the parent from one budget, and multiply it (§5.3, §6.1, r3-24)", () => {
@@ -139,54 +143,93 @@ test("fledglings add 0.5 unit to the parent from one budget, and multiply it (§
   me.act(observeAction(T0 + 1000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "working", 0)]));
   assert.equal(s.envelopes[p].units, 0.5);
   assert.equal(s.envelopes[k], undefined);
-  // the other fledgling 1 s later draws on the same parent budget: 0.5 · 1/8
+  // the other fledgling 1 s later draws on the same parent budget, which the
+  // first one emptied: nothing more
   me.act(observeAction(T0 + 2000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "idle", 1)]));
-  assert.equal(s.envelopes[p].units, 0.5625);
+  assert.equal(s.envelopes[p].units, 0.5);
+  assert.equal(s.helpers[p].kidUnitAt, T0 + 1000);
   close(engine.rates(s).Hs0, 0.3);
   // a fledgling of a fledgling counts for the pane helper at the root
   me.act(observeAction(T0 + 3000, [agent(1, "working", 0), kid(2, 1, "idle", 1), kid(3, 1, "working", 1), kid(4, 3, "working", 0)]));
   assert.equal(s.helpers[engine.helperId("t4", 1004)].parent, p);
 });
 
-test("r3-24: a burst of new short-lived fledglings earns what one fledgling does, not 0.5 unit each", () => {
+// One parent and its fledglings over `ms`: `n` finishes evenly spread, each by
+// a new sub-agent address (`fresh`) or all by the same one; null parent index:
+// the fledglings' parent is never seen (orphans on their own budgets).
+function kidBurst(n, ms, { fresh = true, parent = 1 } = {}) {
   const s = seeded();
   const me = writer(s);
-  const p = engine.helperId("t1", 1001);
   let t = T0;
-  me.act(observeAction(t, [agent(1, "working", 0)]));
-  // 50 sub-agents over 15 min, each a new address that works 10 s and finishes
-  for (let i = 0; i < 50; i++) {
-    const a = 100 + i;
-    me.act(observeAction((t += 1000), [agent(1, "working", 0), kid(a, 1, "working", 0)]));
-    me.act(observeAction((t += 10000), [agent(1, "working", 0), kid(a, 1, "idle", 1)]));
-    me.act(observeAction((t += 7000), [agent(1, "working", 0)]));
+  const pa = parent === null ? [] : [agent(1, "working", 0)];
+  me.act(observeAction(t, pa));
+  const gap = ms / n;
+  for (let i = 0; i < n; i++) {
+    const a = fresh ? 100 + i : 100;
+    const turn = fresh ? 0 : i;
+    const pi = parent === null ? 999 : parent;
+    me.act(observeAction((t += 1000), [...pa, kid(a, pi, "working", turn)]));
+    me.act(observeAction((t += gap - 2000), [...pa, kid(a, pi, "idle", turn + 1)]));
+    me.act(observeAction((t += 1000), fresh ? pa : [...pa, kid(a, pi, "idle", turn + 1)]));
   }
-  assert.ok(t - T0 <= 15 * 60000);
-  const u = s.envelopes[p].units;
-  // the first full 0.5, then 49 finishes 18 s apart at the 1/8 minimum: 0.5 + 49 · 0.0625
-  assert.equal(u, 0.5 + 49 * 0.0625);
-  assert.ok(u < 4, `${u} units (0.5 each would be 25)`);
+  return { s, created: s.stats.units.created, end: t };
+}
+
+test("r3-24: a burst of new short-lived fledglings earns exactly what one fledgling finishing as often does, half a unit per 12 min at most", () => {
+  const H = 3600000;
+  for (const n of [5, 50, 200, 600]) {
+    const burst = kidBurst(n, H);
+    const one = kidBurst(n, H, { fresh: false });
+    // every sub-agent address draws on the parent's one budget, so new
+    // addresses earn nothing a single busy fledgling would not
+    assert.equal(burst.created, one.created, `${n} an hour`);
+    // the budget's bound: the half unit it starts with plus half a unit per 12 min
+    assert.ok(burst.created <= 0.5 + 0.5 * (burst.end - T0) / K.unitRefillMs, `${n} an hour: ${burst.created}`);
+    // all of it on the parent's envelope, none on the fledglings'
+    const p = engine.helperId("t1", 1001);
+    assert.equal(burst.s.envelopes[p].units, burst.created);
+  }
+  // a busier burst never earns more: 600 finishes an hour ≈ 50 an hour (≈ 3 units)
+  const slow = kidBurst(50, H).created;
+  const fast = kidBurst(600, H).created;
+  assert.ok(fast <= 3 && fast - slow <= 0.1, `${slow} vs ${fast}`);
+  // and 50 in 15 min: 0.5 + 0.5 · (15 min − the first 11 s) / 12 min, in 64ths, not 0.5 each (25)
+  const quarter = kidBurst(50, 15 * 60000).created;
+  assert.ok(quarter <= 0.5 + 0.5 * 15 / 12 && quarter >= 1, `${quarter}`);
 });
 
-test("r3-24: short turns earn units by time, so an agent answered every minute earns about what a 12-minute one does", () => {
-  const unitsOver = (workMin, needsMin) => {
+test("r3-24: fledglings with no present parent earn by the time they lived, so a stream of new orphans cannot flood the tray", () => {
+  const { s, created } = kidBurst(200, 3600000, { parent: null });
+  // each orphan's own budget starts empty when it joins and it lives 17 s
+  // until it finishes: 1/64 of its half unit (1/128) each, where a fresh
+  // budget per address would have paid 0.5 each (100 units)
+  assert.equal(created, 200 / 128);
+  assert.ok(created <= 0.5 * (200 * 17000) / K.unitRefillMs);
+  assert.equal(s.stats.tasks, 200); // every finish still counts as a task
+});
+
+test("r3-24: units follow time, not turns: an hour of 10-second to 1-minute turns earns about what 12-minute ones do, 6 units at most", () => {
+  const unitsOver = (workS, needsS) => {
     const s = seeded();
     const me = writer(s);
-    const id = engine.helperId("t1", 1001);
     let t = T0;
     let turn = 0;
     me.act(observeAction(t, [agent(1, "working", 0)]));
     while (t < T0 + 3600000) {
-      me.act(observeAction((t += workMin * 60000), [agent(1, "blocked", ++turn)]));
-      me.act(observeAction((t += needsMin * 60000), [agent(1, "working", turn)]));
+      me.act(observeAction((t += workS * 1000), [agent(1, "blocked", ++turn)]));
+      me.act(observeAction((t += needsS * 1000), [agent(1, "working", turn)]));
     }
-    return s.stats.units.created;
+    return { units: s.stats.units.created, turns: turn };
   };
-  const long = unitsOver(12, 2); // P1's blocks: 4-5 finishes, each a whole unit
-  const short = unitsOver(1, 1); // 30 finishes an hour
-  assert.ok(long >= 4 && long <= 5, `${long}`);
-  assert.ok(short <= 6, `${short} units in an hour of 1-minute turns`);
-  assert.ok(short < 30 / 4, "30 finishes an hour earn far less than 30 units");
+  const long = unitsOver(720, 120).units; // P1's blocks: 5 finishes, each a whole unit
+  assert.equal(long, 5);
+  for (const [w, n] of [[60, 60], [30, 30], [20, 10], [10, 10]]) {
+    const { units, turns } = unitsOver(w, n);
+    assert.ok(turns >= 30, `${w}/${n}: ${turns} turns`);
+    // the bucket's bound: the unit it starts with plus one per 12 min
+    assert.ok(units <= 1 + 60 / 12, `${w}/${n} s: ${units} units`);
+    assert.ok(units / long <= 1.2, `${w}/${n} s: ${units} units against ${long}`);
+  }
 });
 
 test("r3-10: working fledglings gather for their parent while the parent is idle, finished or waiting", () => {
@@ -563,7 +606,10 @@ test("a salted id is kept after the plain id's holder leaves, and each agent of 
   assert.equal(s.helpers[salted].addr, `t${b}`);
   assert.equal(s.helpers[salted].name, nameB);
   assert.equal(s.helpers[salted].stats.tasks, 2);
-  assert.ok(s.envelopes[salted].units > 1, "both of B's turns fill B's envelope");
+  // B's turns fill B's envelope (its first a whole unit; the second, 1 s
+  // later, finds B's unit bucket empty, r3-24), never A's
+  assert.equal(s.envelopes[salted].units, 1);
+  assert.equal(s.envelopes[plain].units, 1);
   // both leave; the save keeps which Album record was salted
   obs([]);
   assert.equal(s.helpers[salted].salt, 1);
@@ -728,7 +774,9 @@ test("a fledgling whose parent is gone keeps its own reward (never the parent's 
   // an observation that still names the gone parent (a host race): the engine does not credit it
   me.act(observeAction((t += 1000), [kid(3, 1, "working", 0)]));
   assert.equal(s.helpers[id1].gone, true);
-  me.act(observeAction((t += 61000), [kid(3, 1, "idle", 1)]));
+  // 12 min after it joined: its own unit budget (which starts empty when it
+  // joined, r3-24) holds a whole share
+  me.act(observeAction((t += 12 * 60000), [kid(3, 1, "idle", 1)]));
   assert.equal(s.envelopes[id1], undefined);
   assert.equal(s.envelopes[id3].units, engine.CONTENT.K.unitKid);
 });

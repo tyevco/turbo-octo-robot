@@ -660,6 +660,13 @@ function sortAlbum(list) {
   return list;
 }
 
+/** When an archive entry's oldest helper left, if before its newest one (else null). */
+function archiveFrom(h) {
+  const m = h.missingSince;
+  const f = h.from;
+  return h.archive > 0 && typeof f === "number" && Number.isFinite(f) && typeof m === "number" && Number.isFinite(m) && f < m ? f : null;
+}
+
 /** One Album row and what it was built from (a record whose fields still match keeps it). */
 function albumRow(h, t, style, cache) {
   const m = h.missingSince;
@@ -670,6 +677,23 @@ function albumRow(h, t, style, cache) {
   const texts = cache.texts;
   let left = texts[span[0]];
   if (left === undefined) left = texts[span[0]] = ago(known ? t - m : 0);
+  let lo = known ? m + span[0] : -Infinity;
+  let hi = known ? m + span[1] : Infinity;
+  // An archive entry holds the helpers that left over up to 30 days: its row
+  // shows the range, from its newest to its oldest helper ("34–63 d"), not the
+  // newest one's time alone (which reads as more recent than most of them).
+  const fr = archiveFrom(h);
+  if (fr !== null) {
+    const old = agoSpan(t - fr);
+    const b = ago(t - fr);
+    if (b !== left) {
+      const sa = left.indexOf(" ");
+      const sb = b.indexOf(" ");
+      left = sa > 0 && sb > 0 && left.slice(sa) === b.slice(sb) ? `${left.slice(0, sa)}–${b}` : `${left}–${b}`;
+    }
+    if (fr + old[0] > lo) lo = fr + old[0];
+    if (fr + old[1] < hi) hi = fr + old[1];
+  }
   // an archive entry (R13, r3-04) is named by how many helpers it holds
   const nm = h.archive > 0 ? `${formatInt(h.archive)} ${h.archive === 1 ? "helper" : "helpers"}` : String(h.name ?? "");
   let name = cache.names[nm];
@@ -683,13 +707,14 @@ function albumRow(h, t, style, cache) {
     leftAgo: left,
     folds: cnt(folds, style),
   });
-  return { h, row, lo: known ? m + span[0] : -Infinity, hi: known ? m + span[1] : Infinity, m, j: h.joined, f: folds, nm, n: h.archive, sp: h.species, hu: h.hue, seen: null };
+  return { h, row, lo, hi, m, fr, j: h.joined, f: folds, nm, n: h.archive, sp: h.species, hu: h.hue, seen: null };
 }
 
 /** True when `it` still shows `h` as it is now at time `t` in `style`. */
 function rowCurrent(it, h, t) {
   return it.m === h.missingSince && it.j === h.joined && t >= it.lo && t < it.hi &&
-    it.f === num(h.stats && h.stats.folds) && it.n === h.archive && (h.archive > 0 || it.nm === String(h.name ?? "")) && it.sp === h.species && it.hu === h.hue;
+    it.f === num(h.stats && h.stats.folds) && it.n === h.archive && (h.archive > 0 ? it.fr === archiveFrom(h) : it.nm === String(h.name ?? "")) &&
+    it.sp === h.species && it.hu === h.hue;
 }
 
 /**

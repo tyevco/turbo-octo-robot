@@ -848,25 +848,33 @@ test("r3-13: the away card's ✕ says closing collects the folds (dismiss 'away'
   assert.equal(styleOf(findNode(renderAway(busy.vm, busy.ui, makeCtx("graphite", busy)).toJSON(), "cw-away-close"), "tooltip"), AWAY_CLOSE.busy);
 });
 
-test("r3-14: the 'Welcome back' pill shows only while the panel is folded or hidden; a flash still shows", () => {
+test("r3-14: the 'Welcome back' pill hides only beside the full panel's away card; a tight rail or no word from the glue keeps it", () => {
   const W = 1172;
   const vm = ribbonOf(4, W, { pill: "Welcome back +4.81M" });
   const s = { width: W, height: 30 };
-  const shown = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: true })).toJSON();
-  assert.ok(!ids(shown).includes("cw-rib-welcome"), "no pill beside the panel's own away card");
-  assert.equal(ribbonLayout(vm, makeCtx("graphite", s, { panelShown: true }), W).lead, 0, "and no width reserved for it");
+  const full = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: true, panelFull: true })).toJSON();
+  assert.ok(!ids(full).includes("cw-rib-welcome"), "no pill beside the full panel's own away card");
+  assert.equal(ribbonLayout(vm, makeCtx("graphite", s, { panelShown: true, panelFull: true }), W).lead, 0, "and no width reserved for it");
+  // The glue's ribbon ctx today sets panelShown (true for a tight rail too,
+  // which has no away card) and no panelFull: the pill must stay, or the away
+  // news would show nowhere.
+  for (const over of [{ panelShown: true }, { panelShown: true, panelFull: false }, { panelShown: true, narrowHint: true }, { panelShown: false }, {}]) {
+    const json = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: false, ...over })).toJSON();
+    assert.ok(ids(json).includes("cw-rib-welcome"), `${JSON.stringify(over)}: the pill`);
+    assert.ok(ribbonPill(vm, over), JSON.stringify(over));
+    assert.ok(ribbonLayout(vm, makeCtx("graphite", s, { panelShown: false, ...over }), W).lead > 0, `${JSON.stringify(over)}: its width reserved`);
+  }
   const folded = renderRibbon(vm, {}, makeCtx("graphite", s, { panelShown: false })).toJSON();
-  assert.ok(ids(folded).includes("cw-rib-welcome"), "folded or hidden: the pill");
   assert.equal(styleOf(findNode(folded, "cw-rib-welcome"), "tooltip"), "Open Creaseworks to collect");
-  // The glue's panelFull (a tight rail has no away card) wins over panelShown.
-  assert.ok(ribbonPill(vm, { panelShown: true, panelFull: false }), "tight rail: the pill stays");
   assert.equal(ribbonPill(vm, { panelShown: false, panelFull: true }), null);
+  assert.ok(ribbonPill(vm, { panelFull: "yes" }), "only a real true hides it");
+  assert.ok(ribbonPill(vm, null));
   // A flash shares the pill (and the footer) whether the panel shows or not.
   const fl = { ...vm, ribbon: { ...vm.ribbon, pill: "Nobody needs you" }, notices: [{ kind: "flash", text: "Nobody needs you", actions: [], place: "footer", save: false }] };
-  const fj = renderRibbon(fl, {}, makeCtx("graphite", s, { panelShown: true })).toJSON();
+  const fj = renderRibbon(fl, {}, makeCtx("graphite", s, { panelShown: true, panelFull: true })).toJSON();
   assert.ok(ids(fj).includes("cw-rib-welcome"));
   assert.equal(styleOf(findNode(fj, "cw-rib-welcome"), "tooltip"), "Nobody needs you", "a flash's tooltip is its own text");
-  assert.deepEqual(ribbonPill(fl, { panelShown: true }), { text: "Nobody needs you", flash: true });
+  assert.deepEqual(ribbonPill(fl, { panelShown: true, panelFull: true }), { text: "Nobody needs you", flash: true });
 });
 
 test("r3-23: the compact narrow hint names the panel ('Fold panel'), never a bare 'Fold' without its question", () => {
