@@ -1,0 +1,8 @@
+node_modules/
+# Reconstructed from herdr's Rust sources by docs/research/tools/gen-gpui-kit-dts.py (800 KB); regenerate locally.
+docs/research/gpui-kit.d.ts
+# herdr writes these into mod folders on load
+mods/*/jsconfig.json
+mods/*/gpui-kit.d.ts
+tools/out/
+test-results/
