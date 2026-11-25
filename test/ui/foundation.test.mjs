@@ -7,11 +7,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { walk } from "../../tools/mock/gpui-kit.js";
+import { createHost } from "../../tools/qjs/harness.mjs";
 import * as P from "../../mods/creaseworks/ui/palette.js";
 import * as C from "../../mods/creaseworks/ui/color.js";
 import * as A from "../../mods/creaseworks/ui/art.js";
@@ -798,5 +800,70 @@ test("fixtures: header counts match the roster; groups in fixed order; join orde
       assert.deepEqual(panes, [...panes].sort((a, b) => a - b), `${s.name} ${g.key} join order`);
     }
     assert.equal(v.helpers.dense, v.helpers.groups.reduce((a, g) => a + g.count, 0) >= 21 || s.name === "narrow", s.name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// QuickJS-ng (herdr's runtime): the ui modules load and render in the sandbox
+
+const FROZEN_REALM = Object.isFrozen(Object.prototype);
+
+test("qjs: palette/color/art/widgets load under frozen prototypes and render every widget", {
+  skip: FROZEN_REALM && "quickjs-emscripten does not load with frozen prototypes",
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cw-ui-"));
+  try {
+    mkdirSync(join(dir, "ui"));
+    for (const f of ["palette.js", "color.js", "art.js", "widgets.js"]) {
+      copyFileSync(join(root, "mods/creaseworks/ui", f), join(dir, "ui", f));
+    }
+    const T = JSON.stringify(THEMES.win98);
+    writeFileSync(join(dir, "main.js"), [
+      'import { View } from "gpui-kit";',
+      'import { v_flex } from "gpui-base";',
+      'import { pickScene, pickHues } from "./ui/palette.js";',
+      'import { statusColor } from "./ui/color.js";',
+      'import { speciesSprite } from "./ui/art.js";',
+      'import { kit } from "./ui/widgets.js";',
+      `const T = ${T};`,
+      "export default class M extends View {",
+      "  render() {",
+      "    const k = kit(T, pickScene(false));",
+      "    const noop = () => {};",
+      '    return v_flex().id("m")',
+      '      .child(k.button("b", "Buy", { variant: "primary", onClick: noop }))',
+      '      .child(k.toggle("s", true, { onChange: noop }))',
+      '      .child(k.radioGroup("r", [{ value: "a", label: "A" }, { value: "b", label: "B" }], "a", { onSelect: noop }))',
+      '      .child(k.checkbox("c", false, "C", { onChange: noop }))',
+      '      .child(k.chip("ch", "Mina", { status: "blocked", onClick: noop }))',
+      '      .child(k.progressBar("p", 0.5, { width: 96 }))',
+      '      .child(k.iconButton("i", "gear", "Settings", { onClick: noop }))',
+      '      .child(k.sectionHeader("h", "needs", "Needs you", 2, { onToggle: noop }))',
+      '      .child(k.glyph("working", { spin: true }))',
+      '      .child(k.glyph("envelope"))',
+      '      .child(speciesSprite("koi", 28, pickHues(false)[3]))',
+      '      .child(k.text(statusColor(T, "working", "popover")));',
+      "  }",
+      "}",
+      "",
+    ].join("\n"));
+    const host = await createHost({ modRoot: dir, scenario: {} });
+    try {
+      await host.load();
+      const { tree } = host.render();
+      assert.equal(tree.id, "m");
+      const ids = [];
+      walk(tree, (n) => { if (n.id) ids.push(n.id); });
+      for (const id of ["b", "s", "s-knob", "r-a", "r-b", "c", "ch", "p", "p-fill", "i", "h"]) assert.ok(ids.includes(id), id);
+      // win98 working on popover (2.31:1) falls back to muted inside the VM too.
+      let last = null;
+      walk(tree, (n) => { if (n.kind === "div" && n.children?.[0]?.kind === "text") last = n.children[0].text; });
+      assert.equal(last, THEMES.win98.muted);
+      assert.deepEqual(host.errors, []);
+    } finally {
+      host.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
