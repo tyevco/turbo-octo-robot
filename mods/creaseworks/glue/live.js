@@ -117,6 +117,7 @@ export function newSlot(home, paths) {
     copies: map(), // copyId → last heartbeat ms
     ticker: null,
     rev: 0, // glue change counter (state, notices, flashes, requests)
+    timeRev: 0, // the state.rev bumps time alone made (tickerWork's advance): left out of the vm key
     paths,
     loading: 0, // load generation in progress (0: none)
     readOnly: false,

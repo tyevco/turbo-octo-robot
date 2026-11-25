@@ -184,6 +184,29 @@ test("color: the guard holds on every shipped theme and surface (graphics ≥ 3:
   assert.equal(C.statusColor(THEMES.win98, "working", "popover"), THEMES.win98.muted);
 });
 
+test("color: statusDisc keeps T.popover where needs-you reads there, else a surface where it does (r3-21, win98)", () => {
+  for (const name of ALL) {
+    const T = THEMES[name];
+    const disc = C.statusDisc(T);
+    assert.ok(C.isHex(disc) && disc.length === 7, `${name}: #rrggbb`);
+    // Needs-you keeps its own colour on the disc in every shipped theme.
+    assert.ok(C.contrast(T.blocked, disc) >= C.GUARD_MIN, `${name}: blocked on ${disc}`);
+    if (C.contrast(T.blocked, T.popover) >= C.GUARD_MIN) assert.equal(disc, C.hex6(T.popover), `${name}: popover kept`);
+  }
+  // win98: red 2.20 and olive 2.31 on #c0c0c0 both fell back to the same #404040 as resting.
+  const W = THEMES.win98;
+  assert.ok(C.contrast(W.blocked, W.popover) < 3);
+  assert.equal(C.statusColor(W, "blocked", "popover"), C.statusColor(W, "idle", "popover"), "the defect: one grey for both");
+  const disc = C.statusDisc(W);
+  assert.equal(disc, "#ffffff", "T.input, opaque white: all four statuses pass");
+  const seen = new Set(["working", "blocked", "done", "idle"].map((st) => C.statusColor(W, st, disc)));
+  assert.equal(seen.size, 4, "four distinct colours on the disc");
+  // A translucent surface is never a disc; a theme with no passing surface keeps popover.
+  const T2 = { ...W, input: "#ffffff80", raised: "#c0c0c0", background: "#c0c0c0", chrome: "#c0c0c0" };
+  assert.equal(C.statusDisc(T2), "#c0c0c0");
+  assert.equal(C.statusDisc({ popover: "#123456" }), "#123456", "no status colours: popover");
+});
+
 // ---------------------------------------------------------------------------
 // Contrast claims (DESIGN §13.2, §14, §3.1, §3.2, §3.4, §5.2)
 

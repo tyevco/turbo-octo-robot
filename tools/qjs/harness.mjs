@@ -22,7 +22,28 @@
 //   await host.reload();               // new ?v=N generation, same globalThis
 //   host.restartVm();                  // close(cx) ≤ 250 ms, fresh VM, same disk
 //   host.evalInVm(code, { module });   host.callsTo("writeTextFile");
-//   host.dispose();
+//   host.dispose();                    // RuntimeFreeError if the runtime is not freed cleanly
+//
+// Freeing the runtime (DESIGN R13). This wasm QuickJS-ng build (0.12.1,
+// quickjs-emscripten 0.32) aborts in JS_FreeRuntime
+// (`list_empty(&rt->gc_obj_list)`, ENGINE_FREE_FAULT) in two cases that the
+// message cannot tell apart: a VM handle the embedder never released, and an
+// engine fault that depends only on WHEN its automatic cycle collector runs.
+// Bisected (review r3-25): a collection that runs while one of the glue's async
+// functions is executing again after an `await` (store.cycle after its pause,
+// store.parseIn between parse steps) leaves objects behind at teardown, with a
+// 120-day save as well as a year-size one; collections at task-step
+// boundaries, inside synchronous engine code, or none at all leave nothing.
+// The save size only decides whether the automatic collection lands there: a
+// save cycle allocates about twice the save text, which crosses the
+// collector's threshold mid-cycle from about 300 KiB on. A JavaScript program
+// cannot make a correct engine keep objects past JS_FreeRuntime, and a handle
+// leak does not depend on when the collector runs, so `gcHeadroom` tells the
+// two apart: it moves the collector's threshold above `gcHeadroom` bytes for
+// the VM's life (one allocation burst at boot, freed again at once, nothing
+// left for the mod to see). The same run that aborts without it and frees
+// cleanly with it carries the engine's signature only; one that aborts both
+// ways holds a real leak.
 
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
@@ -47,6 +68,9 @@ export const MEMORY_LIMIT = 256 * 1024 * 1024;
 export const MAX_STACK = 256 * 1024;
 /** mod.rs MAX_MODULE_BYTES. */
 export const MAX_MODULE_BYTES = 8 * 1024 * 1024;
+
+/** What this wasm build's JS_FreeRuntime prints when objects outlive the runtime (see the header). */
+export const ENGINE_FREE_FAULT = /Assertion failed: list_empty\(&rt->gc_obj_list\)[^)]*JS_FreeRuntime/;
 
 /**
  * Per-phase budgets in ms (ARCHITECTURE A9, sandbox.rs Budgets). herdr gives
@@ -148,6 +172,22 @@ function vmError(dumped) {
   return error;
 }
 
+/**
+ * host.dispose() could not free the QuickJS runtime. `gcObjList` is true for
+ * the JS_FreeRuntime leak check (ENGINE_FREE_FAULT): a leaked handle or the
+ * engine's collector fault (see the header; `gcHeadroom` tells them apart).
+ * The wasm instance is gone; the next host gets a fresh one.
+ */
+export class RuntimeFreeError extends Error {
+  constructor(cause) {
+    const raw = String(cause && cause.message !== undefined ? cause.message : cause);
+    super(`harness: the QuickJS runtime could not be freed cleanly (${raw})`);
+    this.name = "RuntimeFreeError";
+    this.gcObjList = ENGINE_FREE_FAULT.test(raw);
+    this.cause = cause;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rust std::path helpers used by the resolver
 
@@ -204,6 +244,12 @@ const IO_MESSAGES = {
  * @param {boolean} [options.enforceBudgets] default true
  * @param {boolean} [options.withholdUnverified] delete UNVERIFIED_GLOBALS (default true)
  * @param {object} [options.policy]  sandbox policy { development, strictBuiltins }
+ * @param {number} [options.gcHeadroom] bytes: keep the engine's automatic
+ *   cycle collector from running until the runtime has allocated about this
+ *   much (default 0: the collector runs as it would). Changes when garbage is
+ *   collected, never what the mod sees; for telling a leaked handle from the
+ *   engine fault in the header, not for budget figures (a step it spares a
+ *   collection runs faster than it would).
  */
 export async function createHost(options) {
   const QJS = await quickjs();
@@ -225,6 +271,13 @@ class Host {
     this.budgets = { ...BUDGETS, ...(options.budgets ?? {}) };
     this.enforce = options.enforceBudgets !== false;
     this.withholdUnverified = options.withholdUnverified !== false;
+    const headroom = options.gcHeadroom ?? 0;
+    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0 || headroom > MEMORY_LIMIT / 2) {
+      throw new TypeError(`createHost({ gcHeadroom }) expects bytes from 0 to ${MEMORY_LIMIT / 2}, got ${headroom}`);
+    }
+    this.gcHeadroom = headroom;
+    /** Per VM: { vm, peak, ms } of the gcHeadroom burst (empty without one). */
+    this.headroom = [];
     this.calls = [];
     this.console = [];
     this.errors = [];
@@ -289,8 +342,54 @@ class Host {
         policy.dispose();
         install.dispose();
       }
+      if (this.gcHeadroom > 0) this._raiseGcThreshold(this.gcHeadroom);
     });
     this._pull();
+  }
+
+  /** The runtime's JS_ComputeMemoryUsage figures. */
+  _memory() {
+    const h = this.rt.computeMemoryUsage();
+    try {
+      return this.rt.getSystemContext().dump(h);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  /**
+   * quickjs-ng collects when its malloc total passes a threshold it sets to
+   * 1.5 times the total after each collection. Holding `bytes` of plain arrays
+   * (no cycles) and dropping them leaves that threshold at or above `bytes`;
+   * the arrays themselves are freed at once by reference counting.
+   */
+  _raiseGcThreshold(bytes) {
+    const start = performance.now();
+    const grow = this._evalGlobalHandle(
+      "(() => { const keep = []; return (n) => { if (n < 0) { keep.length = 0; return 0; } for (let i = 0; i < n; i++) keep.push([i]); return keep.length; }; })()",
+      "harness:gc-headroom",
+    );
+    let peak = 0;
+    try {
+      const call = (n) => {
+        const arg = this.vm.newNumber(n);
+        try {
+          this._unwrap(this.vm.callFunction(grow, this.vm.undefined, arg)).dispose();
+        } finally {
+          arg.dispose();
+        }
+      };
+      for (let i = 0; i < 4096; i++) {
+        peak = this._memory().memory_used_size;
+        if (peak >= bytes) break;
+        call(65536);
+      }
+      call(-1);
+    } finally {
+      grow.dispose();
+    }
+    if (peak < bytes) throw new Error(`harness: gcHeadroom reached ${peak} of ${bytes} bytes`);
+    this.headroom.push({ vm: this.vmCount, peak, ms: performance.now() - start });
   }
 
   _disposeVm() {
@@ -303,7 +402,7 @@ class Host {
       // A leaked VM object aborts the shared wasm instance; later hosts get a
       // fresh one instead of inheriting the wreck.
       modulePromise = null;
-      throw new Error(`harness: the QuickJS runtime could not be freed cleanly (${e.message})`);
+      throw new RuntimeFreeError(e);
     } finally {
       this.vm = this.rt = null;
     }

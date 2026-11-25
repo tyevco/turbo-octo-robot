@@ -4,8 +4,12 @@
 //
 // The string is 20 strand columns on a S.mat card: each a dim
 // `ui/garland-strand.svg` (S.sheet at 0.25) under a second tinted copy in an
-// `overflow_hidden` div whose height is the strand's filled share
-// (`.transition("height", 600)`): 40 sprites, never 1,000. Then the next-crane
+// `overflow_hidden` div whose height is the strand's filled share snapped
+// down to whole sprite cranes (`strandFill`, `.transition("height", 600)`):
+// 40 sprites, never 1,000. The sprite is drawn at its own aspect ratio
+// (`strandSize`) so its crane rows sit exactly on the fill's row grid and the
+// clip edge always falls in the gap between two cranes (review r3-20); the
+// partial crane stays in the "Next crane in …" line. Then the next-crane
 // and gate lines, the wish button (disabled below the gate), the two-step
 // confirm card whose "Make the wish" arms 1.5 s after the card appeared
 // (`ui.armedAt` / `ui.now`, never a clock read here), what a wish clears and
@@ -24,8 +28,38 @@ import { isCalm } from "./mat.js";
 /** Grapheme limits for every string this module draws (tested). */
 export const STRING_CLIP = Object.freeze({ title: 24, line: 64, button: 40, perk: 60, garland: 40, stripe: 60, note: 120 });
 
-/** Strand geometry (DESIGN §3.5): 20 × (12 × 200), gap 3, on a 304 × 208 card. */
-export const STRAND = Object.freeze({ count: 20, w: 12, h: 200, gap: 3, card: 208, minW: 6 });
+/**
+ * Strand geometry (DESIGN §3.5): 20 × (12 × 200), gap 3, on a 304 × 208 card.
+ * `rows` is the crane rows in `ui/garland-strand.svg` (one per h / rows = 4
+ * units, each inside its own row with a gap at the row edge: tested against
+ * the shipped file); `edge` the least slack left and right of the 20 strands,
+ * so a 304 px card still fits them at the full 12 px (20 × 12 + 19 × 3 = 297).
+ */
+export const STRAND = Object.freeze({ count: 20, w: 12, h: 200, gap: 3, card: 208, minW: 6, rows: 50, edge: 3 });
+
+/**
+ * The drawn strand size for a card `cw` px wide: `{ w, h, pitch }`. The width
+ * is the widest whole px that fits (6..12); the height keeps the sprite's
+ * 12 × 200 aspect, so gpui (which scales an svg by its width and centres it)
+ * never letterboxes it off the crane grid; `pitch` is one crane row in px.
+ */
+export function strandSize(cw) {
+  const room = num(cw, 304) - 2 * STRAND.edge - (STRAND.count - 1) * STRAND.gap;
+  const w = Math.max(STRAND.minW, Math.min(STRAND.w, Math.floor(room / STRAND.count)));
+  const h = (STRAND.h * w) / STRAND.w;
+  return { w, h, pitch: h / STRAND.rows };
+}
+
+/**
+ * The filled height (px) of one strand at share `k` (0..1) for a strand
+ * `size` from `strandSize`: whole crane rows only, rounded down, so the clip
+ * never cuts a crane; a full strand is the full height.
+ */
+export function strandFill(k, size) {
+  const share = Math.max(0, Math.min(1, num(k)));
+  const rows = Math.min(STRAND.rows, Math.floor(share * STRAND.rows + 1e-6));
+  return rows === STRAND.rows ? size.h : Math.round(rows * size.pitch * 1000) / 1000;
+}
 
 /** The confirm card's arming delay (ms): "Make the wish" is disabled until then. */
 export const ARM_MS = 1500;
@@ -113,7 +147,9 @@ function moment(s) {
 function strands(s, ctx, calm) {
   const S = ctx.S;
   const cw = cardWidth(ctx);
-  const sw = Math.max(STRAND.minW, Math.min(STRAND.w, Math.floor((cw - 8 - (STRAND.count - 1) * STRAND.gap) / STRAND.count)));
+  const size = strandSize(cw);
+  const sw = size.w;
+  const sh = size.h;
   const m = moment(s);
   const rise = m && m.phase === "rise";
   const shares = rise ? m.shares : strandShares(s);
@@ -126,9 +162,9 @@ function strands(s, ctx, calm) {
       .bottom(0)
       .left(0)
       .w(sw)
-      .h(Math.round(STRAND.h * k * 10) / 10)
+      .h(strandFill(k, size))
       .overflow_hidden()
-      .child(svg(path).absolute().bottom(0).left(0).w(sw).h(STRAND.h).text_color(S.sheet));
+      .child(svg(path).absolute().bottom(0).left(0).w(sw).h(sh).text_color(S.sheet));
     // Transitions are declared on every frame (0 ms where nothing should
     // move): gpui keeps a motion's keyed state only while it is declared and
     // adopts the first declared target without animating, so a transition
@@ -136,7 +172,7 @@ function strands(s, ctx, calm) {
     fill.transition("height", m ? 0 : calm ? 150 : 600);
     // The fill rides in a full-height "lift" layer: the wish moment moves and
     // fades the lift (same id every render, so gpui animates the change).
-    const lift = div().id(`cw-string-lift-${i}`).absolute().left(0).top(rise && !calm ? WISH_RISE.dy : 0).w(sw).h(STRAND.h).opacity(rise ? 0 : 1).child(fill);
+    const lift = div().id(`cw-string-lift-${i}`).absolute().left(0).top(rise && !calm ? WISH_RISE.dy : 0).w(sw).h(sh).opacity(rise ? 0 : 1).child(fill);
     const topMs = rise && !calm ? WISH_RISE.ms : 0;
     const fadeMs = rise ? (calm ? WISH_RISE.calmMs : WISH_RISE.ms) : 0;
     lift.transition("top", { duration: topMs, easing: "ease-out" }).transition("opacity", fadeMs);
@@ -145,8 +181,8 @@ function strands(s, ctx, calm) {
         .relative()
         .flex_none()
         .w(sw)
-        .h(STRAND.h)
-        .child(div().absolute().inset_0().opacity(0.25).child(svg(path).w(sw).h(STRAND.h).text_color(S.sheet)))
+        .h(sh)
+        .child(div().absolute().inset_0().opacity(0.25).child(svg(path).w(sw).h(sh).text_color(S.sheet)))
         .child(lift),
     );
   });

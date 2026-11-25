@@ -174,3 +174,65 @@ test("r3-12: calm mode re-renders every 5 s, not every second; an act still re-r
   await w.handler(panel, "click", "sheet", null, null);
   assert.ok(changes >= 1, "a click re-renders at once");
 });
+
+// r3-12 (review 2): herdr re-runs render whenever its live data changes
+// (agents, terminals, focus, theme, shared state), not only after cx.notify().
+// Between calm mode's 5 s buckets the vm key must not move with time: a key on
+// state.rev (advance bumps it every second) rebuilt the whole view() inside
+// render (r3-03: 18-39 ms of the 50 ms budget at 1-2 years), and the counters
+// moved every second. Renders here run every 100 ms on both copies, so some
+// fall between a bucket's start and the copy's next tick too.
+test("r3-12: renders between calm buckets read the cached vm; the counters hold for the bucket", async () => {
+  w = win(flockScenario(6, 0, () => "working"));
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  await w.advance(2000);
+  await w.handler(panel, "setting", "nodes", false); // (no node appearing: only time moves here)
+  await w.handler(panel, "setting", "calm", true);
+  await w.advance(1000);
+  const watch = (v) => {
+    const c = { inRender: 0, builds: 0, folds: [] };
+    const vm = v.session.vm.bind(v.session);
+    v.session.vm = (t) => {
+      const before = v.session.cache;
+      const out = vm(t);
+      if (v.session.cache !== before) {
+        c.builds++;
+        if (c.rendering) c.inRender++;
+      }
+      return out;
+    };
+    c.render = () => {
+      c.rendering = true;
+      try {
+        w.render(v);
+      } finally {
+        c.rendering = false;
+      }
+      const f = v.session.cache.vm.header.folds;
+      if (c.folds[c.folds.length - 1] !== f) c.folds.push(f);
+    };
+    return c;
+  };
+  const P = watch(panel);
+  const R = watch(ribbon);
+  const t0 = Date.now();
+  for (let i = 0; i < 100; i++) {
+    await w.advance(100);
+    P.render();
+    R.render();
+  }
+  assert.ok(w.slot.state.clock - t0 >= 9000, "time moved (the ticker advanced)");
+  for (const [name, c] of [["panel", P], ["ribbon", R]]) {
+    assert.equal(c.inRender, 0, `${name}: no vm built inside render (${c.inRender} of ${c.builds})`);
+    assert.ok(c.builds <= 3, `${name}: one vm per 5 s bucket (${c.builds} in 10 s)`);
+    assert.ok(c.folds.length <= 3, `${name}: the counters change per bucket, not per second (${c.folds.join(", ")})`);
+  }
+  // An act still shows at once, in the handler (not in render).
+  const before = panel.session.cache;
+  await w.handler(panel, "click", "sheet", null, null);
+  assert.notEqual(panel.session.cache, before, "a click builds a new vm at once");
+  const inRender = P.inRender;
+  P.render();
+  assert.equal(P.inRender, inRender, "render reads it");
+});

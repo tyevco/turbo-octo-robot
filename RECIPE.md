@@ -38,8 +38,8 @@ Left to right, then top to bottom. Sizes are logical px before zoom.
 | `blocked` or `error` | Needs you: stops helping | Pennant with a "!" | Dashed tile border, first group, a chip on the mat, ▲ in the counts chip | Pulses for 10 s, then stays still |
 | `done` | Finished | Check in a circle | "Finished" group, ✓ in the counts chip | None |
 | `idle` | Resting: charges a boost for its next task (×2 at a full charge, ×3 with Warm Hands) | Crescent | Rest bar, 0.8 opacity | None |
-| Sub-agent | Fledgling: adds up to +25/50/75 % each (up to 4) to its parent | Small diamond (hollow while resting) or triangle pip on the parent tile | Sits on the parent tile | None |
-| Agent gone | Moves to the Album and keeps its history | List row | Album section | None |
+| Sub-agent | Fledgling: adds up to +25/50/75 % each (up to 4) to its parent, and keeps gathering for it while the parent rests, finishes or waits | Small diamond (hollow while resting) or triangle pip on the parent tile | Sits on the parent tile | None |
+| Agent gone | Moves to the Album and keeps its history (after 10,000 newer ones it joins a monthly "1,204 helpers" archive row, still counted) | List row | Album section | None |
 
 A status colour that falls below 3:1 on its surface falls back to `muted`, then to `foreground`. The pace drops off as more agents work at once ("bench pace"), but every working agent still adds folds.
 
@@ -47,7 +47,7 @@ A status colour that falls below 3:1 on its surface falls back to `muted`, then 
 - **Sheet**: one fold per click, at most 12.5 credited hits a second. Clicking in rhythm builds a streak of up to ×1.5 (×3 with upgrades). A streak of 25 is **In step**, which makes every working helper fold ×1.5. Hits made while In step bank **afterglow**, up to 20 minutes, which keeps helpers at ×1.25 while you code.
 - **Crease nodes**: a chain of 3, 5 or 7 numbered nodes. Clicking them in order pays extra. A wrong order tears the chain, with no penalty.
 - **Scraps, Fresh Ream** (once a day), **gilded crane** (Lucky Fold, Paper Storm or Flock Song) and **Paper Boat** (Tailwind, after the Harbour Ribbon curio): click them before they leave. They spawn only while you are actively playing, so nothing is missed while you code.
-- **Envelopes**: one per helper. Repeat finishes stack on it, up to ×9. The seal shows the type before you open it: Bundle (folds), Rush (hand ×3), Paper Storm (hand ×7) or Chorus (helpers ×2). Opening is your choice: click the tray, a tile marker or the ribbon's ✉, or press `ctrl-shift-j`.
+- **Envelopes**: one per helper. Repeat finishes stack on it, up to ×9. A finish adds a whole unit when the agent's last one was 12 minutes or more ago, less for quicker ones, so many short turns earn about what a few long ones do. The seal shows the type before you open it: Bundle (folds, never less than 75 hand hits' worth), Rush (hand ×3), Paper Storm (hand ×7) or Chorus (helpers ×2: open it while your helpers work). Opening is your choice: click the tray, a tile marker or the ribbon's ✉, or press `ctrl-shift-j`.
 - **Needs-you cue** (tile, mat chip, ribbon pip, rail button, ▲, or `ctrl-shift-y`): runs `pane.focus` for an agent that has a pane, or `terminal.peek` for a sub-agent without one. If the agent has gone, it shows "That agent has gone" instead.
 - **Ribbon marks**: a needs-you or finished mark opens the pane. Any other mark unfolds the panel with that helper selected. Hovering shows the name, agent, place, status and how long.
 - **Shop**: Works, Tools, Folk, Charms, Curios and Auto. Works can buy ×1, ×10 or Max. Each row shows the time until you can afford it, and a diamond marks the best buy.
@@ -129,7 +129,7 @@ The layout uses theme token names only. It sets no `theme` or `colors`.
 - **Never put the game under `panel-body`.** The tabs mod hides that panel when the space changes.
 - **VM restart**: if herdr restarts the mod VM (memory pressure), the in-memory slot is lost. The game reloads from disk and loses at most the last 15 s or so. A hot reload loses nothing.
 - **Clock moved back**: no folds are credited for that time, and a `clock` notice explains it.
-- **Limits**: away credit is capped at 8 h, and two away periods less than 5 minutes of live time apart share one cap. Envelopes hold 9 units (15 with the 250-Wish perk). Units above the cap turn into folds at once, with a footer note. Ribbon tallies appear only beyond 82 helpers at 1100 px or 130 at 1440 px. Save text stays under 256 KiB with 64 helpers and 500 Album entries.
+- **Limits**: away credit is capped at 8 h, and two away periods less than 5 minutes of live time apart share one cap. Envelopes hold 9 units (15 with the 250-Wish perk). Units above the cap turn into folds at once, with a footer note. Ribbon tallies appear only beyond 82 helpers at 1100 px or 130 at 1440 px. Save text stays under 256 KiB with 64 helpers and 500 Album entries, and stops growing near 540 KiB however many agents come and go (Album archives).
 - **Helper identity** is a hash of `address#created_ms`. Two homes that see the same terminal share one helper. A restarted terminal is a new helper.
 - **Name check (2026-11-25)**: a web search found no game, app or product called "Creaseworks". Re-run it before publishing.
 
@@ -142,7 +142,7 @@ The layout uses theme token names only. It sets no `theme` or `colors`.
 - [ ] An agent waiting for input shows a pennant (tile, mat chip and ribbon). Clicking it, or pressing `ctrl-shift-y`, focuses that agent's pane. A sub-agent without a pane opens with a terminal peek.
 - [ ] When an agent finishes a task, an envelope with a seal lands on the tray. Clicking it, or pressing `ctrl-shift-j`, opens it and starts the boost or pays the bundle.
 - [ ] An idle agent shows a crescent and a filling rest bar, and its next task starts with a "next task ×" boost.
-- [ ] 30+ agents: every one still has its own mark in the ribbon, and the Flock tab switches to dense tiles.
+- [ ] 30+ agents: every one still has its own mark in the ribbon, and the Flock tab switches to dense tiles. A narrow panel (200 to 279 px, e.g. 1100×700) uses dense tiles at any count.
 - [ ] `ctrl-shift-g` folds the panel to the 64 px rail and back.
 - [ ] Each owned automation has its own switch in Settings, and Calm mode removes all motion and floating numbers.
 - [ ] Notifications stay off until switched on, and never exceed 3 a day.

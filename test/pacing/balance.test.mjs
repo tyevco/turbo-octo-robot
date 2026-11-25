@@ -119,6 +119,7 @@ test("§7 invariant numbers parse", () => {
     [I.cadenceP1Min, I.cadenceHandsMin, I.cadenceP2Hours, I.awayF, I.saveKiB, I.albumExtra, I.churnPerDay, I.churnKids, I.churnKiB, I.twoWindowRel, I.calmRel, I.firstWishGain, I.deadWallHours],
     [10, 15, 3, 0.45, 256, 500, 20, 3, 512, 0.01, 0.03, 10, 24],
   );
+  assert.deepEqual([I.heavyPerDay, I.heavyDays, I.heavyKiB], [100, 300, 640]);
 });
 
 test("§8 knobs: the current values in BALANCE.md are the constants in engine/content.js", () => {

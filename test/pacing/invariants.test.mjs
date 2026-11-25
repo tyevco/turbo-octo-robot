@@ -345,3 +345,56 @@ test("inv. 13: the first wish gives exactly 10 Wishes and G becomes 1.5", () => 
   assert.equal(r.wishEvent.G, 1.5);
   assert.ok(r.milestones["wish2:available"] > r.milestones["wish:available"]);
 });
+
+test("inv. 7 (R13, r3-04): 100 new agents a day for 300 days: every helper still counted, the save bounded far under 1 MiB", () => {
+  const s = engine.newGame({ seed: 11, now: day2.finalState.clock, day: day2.finalState.day });
+  s.bought["mail-sorter"] = true;
+  const T = s.clock;
+  const ag = (i, extra = {}) => ({
+    addr: `w1:t${i}`, created: T + i * 997, status: "working", raw: "working", turn: 0, parent: null,
+    pane: `p${i}`, title: "claude · refactor the payment module", paneName: "", space: "main", tab: "1", kind: "pane", ...extra,
+  });
+  let t = T;
+  let n = 0;
+  const per = I.heavyPerDay / 5;
+  const sizes = [];
+  for (let d = 0; d < I.heavyDays; d++) {
+    // five waves a day of per new agents: each works, finishes, and its terminal closes
+    for (let w = 0; w < 5; w++) {
+      const list = [];
+      for (let k = 0; k < per; k++) list.push(ag(n++));
+      act(s, observeAt((t += 1000), list, s.day));
+      act(s, observeAt((t += 15 * 60000), list.map((o) => ({ ...o, turn: 1, status: "idle", raw: "idle" })), s.day));
+      act(s, observeAt((t += 1000), [], s.day));
+    }
+    t = T + (d + 1) * 24 * HOUR;
+    engine.advance(s, t);
+    if ((d + 1) % 50 === 0) sizes.push(engine.serialize(s).length);
+  }
+  assert.equal(n, I.heavyPerDay * I.heavyDays);
+  // every pane agent is a saved helper: one record each, or counted in an archive entry
+  const recs = Object.values(s.helpers).filter((h) => h.kind === "pane" && h.gone);
+  const archives = recs.filter((h) => h.archive > 0);
+  assert.ok(archives.length > 0);
+  assert.equal(recs.reduce((a, h) => a + (h.archive > 0 ? h.archive : 1), 0), n);
+  assert.equal(engine.view(s, t, { role: "panel", width: 320, album: false }).helpers.albumCount, n);
+  assert.ok(recs.filter((h) => h.compact).length <= K.albumCompactKeep + K.albumArchiveBatch);
+  for (const a of archives) assert.match(a.id, /^past-\d+$/);
+  // the open Album lists each archive entry as one row named by its helper count, oldest last
+  const rows = engine.view(s, t, { role: "panel", width: 320 }).helpers.album;
+  assert.equal(rows.length, recs.length);
+  const arch = rows.filter((r) => /^past-/.test(r.helperId));
+  assert.equal(arch.length, archives.length);
+  for (const r of arch) assert.equal(r.name, `${engine.formatInt(s.helpers[r.helperId].archive)} helpers`.slice(0, 16));
+  assert.ok(/^past-/.test(rows.at(-1).helperId), "archives hold the helpers who left longest ago");
+  const text = engine.serialize(s);
+  assert.ok(text.length < I.heavyKiB * 1024, `${(text.length / 1024).toFixed(0)} KiB`);
+  // it stops growing: the last 150 days add at most a few archive entries
+  assert.ok(sizes.at(-1) - sizes[2] < 16 * 1024, sizes.map((x) => (x / 1024).toFixed(0)).join(" → "));
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
+  const v = s.stats.units;
+  const waiting = Object.values(s.envelopes).reduce((a, e) => a + e.units, 0);
+  assert.ok(Math.abs(v.created - (v.opened + v.converted + waiting)) < 1e-9, "inv. 9 holds");
+});

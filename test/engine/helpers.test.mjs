@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, close, T0 } from "./_util.mjs";
-import { saltedId, rosterChanged } from "../../mods/creaseworks/engine/helpers.js";
+import { saltedId, rosterChanged, albumKey, archiveId } from "../../mods/creaseworks/engine/helpers.js";
 
 test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
   const id = engine.helperId("t1", 1001);
@@ -587,6 +587,57 @@ test("a salted id is kept after the plain id's holder leaves, and each agent of 
   for (let i = 0; i < 260; i++) obs([ag(a, "working", 6), agent(20000 + i, "working")]);
   assert.equal(s.helpers[salted].compact, undefined);
   assert.equal(s.helpers[salted].salt, 1);
+});
+
+test("r3-18: a new terminal whose plain id clashes with a gone helper's Album record does not take it over", () => {
+  // helperId("t10871", 11871) === helperId("t60266", 61266): agent(i) is addr t<i>, created 1000 + i
+  const A = 10871;
+  const B = 60266;
+  const id = engine.helperId(`t${A}`, 1000 + A);
+  assert.equal(engine.helperId(`t${B}`, 1000 + B), id, "a real 32-bit clash");
+  const s = seeded(3);
+  const me = writer(s);
+  let t = T0;
+  me.act(observeAction((t += 1000), [agent(A, "working", 0)]));
+  me.act(observeAction((t += 3600000), [agent(A, "idle", 5)]));
+  me.act(observeAction((t += 1000), []));
+  const a = s.helpers[id];
+  const was = { name: a.name, tasks: a.stats.tasks, folds: a.stats.folds, joined: a.joined, missingSince: a.missingSince };
+  assert.equal(a.gone, true);
+  assert.equal(a.key, albumKey(`t${A}`, 1000 + A), "the Album record keeps its terminal key");
+  assert.equal(a.addr, undefined);
+  // a day later B appears: it takes a salted id; A's record stays in the Album as it was
+  me.act(observeAction((t += 86400000), [agent(B, "working", 0)]));
+  assert.equal(s.helpers[id].gone, true);
+  assert.deepEqual({ name: a.name, tasks: a.stats.tasks, folds: a.stats.folds, joined: a.joined, missingSince: a.missingSince }, was);
+  const bid = saltedId(`t${B}`, 1000 + B, 1);
+  assert.equal(s.helpers[bid].addr, `t${B}`);
+  assert.equal(s.helpers[bid].stats.tasks, 0);
+  assert.equal(engine.view(s, t, { role: "panel", width: 320, writer: "wA" }).helpers.albumCount, 1);
+  // A returns: it rejoins its own record with its history
+  me.act(observeAction((t += 1000), [agent(B, "working", 0), agent(A, "working", 5)]));
+  assert.equal(s.helpers[id].gone, false);
+  assert.equal(s.helpers[id].addr, `t${A}`);
+  assert.equal(s.helpers[id].stats.tasks, 1);
+  assert.equal(s.helpers[id].key, undefined, "a present helper keeps its address, not a key");
+  // both leave and B returns: B finds its own salted record, A's stays gone
+  me.act(observeAction((t += 1000), []));
+  me.act(observeAction((t += 1000), [agent(B, "working", 0)]));
+  assert.equal(s.helpers[bid].gone, false);
+  assert.equal(s.helpers[id].gone, true);
+  // the key survives compaction and a save round trip (packed entries end in it)
+  for (let k = 0; k < engine.CONTENT.K.albumKeep + 2; k++) {
+    me.act(observeAction((t += 1000), [agent(B, "working", 0), agent(200 + k)]));
+  }
+  me.act(observeAction((t += 1000), [agent(B, "working", 0)]));
+  assert.equal(s.helpers[id].compact, true);
+  const back = engine.parseSave(engine.serialize(s));
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[id].key, albumKey(`t${A}`, 1000 + A));
+  // an Album record from an older save (no key) is rejoined by its plain id, as before
+  delete s.helpers[id].key;
+  me.act(observeAction((t += 1000), [agent(B, "working", 0), agent(A, "working", 5)]));
+  assert.equal(s.helpers[id].gone, false);
 });
 
 test("display names: a newcomer takes the smallest free number; a returning namesake is renamed only on a clash (§5.1)", () => {

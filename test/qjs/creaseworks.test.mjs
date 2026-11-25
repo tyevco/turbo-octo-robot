@@ -22,7 +22,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readFileSync } from "node:fs";
-import { createHost, BUDGETS } from "../../tools/qjs/harness.mjs";
+import { createHost, BUDGETS, RuntimeFreeError } from "../../tools/qjs/harness.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MOD = join(repo, "mods", "creaseworks");
@@ -392,19 +392,26 @@ test.after(() => {
 // instance (a fresh import of the harness), so its outcome does not depend on
 // what the earlier tests of this file left in the shared wasm heap.
 //
-// OPEN RISK (DESIGN R13): with a save of about 300 KiB this wasm QuickJS-ng
-// build (0.12.1, quickjs-emscripten 0.32) can fail to free its runtime on
-// dispose (`list_empty(&rt->gc_obj_list)` in JS_FreeRuntime) after the first
-// save cycle, although every step is in budget and the game is correct. It is
-// not in the engine: a copy of the mod whose save cycle only writes two
-// 450,000-character "x"/"y".repeat() strings to a mock file (the second a
-// compare-and-swap against the first), with a 280-day save loaded, fails the
-// same way, and one without the save cycle frees cleanly. It depends on the heap's history, not on size alone: the
-// same 280-day save passes in a fresh wasm instance and fails after this
-// file's other tests. herdr runs a different QuickJS build (longbridge
-// quickjs-jit), which cannot be checked here. So the strict run below uses
-// 120 days (a 187 KiB save, well under where the failure was seen); the
-// year-size run asserts the budgets and reports the teardown as a todo.
+// Teardown (DESIGN R13, review r3-25). From a save of about 300 KiB this wasm
+// QuickJS-ng build (0.12.1) aborts in JS_FreeRuntime
+// (`list_empty(&rt->gc_obj_list)`) on dispose after a save cycle, although
+// every step is in budget and the game is correct. Bisected in the harness
+// (tools/qjs/harness.mjs header): it is the engine's cycle collector running
+// while a glue async function executes again after an `await` (store.cycle
+// after its pause, store.parseIn between parse steps). A collection forced
+// there aborts the teardown of a 120-day save too; collections at step
+// boundaries, in synchronous engine code, or none at all leave nothing behind.
+// The save size only decides whether the automatic collection lands in such a
+// function (a save cycle allocates about twice the save text). A leaked handle
+// gives the same message, so every teardown here is a real assertion:
+//   * 120 days: frees cleanly as the engine runs;
+//   * a year and two years, as the engine runs: frees cleanly or fails with
+//     exactly that leak check (RuntimeFreeError.gcObjList), nothing else;
+//   * the same year and two-year saves and play with the collector held back
+//     (createHost gcHeadroom, which changes only WHEN garbage is collected):
+//     must free cleanly. A leaked handle, or anything the mod or harness kept
+//     alive for real, fails here; only the collector-timing fault passes.
+// herdr runs a different QuickJS (longbridge quickjs-jit), not checked here.
 
 /**
  * The save text after `days` days of 20 agents a day (3 fledglings each), and
@@ -444,9 +451,14 @@ async function churnSave(days) {
   obs((t += 1000), []);
   assert.equal(Object.keys(s.envelopes).length, 0);
   const text = engine.serialize(s);
-  // every compacted helper still packs: opening its envelope did not keep it whole
-  const packed = Object.values(JSON.parse(text).state.helpers).filter(Array.isArray).length;
-  assert.equal(packed, n - K.albumKeep);
+  // every compacted helper still packs (opening its envelope did not keep it
+  // whole) or, past K.albumCompactKeep compact records, is counted in an Album
+  // archive entry (review r3-04)
+  const saved = Object.values(JSON.parse(text).state.helpers);
+  const packed = saved.filter(Array.isArray).length;
+  const archived = saved.reduce((a, h) => a + (!Array.isArray(h) && h.archive > 0 ? h.archive : 0), 0);
+  assert.equal(packed + archived, n - K.albumKeep);
+  assert.ok(packed <= K.albumCompactKeep + K.albumArchiveBatch, `${packed} compact records`);
   return { engine, text, clock: s.clock, n };
 }
 
@@ -455,8 +467,8 @@ async function churnSave(days) {
  * live agents, plays 40 s (save cycles included) and checks every step and the
  * written save. Returns the slowest step and the dispose error, if any.
  */
-async function churnRun(days, tag, maxKiB = 512) {
-  const { engine, text, clock, n } = await churnSave(days);
+async function churnRun(days, tag, maxKiB = 512, { save = null, gcHeadroom = 0 } = {}) {
+  const { engine, text, clock, n } = save ?? (await churnSave(days));
   assert.ok(text.length < maxKiB * 1024, `${text.length} bytes`);
   const { createHost: freshHost } = await import(`../../tools/qjs/harness.mjs?${tag}`);
   const now = clock + 1000;
@@ -465,6 +477,7 @@ async function churnRun(days, tag, maxKiB = 512) {
   const host = await freshHost({
     modRoot: MOD,
     scenario: { ...scenario(0), ...live, now, files: { [SAVE]: text } },
+    gcHeadroom,
   });
   let slowest;
   try {
@@ -487,7 +500,8 @@ async function churnRun(days, tag, maxKiB = 512) {
     assert.notEqual(disk, text, "a save cycle wrote the file");
     const back = engine.parseSave(disk);
     assert.equal(back.ok, true);
-    assert.equal(Object.values(back.state.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
+    const gone = Object.values(back.state.helpers).filter((h) => h.kind === "pane" && h.gone);
+    assert.equal(gone.reduce((a, h) => a + (h.archive > 0 ? h.archive : 1), 0), n, "every helper is still in the Album");
     slowest = Math.max(...steps);
     assert.ok(cycles.length >= 2, "save cycles ran");
     log(`qjs ${days}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; init ${f1(load.ms.init)} ms, ` +
@@ -506,38 +520,60 @@ async function churnRun(days, tag, maxKiB = 512) {
   } catch (e) {
     leak = e;
   }
-  return { slowest, leak, text };
+  return { slowest, leak, text, save: { engine, text, clock, n }, headroom: host.headroom };
 }
+
+/** Teardown as the engine runs: clean, or this wasm build's leak check and nothing else. */
+function cleanOrEngineFault(leak, what) {
+  if (leak === null) return "freed cleanly";
+  // (each run imports its own copy of the harness, so its own RuntimeFreeError class)
+  assert.equal(leak?.name, RuntimeFreeError.name, `${what}: dispose failed in another way: ${leak?.stack ?? leak}`);
+  assert.equal(leak.gcObjList, true, `${what}: not the JS_FreeRuntime leak check: ${leak.message}`);
+  return "JS_FreeRuntime leak check (engine collector timing)";
+}
+
+/** Held back for the replay: well above what 40 s of play on a two-year save allocates. */
+const HEADROOM = 96 * 1024 * 1024;
 
 test("a save after 120 days of 20 agents a day loads, saves within budget and frees cleanly (Album compaction, R13)", { timeout: 120000 }, async () => {
   const { leak } = await churnRun(120, "churn120");
   if (leak) throw leak;
 });
 
-let yearLeak = null;
+let year = null;
 
 test("a save after a year of 20 agents a day loads and saves within budget (Album compaction, R13)", { timeout: 180000 }, async () => {
-  ({ leak: yearLeak } = await churnRun(365, "churn365"));
+  year = await churnRun(365, "churn365");
+  log(`qjs 365-day teardown as the engine runs: ${cleanOrEngineFault(year.leak, "365 days")}`);
 });
 
 // Review r2-01: every save cycle used to serialise and hash the whole Album
 // (≈ 0.8 ms per KiB), so a save of about 600 KiB passed the 500 ms budget.
 // Format 3 re-hashes only the chunks that changed; twice the year (≈ 590 KiB)
 // must stay in budget, load included, and under herdr's 1 MiB write limit.
-let twoYearLeak = null;
+let twoYear = null;
 let twoYearText = null;
 
 test("a save after two years of 20 agents a day loads and saves within budget (chunked save check, R13)", { timeout: 300000 }, async () => {
-  ({ leak: twoYearLeak, text: twoYearText } = await churnRun(730, "churn730", 1024));
+  twoYear = await churnRun(730, "churn730", 1024);
+  twoYearText = twoYear.text;
+  log(`qjs 730-day teardown as the engine runs: ${cleanOrEngineFault(twoYear.leak, "730 days")}`);
 });
 
-test("the QuickJS runtime frees cleanly after the two-year save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
-  if (twoYearLeak) throw twoYearLeak;
-});
-
-test("the QuickJS runtime frees cleanly after the year-size save cycle", { todo: "open risk, DESIGN R13: this wasm QuickJS-ng build can fail JS_FreeRuntime after large save cycles (see the note above churnSave)" }, () => {
-  if (yearLeak) throw yearLeak;
-});
+// Review r3-25: these used to be todo tests that failed on every run. The
+// replay is the same save, the same 30 agents and the same 40 s of play in a
+// fresh wasm instance; only the collector's timing differs.
+for (const [days, tag, maxKiB, done] of [[365, "churn365q", 512, () => year], [730, "churn730q", 1024, () => twoYear]]) {
+  test(`the QuickJS runtime frees cleanly after the ${days}-day save cycles with the engine's collector held back (R13, r3-25)`, { timeout: 300000 }, async () => {
+    const natural = done();
+    const replay = await churnRun(days, tag, maxKiB, { save: natural?.save ?? null, gcHeadroom: HEADROOM });
+    assert.equal(replay.headroom.length, 1);
+    assert.ok(replay.headroom[0].peak >= HEADROOM);
+    if (replay.leak) throw replay.leak;
+    log(`qjs ${days}-day teardown with ${HEADROOM / 1048576} MiB collector headroom: freed cleanly ` +
+      `(as the engine runs: ${natural ? cleanOrEngineFault(natural.leak, `${days} days`) : "not run"})`);
+  });
+}
 
 // Review r2-01 (residual budget): a load and a CAS merge each parse and verify
 // the whole save. parseSaveSteps splits that work (STEP_HELPERS helpers per

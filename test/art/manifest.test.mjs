@@ -92,3 +92,21 @@ test("generation is deterministic and the files on disk are up to date", () => {
   const stale = a.filter((x) => readFileSync(join(ART_DIR, x.path), "utf8") !== x.svg).map((x) => x.path);
   assert.deepEqual(stale, [], "run `node tools/art/generate.mjs`");
 });
+
+test("r3-20: the garland strand matches the String card's row grid (STRAND.w × STRAND.h, STRAND.rows cranes, a gap at every row edge)", async () => {
+  const { STRAND } = await import("../../mods/creaseworks/ui/string.js");
+  const a = buildAssets().find((x) => x.path === "ui/garland-strand.svg");
+  assert.ok(a, "ui/garland-strand.svg is generated");
+  assert.equal(a.w, STRAND.w);
+  assert.equal(a.h, STRAND.h);
+  const pitch = STRAND.h / STRAND.rows;
+  assert.ok(Number.isInteger(pitch), "a whole-unit crane row");
+  const parts = a.shapes[0].parts;
+  assert.equal(parts.length, STRAND.rows);
+  // The fill is clipped only at whole multiples of the pitch: no crane may
+  // touch one, or the clip edge would cut it.
+  parts.forEach((part, i) => {
+    const ys = part.p.map((pt) => pt[1]);
+    assert.ok(Math.min(...ys) > i * pitch && Math.max(...ys) < (i + 1) * pitch, `crane ${i}: ${Math.min(...ys)}..${Math.max(...ys)}`);
+  });
+});

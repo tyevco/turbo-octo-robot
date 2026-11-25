@@ -110,6 +110,11 @@ export class Session {
     this.lastRev = -1;
     this.lastBucket = -1;
     this.cache = null;
+    // The vm key's name for each state object it has seen (a load or merge puts a new one in the slot).
+    this.stateIds = new WeakMap();
+    this.stateSeq = 0;
+    // The time of this copy's last tick or handler build (render builds for it: vmTime).
+    this.vmAt = null;
     this.popSeq = 0;
     this.popCarry = null;
     this.handledRequest = 0;
@@ -205,10 +210,21 @@ export class Session {
 
   /** True when a load of this code generation is under way and still moving (a copy that started it is open). */
   loadUnderWay(t) {
+    return this.loadStop(t) === null;
+  }
+
+  /**
+   * Why the load under way can no longer finish: null (it is moving), "none"
+   * (no load of this code generation), "gone" (the copy that started it has
+   * closed, so its tasks were cancelled: no save problem) or "stalled" (no
+   * progress for LOAD_STALL_MS: a step was stopped, e.g. by the budget).
+   */
+  loadStop(t) {
     const slot = this.slot;
-    if (!slot.loading || slot.loadGen !== codeGeneration()) return false;
-    if (typeof slot.loadBy !== "string" || !(slot.loadBy in slot.copies)) return false;
-    return !(typeof slot.loadAt === "number" && t - slot.loadAt > LOAD_STALL_MS);
+    if (!slot.loading || slot.loadGen !== codeGeneration()) return "none";
+    if (typeof slot.loadAt === "number" && t - slot.loadAt > LOAD_STALL_MS) return "stalled";
+    if (typeof slot.loadBy !== "string" || !(slot.loadBy in slot.copies)) return "gone";
+    return null;
   }
 
   /**
@@ -216,14 +232,17 @@ export class Session {
    * interrupt cannot be caught, and a closed view's tasks are cancelled)
    * never settles, so nothing would ever show but the placeholder. One that
    * has made no progress for LOAD_STALL_MS, or whose copy has gone, is
-   * started again by this copy.
+   * started again by this copy. Only a stall counts as a try (the placeholder
+   * and a notice say so); a load whose copy simply closed is handed over
+   * quietly, since nothing went wrong with the save.
    */
   watchLoad(cx, t) {
     const slot = this.slot;
     if (!slot.loading || slot.state !== null) return;
     if (typeof slot.loadAt === "number" && slot.loadAt > t) slot.loadAt = t; // the clock moved back
-    if (this.loadUnderWay(t)) return;
-    this.startLoad(cx, true);
+    const why = this.loadStop(t);
+    if (why === null) return;
+    this.startLoad(cx, why !== "gone");
   }
 
   /** The placeholder's text while there is no game to show (main.js). */
@@ -312,9 +331,17 @@ export class Session {
     // Time alone moving the counters is no glue change: every copy re-renders
     // on its clock bucket (1 s, 5 s in calm mode: r3-12), so the slot is not
     // touched for it. A player action or a roster change touches it at once.
+    // The bumps it makes to state.rev are counted in slot.timeRev, so the vm
+    // key leaves them out too (render between buckets reads the cached vm).
+    // Anything it does beyond earning (a node or pickup appearing, an
+    // automation buying or opening) is shown at once.
     const before = slot.state.rev;
-    advance(slot.state, t, slot.writerId);
-    if (slot.state.rev !== before) markDirty(slot, t, false);
+    const ev = advance(slot.state, t, slot.writerId);
+    if (slot.state.rev !== before) {
+      slot.timeRev = (slot.timeRev || 0) + (slot.state.rev - before);
+      markDirty(slot, t, false);
+    }
+    if (ev.some((e) => e.kind !== "earn")) touch(slot);
 
     // Notifications (opt-in, ≤ 3 a day) and the save-problem ribbon rescue.
     notifier.check(slot, t, { day, quiet: panelShown && active, layout: L }, () => {
@@ -336,6 +363,8 @@ export class Session {
     const calm = !!(slot.state && slot.state.settings.calm);
     const b = bucket(t, calm);
     const arming = this.ui.confirm && typeof this.ui.armedAt === "number" && t - this.ui.armedAt < 3000;
+    // (render reads the vm for this tick's time until the next tick: vmTime)
+    this.vmAt = t;
     if (slot.rev !== this.lastRev || b !== this.lastBucket || arming || this.ui.pops.length || this.ui.scrollTo !== null) {
       this.lastRev = slot.rev;
       this.lastBucket = b;
@@ -351,8 +380,10 @@ export class Session {
   changed(cx, t = undefined) {
     if (!this.loading()) {
       let vm = null;
+      // (a handler builds for the time now; render then reads that vm)
+      const at = typeof t === "number" || this.demo ? t : clockNow();
       try {
-        vm = this.vm(t);
+        vm = this.vm(at);
       } catch {
         // render builds it again and shows the problem there
       }
@@ -471,11 +502,23 @@ export class Session {
     return this.demo ? this.demo.state : this.slot ? this.slot.state : null;
   }
 
-  /** The cached ViewModel for this copy (keyed on rev, width, tab, buyCount, saveNotice, clock bucket). */
+  /**
+   * The cached ViewModel for this copy, keyed on exactly what view() reads:
+   * the state (which object, and its rev without the bumps time alone makes:
+   * slot.timeRev, tickerWork), the writer, width, tab, buyCount, saveNotice,
+   * clock bucket, short, Album open, flash. Not slot.rev: a save landing or a
+   * heartbeat touches the slot but changes no vm. herdr re-renders whenever
+   * its live data changes, and a key that moved every second (or with every
+   * save) rebuilt the whole vm inside render between calm mode's 5 s buckets
+   * (r3-12, r3-03: 18-39 ms of the 50 ms budget at 1-2 years). Render
+   * (`t` undefined) builds for the time of this copy's last tick or handler
+   * while it is recent, so a render between a bucket's start and this copy's
+   * next tick reads the cache too; the tick moves it on.
+   */
   vm(t = undefined) {
     const s = this.state();
     if (!s) return null;
-    const at = typeof t === "number" ? t : this.demo ? this.demo.t : clockNow();
+    const at = this.vmTime(t);
     this.applyRequest();
     const slot = this.slot;
     const notice = slot ? slot.notice : null;
@@ -487,7 +530,7 @@ export class Session {
     // a folded Album with thousands of records costs nothing to render).
     const album = this.role === "panel" && tab === "flock" && this.albumOpen();
     const key = [
-      s.rev, slot ? slot.rev : 0, width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}` : "",
+      this.stateId(s), s.rev - (slot && slot.state === s && slot.timeRev ? slot.timeRev : 0), slot ? slot.writerId : "", width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}` : "",
       bucket(at, !!s.settings.calm), short, fl ?? "", album,
     ].join("|");
     if (this.cache && this.cache.key === key) return this.cache.vm;
@@ -507,6 +550,33 @@ export class Session {
     }
     this.cache = { key, vm };
     return vm;
+  }
+
+  /** A name for the state object, new for each object (the vm key). */
+  stateId(s) {
+    let id = this.stateIds.get(s);
+    if (id === undefined) {
+      id = ++this.stateSeq;
+      this.stateIds.set(s, id);
+    }
+    return id;
+  }
+
+  /** The time vm() builds for: the tick's or handler's `t`; in render, the last tick's or handler's while recent. */
+  vmTime(t) {
+    if (this.demo) {
+      if (typeof t === "number") return t;
+      return this.demo.t;
+    }
+    if (typeof t === "number") {
+      this.vmAt = t;
+      return t;
+    }
+    const now = clockNow();
+    const last = this.vmAt;
+    // (recent: within one data tick; a clock that moved back is never read)
+    if (typeof last === "number" && now >= last && now - last <= (this.interval || VISIBLE_MS) + VISIBLE_MS) return last;
+    return now;
   }
 
   /** True when this copy's Flock shows the Album section unfolded (folded by default). */

@@ -11,8 +11,8 @@
 // envelope marker, fledgling pips, the rest bar and the dashed needs-you
 // border. A group with more than 80 tiles open draws as a v_virtual_list of
 // 28 px rows with one `on_item_click` on the list (no handlers in the rows) and
-// a definite height (§5.5 item 8); so do the biggest groups while the open
-// tile grids together would hold more than TILE_BUDGET tiles (r3-16).
+// a definite height (§5.5 item 8); so do the heaviest groups while the open
+// tile grids together would weigh more than TILE_BUDGET tiles (r3-16).
 
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, v_virtual_list, ScrollHandle } from "gpui-base";
@@ -39,9 +39,10 @@ export const VIRTUAL_ABOVE = 80;
 
 /**
  * The most tiles the open groups draw as tile grids in one render, all groups
- * together (r3-16): past it the biggest groups switch to virtual lists until
- * the rest fit. A per-group switch alone let four groups of 79 draw 316 tiles
- * a frame, which ran past the 50 ms render budget.
+ * together (r3-16; a tile weighs 1, more with fledgling pips and a needs-you
+ * flag, `tileUnits`): past it the heaviest groups switch to virtual lists,
+ * needs-you last, until the rest fit. A per-group switch alone let four
+ * groups of 79 draw 316 tiles a frame, past the 50 ms render budget.
  */
 export const TILE_BUDGET = 80;
 
@@ -773,12 +774,38 @@ export function flockKeys(vm, ui) {
 }
 
 /**
+ * Tiles' weight against TILE_BUDGET (measured in the QuickJS harness): a tile
+ * 1, each fledgling pip it draws (at most 4) 1/8, a waiting one 1/4 (its own
+ * click target), and the needs-you flag of a parent with one 3/8.
+ */
+function tileUnits(tiles) {
+  let u = 0;
+  for (const t of tiles) {
+    u += 1;
+    const pips = t && Array.isArray(t.pips) ? t.pips : null;
+    if (!pips) continue;
+    let waiting = false;
+    for (let i = 0; i < pips.length; i++) {
+      const w = pips[i] === "blocked" || pips[i] === "error";
+      if (i < 4) u += w ? 0.25 : 0.125;
+      if (w) waiting = true;
+    }
+    if (waiting) u += 0.375;
+  }
+  return u;
+}
+
+/** A group heavier than this (in tile units) is a virtual list even alone. */
+export const GROUP_UNITS_MAX = 100;
+
+/**
  * The open groups drawn as virtual lists, as a null-prototype set
  * `{ [key]: true }` ("needs", …, "all", "elsewhere"; tested). A group with
- * more than VIRTUAL_ABOVE tiles always is (§5.5 item 8); then, while the
- * open tile grids together hold more than TILE_BUDGET tiles, the biggest one
- * left (the later one on a tie, so needs-you keeps its tiles longest) is
- * switched too (r3-16). Folded groups draw nothing and count nothing.
+ * more than VIRTUAL_ABOVE tiles always is (§5.5 item 8), and so is one
+ * heavier than GROUP_UNITS_MAX (80 tiles each with a waiting fledgling). Then,
+ * while the open tile grids together weigh more than TILE_BUDGET, the
+ * heaviest one left switches too, needs-you last and the later group on a
+ * tie, until one grid is left (r3-16). Folded groups count nothing.
  */
 export function virtualGroups(vm, ui) {
   const h = (vm && vm.helpers) || {};
@@ -789,20 +816,31 @@ export function virtualGroups(vm, ui) {
   for (const g of groups) {
     const key = str(g && g.key);
     if (key !== "all" && isFolded(vm, ui, key)) continue;
-    open.push({ key, n: Array.isArray(g && g.tiles) ? g.tiles.length : 0 });
+    const tiles = Array.isArray(g && g.tiles) ? g.tiles : [];
+    open.push({ key, n: tiles.length, u: tileUnits(tiles) });
   }
-  if (elsewhere.length && !isFolded(vm, ui, "elsewhere")) open.push({ key: "elsewhere", n: elsewhere.length });
+  if (elsewhere.length && !isFolded(vm, ui, "elsewhere")) open.push({ key: "elsewhere", n: elsewhere.length, u: tileUnits(elsewhere) });
   let total = 0;
+  let grids = 0;
   for (const o of open) {
-    if (o.n > VIRTUAL_ABOVE) out[o.key] = true;
-    else total += o.n;
+    if (o.n > VIRTUAL_ABOVE || o.u > GROUP_UNITS_MAX) out[o.key] = true;
+    else {
+      total += o.u;
+      grids++;
+    }
   }
-  while (total > TILE_BUDGET) {
+  // The last grid left stays one (it is within both single-group limits).
+  for (; total > TILE_BUDGET && grids > 1; grids--) {
     let big = null;
-    for (const o of open) if (out[o.key] !== true && (!big || o.n >= big.n)) big = o;
+    for (const o of open) {
+      if (out[o.key] === true) continue;
+      // Needs-you keeps its tiles while any other group can still go.
+      const later = big && (o.key === "needs") === (big.key === "needs") ? o.u >= big.u : big && big.key === "needs";
+      if (!big || later) big = o;
+    }
     if (!big) break;
     out[big.key] = true;
-    total -= big.n;
+    total -= big.u;
   }
   return out;
 }

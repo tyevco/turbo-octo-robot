@@ -330,6 +330,18 @@ test("new-work spin: ≤ 4 latest starts within 20 s; In step: ≤ 6 working bad
   assert.equal(loopCount(engine.view(s, at, { role: "ribbon", width: 832 })), 0);
 });
 
+test("r3-15: envelope tooltips say when to open: Chorus while helpers work, Rush and Storm when ready to click", () => {
+  const { s } = withAgents(["working", "working", "working"]);
+  s.envelopes[id(0)] = { type: "chorus", units: 1, landedAt: T0 - 50000, lastAt: T0 - 50000 };
+  s.envelopes[id(1)] = { type: "rush", units: 1, landedAt: T0 - 40000, lastAt: T0 - 40000 };
+  s.envelopes[id(2)] = { type: "storm", units: 1, landedAt: T0 - 30000, lastAt: T0 - 30000 };
+  const tips = v(s).tray.envelopes.map((e) => e.tooltip);
+  assert.match(tips[0], /^Chorus ×2 for .* · open while your helpers are working$/);
+  assert.doesNotMatch(tips[0], /click/);
+  assert.match(tips[1], /^Rush ×3 for .* · open when you're ready to click$/);
+  assert.match(tips[2], / · open when you're ready to click$/);
+});
+
 test("envelope bob: the newest drawn envelope for 10 s after it lands", () => {
   const { s } = withAgents(["working", "working", "working"]);
   s.envelopes[id(0)] = { type: "bundle", units: 1, landedAt: T0 - 50000, lastAt: T0 - 50000 };
@@ -776,6 +788,48 @@ test("r1-03: Album rows are memoised and always equal a fresh build", () => {
   assert.deepEqual(v(s, t + 2000, { tab: "shop" }).helpers.album, []);
   assert.deepEqual(engine.view(s, t + 2000, { role: "ribbon", width: 832, writer: "wA" }).helpers.album, []);
   assert.deepEqual(v(s, t + 2000, { width: 100 }).helpers.album, [], "the rail");
+});
+
+test("r3-02: a roster change with the Album open rebuilds only what moved: unmoved rows are the same objects, the order a fresh sort's", () => {
+  const { s, me, t } = withAlbum(600);
+  const a = v(s, t + 1000).helpers.album;
+  // one agent leaves, a gone one returns (rejoins), another leaves: the Album changes
+  const back = engine.helperId(`t${9000 + 123}`, 1000 + 9000 + 123);
+  me.act(observeAction(t + 1200, [...Array.from({ length: 33 }, (_, i) => agent(i + 1, "working", 0)), agent(9000 + 123, "working", 0)]));
+  const b = v(s, t + 1300).helpers.album;
+  assert.notEqual(b, a);
+  assert.deepEqual(b, v(engine.cloneState(s), t + 1300).helpers.album, "the same rows as a fresh build");
+  assert.equal(b.length, 600, "one left, one came back");
+  assert.equal(b[0].helperId, engine.helperId("t0", 1000));
+  assert.ok(!b.some((r) => r.helperId === back), "the returning helper left the Album");
+  const before = new Map(a.map((r) => [r.helperId, r]));
+  let same = 0;
+  for (const r of b) if (before.get(r.helperId) === r) same++;
+  // all but the new leaver and the record compaction just rounded (the 201st most recent, R13)
+  assert.equal(same, 598, "every unmoved row is reused, not formatted again");
+  // a different number style formats every row again (and still equals a fresh build)
+  assert.deepEqual(v(s, t + 1400, { style: "sci" }).helpers.album, v(engine.cloneState(s), t + 1400, { style: "sci" }).helpers.album);
+  // the Album folded meanwhile (no rows built), then opened after more changes: still a fresh build's rows
+  me.act(observeAction(t + 1500, Array.from({ length: 20 }, (_, i) => agent(i + 1, "working", 0))));
+  assert.deepEqual(v(s, t + 1600, { album: false }).helpers.album, []);
+  me.act(observeAction(t + 1700, Array.from({ length: 10 }, (_, i) => agent(i + 1, "working", 0))));
+  const c = v(s, t + 1800).helpers.album;
+  assert.deepEqual(c, v(engine.cloneState(s), t + 1800).helpers.album);
+  assert.equal(c.length, 600 + 24); // t0, t11-t33 left (the returning one left again)
+});
+
+test("r3-02: the bucketed Album sort orders like the comparator (ties by join time, then id; unknown leaving times last)", () => {
+  const { s, t } = withAlbum(300);
+  const recs = Object.values(s.helpers).filter((h) => h.gone && h.kind === "pane");
+  // ties across batches, and records with no usable leaving time
+  recs[5].missingSince = recs[200].missingSince;
+  recs[6].missingSince = null;
+  recs[7].missingSince = "x";
+  recs[8].joined = recs[9].joined;
+  const rows = v(engine.cloneState(s), t + 5000).helpers.album.map((r) => r.helperId);
+  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0);
+  const want = recs.slice().sort((a, b) => num(b.missingSince) - num(a.missingSince) || a.joined - b.joined || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((h) => h.id);
+  assert.deepEqual(rows, want);
 });
 
 test("r1-03: an agent status change (a new roster index) keeps the Album rows; changed records rebuild", () => {

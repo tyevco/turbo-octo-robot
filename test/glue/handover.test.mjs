@@ -479,16 +479,24 @@ test("r3-01: a load that stops (its task cut off) is started again; the placehol
   assert.equal(w.slot.notice.kind, "recovered");
   assert.equal(w.slot.notice.text, LOAD_RETRIED_TEXT);
   assert.ok(findById(w.render(v).tree, "cw-panel"));
-  // A copy that started a load and closed: another copy starts it again at once.
+  // A copy that started a load and closed: another copy starts it again at
+  // once, quietly: a closed copy is no save problem (no "stopped partway").
   w.dispose();
   w = win({ files: { [SAVE]: engine.serialize(good) }, latency: { read: 1e9 } });
   const panel = await w.copy("panel");
   const ribbon = await w.copy("ribbon");
   assert.equal(w.slot.loadBy, panel.session.copyId);
-  w.ctl.latency.read = 0;
+  w.ctl.latency.read = 1500;
   await w.ctl.closeView(panel);
   await w.advance(1000);
+  assert.equal(w.slot.state, null, "the ribbon copy's load is under way");
+  assert.equal(w.slot.loadBy, ribbon.session.copyId, "the ribbon copy took the load over");
+  assert.equal(w.slot.loadTries, 0, "not counted as a try");
+  assert.equal(ribbon.session.loadingText(), LOADING_TEXT, "the placeholder says nothing went wrong");
+  await w.advance(6000);
   assert.ok(w.slot.state, "the ribbon copy loaded it");
-  assert.equal(w.slot.notice.text, LOAD_RETRIED_TEXT);
+  assert.equal(w.slot.state.bank >= 4321, true, "the save, not a fresh game");
+  assert.notEqual(w.slot.notice?.text, LOAD_RETRIED_TEXT, "no 'stopped partway' notice");
+  assert.equal(w.slot.notices.load, null, "no load notice at all");
   assert.ok(ribbon.session.vm());
 });

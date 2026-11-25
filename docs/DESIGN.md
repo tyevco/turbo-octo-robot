@@ -479,7 +479,11 @@ sidebar), grouped headers hidden, statuses on badges only.
 
 **Album.** Helpers whose agent has gone: 28 px rows (glyph 16, name, "left 3 d ago", lifetime
 folds). They never produce. A returning agent with the same `(address, created_ms)` rejoins with
-its history.
+its history. An archive entry (§5.1, after 10,000 newer Album helpers) is one row named by its
+helper count ("1,204 helpers"), with the latest leaving time and their summed folds; the header
+counts every helper. With the Album open, a roster change rebuilds only the rows that moved
+(review r3-02: the whole list used to be re-sorted and re-formatted in the tick, 430–510 ms at
+20,000 Album helpers in the wasm harness).
 
 **Empty state (0 agents):** a 304×200 card `T.raised`: three outline species (crane, fox, koi)
 40 px `T.dim` at 0.6 opacity; "No paper folk yet." 13/600; "Start a coding agent in any tab.
@@ -567,8 +571,8 @@ Segment control 40 px tall, six equal cells (~50 px at 320): 14 px icon over an 
 3. **Automations**: one switch per owned automation, same switches as the Auto segment (§8).
 4. **Play**: "Helpers gather" (on), "Crease nodes appear" (on), "Floating numbers" (on; off and
    disabled in calm mode).
-5. **Roster**: order (Urgency groups | Workspace order); density (Auto: dense at ≥ 21 | Always |
-   Never).
+5. **Roster**: order (Urgency groups | Workspace order); density (Auto: dense at ≥ 21 tiles, and
+   always in the narrow panel, 140–279 px, review r3-19 | Always | Never).
 6. **Number style**: Short (12.4K) | Scientific (1.24e4).
 7. **Save**: path (middle-truncated), "Saved 12 s ago · backup 3 m ago"; **[Check save now]**;
    **[Restore backup…]** (two-step); **"Share a save with another herdr home…"** (§12.5).
@@ -823,7 +827,11 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   plain or salted, even after the holder of its plain id leaves, so its name, stats and envelope
   never move mid-session. A salted helper that leaves keeps its `salt` (k) in its Album record
   (such records are never compacted), so if its agent returns while its plain id belongs to a gone
-  helper it finds its own record first. Each terminal resolves to the same id on every observation
+  helper it finds its own record first. An Album record keeps no address, but it keeps a 16-bit
+  **terminal key** (`key`, a second FNV-1a of `"key#" + address + "#" + created_ms`, upper 16 bits;
+  review r3-18): a terminal rejoins a gone record under its plain or salted id only when the keys
+  match, so a new terminal whose plain id clashes with a gone helper's record takes a salted id
+  instead of taking that record over. Each terminal resolves to the same id on every observation
   and no present agent is ever lost. The residual risk is in §17 (R6). (fit.md's `homeId:` prefix was
   rejected because it would credit a shared terminal twice; judge 2.)
 * **Look from the hash h**: species `SPECIES[h % 12]`; hue `(h >>> 4) % 8`; name
@@ -843,7 +851,8 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   the bare name, then " 2", " 3"… (ASCII); a helper returning from the Album keeps its name unless
   a present helper now holds it, when it too takes the smallest free number.
 * **Every agent is a saved helper.** No cap, no daily limit, no unsaved extras. Pane helpers are
-  never aggregated or dropped; gone ones move to the Album and keep their record. Fledglings
+  never dropped; gone ones move to the Album and keep their record (merged into an archive entry
+  only after 10,000 newer ones, below). Fledglings
   (sub-agents) are saved as their own records while present and in the Album for 30 days; after
   that their totals are folded into their parent's record (`kidsPast`, `kidsFolds`) because a
   fledgling is part of its parent helper (brief: "sub-agents are mini-helpers that add to their
@@ -856,9 +865,23 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   the newest). Compaction gives up what the Album does not show: the stored rest boost (§5.4) and
   this run's share (`stats.run`, so its part of the garland moves to the "everyone else" stripe).
   A record that cannot be packed (an id that is not 8 hex digits, from a hand-edited save) stays
-  whole. Record (≈ 170 bytes):
+  whole. A compact record also keeps its terminal key (above); the packed array is
+  `[name or 0, folds, tasks, minute left, (kidsPast, kidsFolds), key]` (save format 4, §12.1).
+  **Album archives** (review r3-04): compact records are ≈ 45 bytes each and an agent's terminal
+  never leaves the save, so a heavy user (100 new terminals a day) passed herdr's 1 MiB write limit
+  in about nine months and could never save again. Once more than 11,000 compact records are kept
+  (`K.albumCompactKeep` 10,000 + `K.albumArchiveBatch` 1,000; batched so the selection runs once per
+  thousand departures), those that left at or before the 10,000th newest one's leaving time are
+  merged into one **archive entry** per 30 days they left in (`K.albumArchiveMs`; id `past-<n>`,
+  never 8 hex digits): a gone pane record whose `archive` counts its helpers, with their summed
+  folds, tasks and fledgling totals, the latest leaving time (`missingSince`), the earliest
+  (`from`) and its latest helper's look. Archived helpers are still saved helpers: the Album counts
+  every one of them, lists each entry as one row ("1,204 helpers · left 9 mo ago · 3.4M folds") and
+  keeps their folds. A terminal of an archived helper that returns joins as a new helper. The save
+  then stays near 540 KiB whatever the number of lifetime helpers (R13).
+  Record (≈ 170 bytes):
   `{id, addr, created, kind:"pane"|"kid", parent, species, hue, name, joined, lastSeen, seenBy,
-  status, lastTurn, lastFinishAt, blockedAt, rest, warm, warmUntil, thanksUntil, env, stats:{tasks, folds, envelopes, checkIns}}`.
+  status, lastTurn, lastFinishAt, kidFinishAt, blockedAt, rest, warm, warmUntil, thanksUntil, env, stats:{tasks, folds, envelopes, checkIns}}`.
 * Fuzz: addresses `__proto__`, `constructor`, `toString`, `t1/../x`, remote `peer/t7`, and the
   15-emoji title corpus (pat §3).
 
@@ -871,7 +894,7 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 | `done` (finished, unseen) | Finished | 0; charges rest | **check mark in a circle** | "Finished" group; counts chip ✓ | none | `T.done` | "Finished" |
 | `idle` | Resting | 0; charges rest | **crescent** | rest bar; tile opacity 0.8; "Resting" group | none | `T.idle` → usually falls back to `T.muted` | "Resting" |
 | any, with an unopened envelope | (marker) | — | **envelope** marker 11–12 px on `S.sheet` disc | tray envelope with its seal | newest tray envelope bobs 10 s on landing | `S.ink` on `S.sheet` | "Envelope ready" |
-| fledgling (sub-agent) | adds to parent | via `kids_i` | pip: filled **diamond** (working), hollow diamond (resting), small **triangle** (needs you) | position on the parent tile | none | parent `Hue`; triangle guarded `blocked` | "Fledgling" |
+| fledgling (sub-agent) | adds to parent | via `kids_i` (`k_p` while the parent is not working, §5.3) | pip: filled **diamond** (working), hollow diamond (resting), small **triangle** (needs you) | position on the parent tile | none | parent `Hue`; triangle guarded `blocked` | "Fledgling" |
 | gone | Album | 0 | none (list row) | Album section | none | `T.dim` | "Left" |
 
 * Shapes differ in silhouette (arc, pennant, check, crescent, envelope, diamond, triangle), and a
@@ -912,7 +935,17 @@ folk    = Π Folk upgrades (×1.5 each, §7.3)
 warm_i  = 1 + restMax · rest_i during the first task after resting (restMax 1 → 2 Warm Hands)
 kids_i  = 1 + kidBonus · min(4, working fledglings of i)        kidBonus 0.25 → 0.50 → 0.75
 thanks_i= 1.5 for 5 min after the helper goes from Needs you to Working within 5 min, else 1
+k_p     = (0.3·G + 0.04·Rw) · folk · kidBonus · min(4, working fledglings of p)
+                                     per present pane helper p that is NOT working
 ```
+
+* **Fledglings of a resting, finished or waiting parent** (review r3-10): working sub-agents
+  are working agents, so they gather even while their parent is not working (a background
+  sub-agent outliving its parent's turn). Parent `p` then gets `k_p`, the same share they add to
+  a working parent (`b_i − b_i/kids_i` without warm or thanks), credited to the parent's record;
+  `k_p` is a seat on the bench (it enters `Hs0`'s marginal sum like any `b_i`) but the parent is not
+  counted as working (`n`, the Flock's "working" count). A working parent's fledglings still count
+  only through `kids_i`, never twice.
 
 * The flat `0.3·G` makes each working agent a real auto-clicker in the first hour (about a third
   of a hand click per second); the `0.04·Rw` term keeps helpers relevant all game.
@@ -991,21 +1024,27 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
   sighting, when `turn < lastTurn` (core restart), or when the record is new because
   `created_ms` changed. If `d > 0`: a finish, keyed by **(helperId, turn)** so two windows
   observing the same finish create one drop (A5).
-* **Units**: a pane helper's finish adds **1 unit** to its envelope if ≥ 60 s passed since its
-  previous credited finish, else **0.25** (so a stream of tiny tasks cannot flood the tray). A
-  fledgling's finish adds **0.5** unit to its **parent's** envelope (0.125 within 60 s of that
-  fledgling's previous finish) while that parent is present; with the parent gone the units go to
-  the fledgling's own envelope (never to an Album record).
+* **Units** (review r3-24): a finish earns a share of a unit that follows the time since the
+  previous credited finish on the same budget: `min(1, Δt / 12 min)` in 64ths, at least **1/8**,
+  and a whole share for the first one. A pane helper's finish adds `1 · share` to its envelope. A
+  fledgling's finish adds `0.5 · share` to its **parent's** envelope while that parent is present,
+  and every fledgling of a parent shares that parent's one budget (`kidFinishAt`), so a burst of
+  short-lived sub-agents with new addresses earns what one does; with the parent gone the units
+  go to the fledgling's own envelope (never to an Album record). Envelope units therefore follow
+  time, not the number of turns (BALANCE §3 P13): an agent answered every minute earns about what
+  one finishing every 12 minutes does, and a stream of tiny tasks cannot flood the tray. (Before:
+  any finish ≥ 60 s after the last was a whole unit and each new sub-agent address its own half
+  unit, so 3-minute turns moved the first wish before day 3.)
 * **One envelope per helper.** With no unopened envelope, a new one is created and its type is
   rolled by the PRNG (shown on the seal); otherwise the units stack. Cap **9 units** (15 with the
   250-Wish perk). Units above the cap convert at once into folds worth
-  `45 · Rp · crowd(N) · units` (N = pane helpers present), with the footer note
+  `unit · crowd(N) · units` (N = pane helpers present), with the footer note
   "+3.2K from a full envelope (Pib)". Nothing is silently lost.
 * **Old mail is cashed in** (review r2-02): an envelope waits until it is opened, but not for
   ever. When its helper's Album record is compacted (it is no longer among the 200 most recently
   gone, R13) or its record has left the save (a folded fledgling), the next observation pays it
-  out: a Bundle pays what opening it would (`45 · Rp · u · envMult · crowd(N)`, no Tailwind), a
-  timed boost converts like units above the cap (`45 · Rp · crowd(N) · u`). It counts as opened
+  out: a Bundle pays what opening it would (`unit · u · envMult · crowd(N)`, no Tailwind), a
+  timed boost converts like units above the cap (`unit · crowd(N) · u`). It counts as opened
   (Bundle) or converted (timed), so units created = opened + converted + waiting still holds, the
   folds go to that helper's Album total, and one footer note per observation says it: an
   overflow note (the same conversion; `data.settled` marks it), "+3.2K from a full envelope (Pib,
@@ -1015,12 +1054,18 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
 
 | Type | Chance | Seal (12 px) | Effect when opened (stack u, f = 1 + 0.25·(u − 1)) |
 |---|---|---|---|
-| Bundle | 55 % | stacked sheets | `45 · Rp · u · envMult · crowd(N)` folds (envMult 1 → 1.5 Wax Seal → 2 Ribbon Tie) |
+| Bundle | 55 % | stacked sheets | `unit · u · envMult · crowd(N)` folds (envMult 1 → 1.5 Wax Seal → 2 Ribbon Tie) |
 | Rush | 25 % | double chevron | hand hits ×3 (×4 Brisk Charm) for `30 · f · durMult` s |
 | Paper Storm | 10 % | zigzag | hand hits ×7 (×10 Gale Charm), chains every 4 s, for `12 · f · durMult` s |
 | Chorus | 10 % | three dots | working helpers ×2 for `120 · f · durMult` s |
 
 `durMult` 1 → 1.5 (Long Ribbon) → 2 (Longer Ribbon).
+
+`unit = max(45 · Rp, 75 · V)`: 45 s of passive output, but never less than 75 hand hits (review
+r3-11; Scraps and the Fresh Ream have the same kind of `V` floor). `Rp` counts only working
+agents and workshops, so before this a new player's first Bundle (one agent, now finished, no
+workshop yet) said "Bundle: +0 folds" and paid nothing; the floor also applies to overflow and to
+old mail cashed in.
 
 ### 6.2 Opening, and the player's choice
 
@@ -1029,7 +1074,8 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
   **timed boosts are opened by the player** (or by Boost Keeper, only while the player is active).
 * The seal shows the type before opening, so the player chooses the moment: open a Rush right
   before a clicking session. A boost envelope's tooltip says "Rush ×3 for 52 s · open when you're
-  ready to click".
+  ready to click" (Rush, Storm: they multiply hand hits), and a Chorus's "Chorus ×2 for 2m · open
+  while your helpers are working" (it multiplies working helpers, §6.3; review r3-15).
 * Opening a boost of a type already running **extends** it by 25 % of the new envelope's
   duration; remaining time is capped at **90 s (Rush), 30 s (Storm), 240 s (Chorus)**. The tooltip
   warns "Rush is running: opening now adds only 13 s".
@@ -1333,7 +1379,10 @@ Written only with `writeTextFile(path, text, expected)` (CAS, atomic rename), re
 reload the mod, life §1). Save text < 256 KiB at 64 helpers plus 500 Album helpers, and
 < 512 KiB after a year of 20 agents a day (each with 3 fledglings, timed boosts left unopened)
 thanks to Album compaction and old mail being cashed in (R13, §6.1; tests). The envelope
-`version` is the file format (2: Album entries may be packed arrays; 3: the chunked check below);
+`version` is the file format (2: Album entries may be packed arrays; 3: the chunked check below;
+4: packed Album entries may end in their terminal key and the helpers map may hold Album archive
+entries, §5.1, reviews r3-18 and r3-04, so a format-3 build reads a format-4 file as newer,
+read-only, never written; the check rule is 3's, and format-3 files still load);
 the state keeps its own `version`. A file with a higher format or state version than the build
 knows loads read-only and is never written (§12.2, `newer`); from format 3 on a build tests the
 format before the check, so a file whose check it cannot verify (a later rule) is still `newer`,
@@ -1709,14 +1758,14 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R3 | `layout.resize` on a px node may not persist in `layouts/.state/Creaseworks.json` | unverified | the panel copy re-applies the stored width (localStorage) on `init`, guarded by `checking()` |
 | R4 | `layout()` may not expose node sizes (Files panel width) | unverified | estimate it from the weights and the panel's measured width (`filesEstimate`); 368 px when the panel is folded |
 | R5 | Hosted spinners paint above the view (gpui §9); clipping inside scroll areas and under the away card is unverified | open | spinners only on visible tiles, ≤ 6, never under absolute cards (cards hide spins while shown) |
-| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once), or their strings clash in the 32-bit hash (≈ 1e-7 for 30 present agents); a remote terminal named differently in two homes becomes two helpers | mitigated | a terminal whose plain id is held by a different present terminal takes a salted id (§5.1), so a clash never loses a present agent, and a present terminal keeps its salted id after the plain id's holder leaves; a salted helper's Album record keeps its `salt`, so it is found again when its agent returns. Residual: Album records keep no address, so a new terminal whose plain id clashes with a gone helper's record rejoins that record (their stats merge); and a salted helper that was already in the Album before `salt` was recorded is not recognised, so its returning agent takes the plain id's gone record |
+| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once), or their strings clash in the 32-bit hash (≈ 1e-7 for 30 present agents); a remote terminal named differently in two homes becomes two helpers | mitigated | a terminal whose plain id is held by a different present terminal takes a salted id (§5.1), so a clash never loses a present agent, and a present terminal keeps its salted id after the plain id's holder leaves; a salted helper's Album record keeps its `salt`, so it is found again when its agent returns. Album records keep no address but a 16-bit terminal key (§5.1, review r3-18), so a new terminal whose plain id clashes with a gone helper's record takes a salted id instead of taking that record over (before: ≈ 1 % chance of such a hijack by 10,000 lifetime helpers, ≈ 7 % by 25,000). Residual: a clash in both the id and the key (1 in 65,536 of id clashes), and Album records from a save before format 4 (no key), still rejoin by the plain id (their stats merge); and a salted helper that was already in the Album before `salt` was recorded is not recognised, so its returning agent takes the plain id's gone record |
 | R7 | Cross-process CAS race (life §6.3) | accepted | idempotent actions + merge; ≤ 15 s of one window's progress can be overwritten until its next save re-applies it |
 | R8 | `turn` behaviour across a core restart | rebaseline rules (§6.1) | `turn < lastTurn` → rebaseline, no reward |
 | R9 | Clicking a mod block might move keyboard focus off the terminal | unverified | nothing is focusable; verify by hand; if focus moves, refocus the last `focused()` pane on mouse-up |
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 3 (packed entries since 2; the chunked check of §12.1 since 3, review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 31 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load, merge, overwrite, check, restore and share paths drive it with a task yield between steps for any save of 64 KiB or more (`glue/store.js` `parseIn`), so no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
+| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left and their terminal key (≈ 45 B packed; §5.1), never dropped; beyond 10,000 compact records (checked in batches of 1,000) the oldest are merged into one archive entry per 30 days (§5.1, review r3-04), still counted and shown in the Album, so the save stops growing near 540 KiB (100 new agents a day for 300 days, BALANCE inv. 7; before: 1,124 KiB by day 300, past herdr's 1 MiB write limit, after which every save failed). Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 4 (packed entries since 2; the chunked check of §12.1 since 3; terminal keys and archive entries since 4, read as newer by a format-3 build; review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual (before archives, review r3-04): at ≈ 40 B per compacted helper, 512 KiB was reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000; archives now cap the compact records at 11,000. A save from an older build with more compact records is archived down to 10,000 at its first observation (25,000 records: every step in budget, `test/qjs/album-open.test.mjs`). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 31 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load, merge, overwrite, check, restore and share paths drive it with a task yield between steps for any save of 64 KiB or more (`glue/store.js` `parseIn`), so no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
 | R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
 | R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createHost, BudgetError, BUDGETS } from "../../tools/qjs/harness.mjs";
+import { createHost, BudgetError, BUDGETS, ENGINE_FREE_FAULT, MEMORY_LIMIT, RuntimeFreeError } from "../../tools/qjs/harness.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const fixture = join(repo, "test", "fixtures", "sample-mod");
@@ -485,4 +485,69 @@ export default class M extends View {
   assert.equal(tree.children[1].children.length, 5);
   // no extent of its own: the window's 900 px (32 rows end inside, + 2)
   assert.equal(tree.children[2].children.length, 34);
+});
+
+// ---------------------------------------------------------------------------
+// Freeing the runtime (DESIGN R13, review r3-25; see the harness header)
+
+test("dispose reports a VM handle left alive as RuntimeFreeError with the JS_FreeRuntime leak check, with or without gcHeadroom", async () => {
+  for (const gcHeadroom of [0, 8 * 1024 * 1024]) {
+    const host = await loaded({ gcHeadroom });
+    host.advance(1000);
+    host.vm.newObject(); // never disposed: what a harness bug would leave behind
+    let error = null;
+    try {
+      host.dispose();
+    } catch (e) {
+      error = e;
+    }
+    assert.ok(error instanceof RuntimeFreeError, String(error));
+    assert.equal(error.gcObjList, true, error.message);
+    assert.match(error.message, /^harness: the QuickJS runtime could not be freed cleanly \(/);
+    assert.match(error.message, ENGINE_FREE_FAULT);
+    assert.equal(host.vm, null);
+    host.dispose(); // once is enough
+  }
+  // the aborted wasm instance is not handed to the next host
+  const next = await loaded();
+  next.advance(1000);
+  assert.equal(live(next).ticks, 1);
+  next.dispose();
+});
+
+test("gcHeadroom holds the engine's collector back once per VM and leaves nothing the mod can see", async (t) => {
+  for (const bad of [-1, Number.NaN, "8", MEMORY_LIMIT]) {
+    await assert.rejects(createHost({ modRoot: fixture, gcHeadroom: bad }), TypeError, String(bad));
+  }
+  const names = "JSON.stringify(Object.getOwnPropertyNames(globalThis).sort())";
+  const plain = await loaded();
+  const plainNames = plain.evalInVm(names);
+  assert.deepEqual(plain.headroom, []);
+  plain.dispose();
+
+  const H = 32 * 1024 * 1024;
+  const host = await loaded({ gcHeadroom: H });
+  t.after(() => host.dispose());
+  assert.equal(host.headroom.length, 1);
+  assert.equal(host.headroom[0].vm, 1);
+  assert.ok(host.headroom[0].peak >= H, `${host.headroom[0].peak} bytes`);
+  // the burst itself is gone again (freed by reference counting)
+  assert.ok(host._memory().memory_used_size < H / 4);
+  assert.equal(host.evalInVm(names), plainNames);
+  // about 4 MiB of garbage cycles stays uncollected: no collection ran
+  const before = host._memory().obj_count;
+  host.evalInVm("{ for (let i = 0; i < 40000; i++) { const o = { i }; o.o = o; } } 0");
+  assert.ok(host._memory().obj_count >= before + 40000);
+  // the mod runs as without it
+  host.render();
+  host.fire("bump", "on_click", "k");
+  host.advance(2000);
+  assert.equal(live(host).ticks, 2);
+  assert.deepEqual(live(host).counts, { k: 1 });
+  // a restarted VM gets its own burst
+  host.restartVm();
+  assert.equal(host.headroom.length, 2);
+  assert.equal(host.headroom[1].vm, 2);
+  assert.ok(host.headroom[1].peak >= H);
+  assert.equal(host.evalInVm(names), plainNames);
 });

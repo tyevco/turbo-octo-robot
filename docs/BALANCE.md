@@ -100,9 +100,11 @@ unit), and every fledgling of a parent draws on that parent's one budget. Before
 more than 60 s after the last earned a whole unit and each new sub-agent address its own half
 unit, so short turns about doubled the units created and moved the first wish before day 3
 (3 min / 1 min turns with no rest: 15:42 on seed 1). With the rule, short-turn variants of P1 on
-seed 1 (5/1, 3/1 and 1/1 minutes with no rest, 1/1 with a new sub-agent each block) reach the
-first wish between 19:47 and 24:00, every one with day 1-3 click shares above P1's floors, and
-P2's never-click policy on 1/1 turns (25:56) stays slower than P1's (22:42).
+seed 1 reach the first wish on day 3 (5/1, 3/1 and 1/1 minutes with no rest: 19:47, 20:15 and
+22:42), each with day 1-3 click shares above P1's floors, and P2's never-click policy on 1/1
+turns (25:56) stays slower than P1's. Adding a new sub-agent every 2-minute block to the 1/1 case
+only slows it (first wish at the end of day 3), since every sub-agent draws on its parent's one
+budget.
 
 ---
 
@@ -218,7 +220,10 @@ neither has a row.
    pane agent is still an Album helper and the save stays < 512 KiB. Mail Sorter is on and every
    timed boost waits until the year ends (old mail is cashed in as its helper is compacted,
    DESIGN §6.1): no envelope waits under a compacted helper, and opening the rest leaves every
-   compacted helper packed.
+   compacted helper packed. With Album archives (DESIGN R13, review r3-04), a heavy user with
+   **100 new agents a day for 300 days** (30,000 lifetime pane helpers) still has every one of
+   them counted in the Album and a save **< 640 KiB** that stops growing, far under herdr's 1 MiB
+   write limit (before archives: 1,124 KiB by day 300, and saving failed for good).
 8. **Drops are idempotent**: replaying the same `observe` twice, or from two writers, creates each
    envelope unit once; `turn < lastTurn` and first sighting give no reward.
 9. **No envelope is lost**: units created = units opened + units converted + units waiting (old
