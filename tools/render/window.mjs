@@ -10,8 +10,11 @@
 //
 // Approximations: no real terminal grid, icons are simple inline SVGs, the
 // spinner is a static ring, a float with `peek` is drawn closed (only `peek`
-// px showing) unless `drawersOpen` is set, and divider drags/min/max clamping
-// are left to CSS.
+// px showing) unless `drawersOpen` is set, and divider drags are not modelled.
+// Node sizing follows herdr: a {px} node is flex_none at px x zoom, a {weight}
+// node grows by weight / (the shown siblings' total weight) from a 0 basis,
+// min/max (x zoom) clamp both (src/window.rs sized()). `layoutBoxes` computes
+// the same geometry without a browser (src/window/pane_size.rs shares()).
 
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -755,8 +758,21 @@ function findNode(node, id) {
   return null;
 }
 
-/** Flex item sizing of `node` inside a parent laid out along `axis` ("row" | "column" | null). */
-function itemCss(node, axis, z) {
+/** herdr's pane_size::weight: 0 for a {px} node, its weight, else 1. */
+export function nodeWeight(node) {
+  const s = node && node.size;
+  if (s && typeof s.px === "number") return 0;
+  if (s && typeof s.weight === "number") return s.weight;
+  return 1;
+}
+
+/**
+ * Flex item sizing of `node` inside a parent laid out along `axis` ("row" |
+ * "column" | null). `totalWeight` is the shown siblings' total weight: herdr
+ * sets flex_grow to weight / total (src/window.rs sized()), so a weight node
+ * frozen at its max leaves the rest of its share empty, as taffy does.
+ */
+function itemCss(node, axis, z, totalWeight = 1) {
   const parts = ["position:relative", "box-sizing:border-box", "min-width:0", "min-height:0"];
   if (axis === null) {
     parts.push("width:100%", "height:100%");
@@ -764,7 +780,7 @@ function itemCss(node, axis, z) {
   }
   const size = node.size ?? { weight: 1 };
   if (typeof size.px === "number") parts.push(`flex:0 0 ${num(size.px * z)}px`);
-  else parts.push(`flex:${num(size.weight)} 1 0px`);
+  else parts.push(`flex:${Math.round((nodeWeight(node) / Math.max(totalWeight, Number.EPSILON)) * 1e6) / 1e6} 1 0px`);
   const dim = axis === "row" ? "width" : "height";
   if (typeof node.min === "number") parts.push(`min-${dim}:${num(node.min * z)}px`);
   if (typeof node.max === "number") parts.push(`max-${dim}:${num(node.max * z)}px`);
@@ -782,10 +798,10 @@ function lookCss(node, ctx) {
   return parts;
 }
 
-function renderNode(node, ctx, axis) {
+function renderNode(node, ctx, axis, totalWeight = 1) {
   if (node.hidden) return "";
   const { z } = ctx;
-  const parts = [...itemCss(node, axis, z), ...lookCss(node, ctx), "overflow:hidden"];
+  const parts = [...itemCss(node, axis, z, totalWeight), ...lookCss(node, ctx), "overflow:hidden"];
   let inner = "";
   if (node.type === "row" || node.type === "column") {
     const dir = node.type;
@@ -796,7 +812,8 @@ function renderNode(node, ctx, axis) {
       ? `<div class="divider" style="flex:none;${dir === "row" ? "width" : "height"}:${num((node.divider.width ?? 1) * z)}px;` +
         `background:${layoutColor(node.divider.color ?? "border", ctx.t)}"></div>`
       : "";
-    inner = visible.map((c) => renderNode(c, ctx, dir)).join(divider);
+    const total = visible.reduce((a, c) => a + nodeWeight(c), 0);
+    inner = visible.map((c) => renderNode(c, ctx, dir, total)).join(divider);
   } else if (node.type === "stack") {
     parts.push("display:flex", "flex-direction:column");
     const visible = node.children.filter((c) => !c.hidden);
@@ -854,6 +871,111 @@ function renderFloat(f, ctx) {
   ]);
   return `<div class="float" data-float="${esc(f.id)}" data-edge="${edge}" style="${style(parts)};${frame}">` +
     `<div style="width:100%;height:100%;position:relative">${blockContent(ctx, box)}</div></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry without a browser (herdr's src/window/pane_size.rs)
+// ---------------------------------------------------------------------------
+
+/**
+ * herdr's `pane_size::shares`: main-axis lengths of shown siblings in
+ * `available` screen px. {px} nodes take px x zoom clamped by min/max; weight
+ * nodes share what is left by weight, min/max violations freeze them, and the
+ * grow factors stay normalised to the original siblings after a freeze (taffy,
+ * CSS flexbox 9.7 step 4b), so a weight node held at its max leaves the rest of
+ * its share empty. The sum can exceed `available`: herdr then clips the row.
+ */
+export function shares(children, available, zoom = 1) {
+  const sizes = children.map(() => 0);
+  const lo = (n) => (typeof n.min === "number" ? n.min * zoom : 0);
+  const hi = (n) => (typeof n.max === "number" ? n.max * zoom : Infinity);
+  let pending = [];
+  let left = available;
+  children.forEach((n, i) => {
+    if (n.size && typeof n.size.px === "number") {
+      sizes[i] = Math.min(Math.max(n.size.px * zoom, lo(n)), hi(n));
+      left -= sizes[i];
+    } else {
+      pending.push(i);
+    }
+  });
+  const weightOf = (list) => Math.max(list.reduce((a, i) => a + nodeWeight(children[i]), 0), Number.EPSILON);
+  const totalWeight = weightOf(pending);
+  const initialFree = Math.max(left, 0);
+  while (pending.length) {
+    const total = weightOf(pending);
+    const free = Math.min(Math.max(left, 0), initialFree * (total / totalWeight));
+    const violations = pending.map((i) => {
+      const n = children[i];
+      const share = (free * nodeWeight(n)) / total;
+      // Rust's share.min(max).max(min): min wins over max.
+      sizes[i] = Math.max(Math.min(share, hi(n)), lo(n));
+      return [i, sizes[i] - share];
+    });
+    const totalViolation = violations.reduce((a, [, v]) => a + v, 0);
+    if (totalViolation === 0) break;
+    const before = pending.length;
+    for (const [i, v] of violations) {
+      if ((totalViolation > 0 && v <= 0) || (totalViolation < 0 && v >= 0)) continue;
+      left -= sizes[i];
+      pending = pending.filter((j) => j !== i);
+    }
+    if (pending.length === before) break;
+  }
+  return sizes;
+}
+
+const padAxes = (p) => (typeof p === "number" ? [p, p] : Array.isArray(p) && p.length === 2 ? p : [0, 0]);
+const intersect = (a, b) => {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return { x, y, width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x), height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y) };
+};
+
+/**
+ * Where every shown node of a layout lands in a `width` x `height` window at
+ * `zoom` (screen px), as herdr's `block_bounds` lays it out: separators of
+ * gap + divider width between siblings, padding and border inset (x zoom), a
+ * stack's header, its active child. Returns a null-prototype map id ->
+ * { x, y, width, height, inner, visible }: `inner` is the content box (what a
+ * block's mod measures), `visible` the part not clipped by the window or an
+ * ancestor (every herdr node clips its children).
+ */
+export function layoutBoxes(layout, { width = 1440, height = 900, zoom = 1 } = {}) {
+  const out = Object.create(null);
+  const visit = (n, box, clip) => {
+    if (!n || n.hidden) return;
+    const visible = intersect(box, clip);
+    const border = (n.border && typeof n.border.width === "number" ? n.border.width : n.border ? 1 : 0) * zoom;
+    const [py, px] = padAxes(n.padding).map((v) => v * zoom);
+    const inner = {
+      x: box.x + border + px, y: box.y + border + py,
+      width: Math.max(0, box.width - 2 * (border + px)), height: Math.max(0, box.height - 2 * (border + py)),
+    };
+    out[n.id] = { x: box.x, y: box.y, width: box.width, height: box.height, inner, visible };
+    if (n.type === "row" || n.type === "column") {
+      const row = n.type === "row";
+      const kids = (n.children ?? []).filter((c) => !c.hidden);
+      const sep = ((typeof n.gap === "number" ? n.gap : 0) + (n.divider ? n.divider.width ?? 1 : 0)) * zoom;
+      const available = (row ? inner.width : inner.height) - sep * Math.max(0, kids.length - 1);
+      let at = row ? inner.x : inner.y;
+      shares(kids, available, zoom).forEach((len, i) => {
+        const child = row ? { x: at, y: inner.y, width: len, height: inner.height } : { x: inner.x, y: at, width: inner.width, height: len };
+        visit(kids[i], child, visible);
+        at += len + sep;
+      });
+    } else if (n.type === "stack") {
+      const kids = (n.children ?? []).filter((c) => !c.hidden);
+      const active = kids.find((c) => c.id === n.active) ?? kids[0];
+      const head = n.header ? (n.header.height ?? HEADER_HEIGHT) * zoom : 0;
+      const top = n.header && n.header.position === "bottom" ? 0 : head;
+      if (active) visit(active, { x: inner.x, y: inner.y + top, width: inner.width, height: Math.max(0, inner.height - head) }, visible);
+    }
+  };
+  const root = parseLayout(layout);
+  const win = { x: 0, y: 0, width, height };
+  visit(root, win, win);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

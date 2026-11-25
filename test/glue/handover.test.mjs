@@ -238,6 +238,28 @@ test("r1-01: reload during a Settings save tool (check save now)", async () => {
   await savingGoesOn(1);
 });
 
+test("r1-01: a second panel opened in the same code generation keeps a live claim (Reset goes through)", async () => {
+  w = win({ latency: { write: 400, read: 0 } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(v, 5);
+  await w.advance(18000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 5);
+  w.slot.flash = null;
+  await w.handler(v, "resetGame");
+  for (let i = 0; i < 5; i++) await w.advance(50);
+  const claim = w.slot.save.writing;
+  assert.notEqual(claim, null, "the reset holds the claim (keeping the old save aside)");
+  await w.copy("panel"); // the layout opened twice, or a panel closed and reopened: same generation
+  assert.equal(w.slot.save.writing, claim, "the claim is kept: its task is still running");
+  await w.advance(3000);
+  assert.match(w.slot.flash && w.slot.flash.text, /Started a new game\. The old save was kept as save\.damaged-1\.json\./);
+  assert.equal(w.slot.state.stats.hits, 0);
+  await w.advance(20000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 0, "the reset is saved");
+  assert.equal(engine.parseSave(w.ctl.readFile(SAVE.replace(/\.json$/, ".damaged-1.json"))).state.stats.hits, 5);
+});
+
 test("r1-01: a claim made by an older code generation is released by the next init", async () => {
   w = win();
   const v = await w.copy("panel");

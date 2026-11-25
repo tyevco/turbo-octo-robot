@@ -383,3 +383,69 @@ test("hostile agent addresses under frozen prototypes: no pollution, no throw, e
 test.after(() => {
   if (report.length) console.log(`# --- creaseworks QuickJS summary ---\n${report.map((l) => `# ${l}`).join("\n")}`);
 });
+
+// ---------------------------------------------------------------------------
+// Months of agent churn (DESIGN R13, review r1-02): the Album is compacted, so
+// the save stays far below herdr's 1 MiB write limit and loading it and every
+// save cycle stay inside the 500 ms callback budget. 280 days of 20 agents a
+// day (3 fledglings each) is 5,600 lifetime pane helpers; the full-year size
+// bound is asserted in Node (test/pacing/invariants.test.mjs, inv. 7). Past
+// about 6,000 compacted records this wasm harness fails to free its runtime on
+// dispose even though every step stays in budget (a harness limit, like the
+// one save-backlog.test.mjs notes), so the QuickJS run stops short of a year.
+
+const DAYS = 280;
+
+test("a save after 280 days of 20 agents a day loads and saves within budget (Album compaction, R13)", { timeout: 120000 }, async () => {
+  const engine = await import("../../mods/creaseworks/engine/index.js");
+  const T0 = Date.UTC(2026, 10, 25, 9);
+  const s = engine.newGame({ seed: 5, now: T0, day: "2026-11-25" });
+  let seq = 0;
+  const act = (a) => engine.apply(s, { w: "w-yearchurn01", s: ++seq, ...a });
+  const obs = (t, helpers) => act({ t, type: "observe", helpers, visible: true, active: true, matShown: true, day: "2026-11-25" });
+  const ag = (i, extra = {}) => ({ addr: `w1:t${i}`, created: T0 + i * 997, status: "working", raw: "working", turn: 0, parent: null, pane: `p${i}`, title: "claude · refactor the payment module", paneName: "", space: "main", tab: "1", kind: "pane", ...extra });
+  let t = T0;
+  let n = 0;
+  for (let d = 0; d < DAYS; d++) {
+    const list = [];
+    for (let k = 0; k < 20; k++) {
+      const i = n++;
+      list.push(ag(i));
+      for (let j = 0; j < 3; j++) list.push(ag(1e6 + i * 3 + j, { kind: "kid", pane: null, parent: `w1:t${i}` }));
+    }
+    obs((t += 1000), list);
+    obs((t += 3600000), list.map((o) => ({ ...o, turn: 2, status: "idle" })));
+    for (const id of Object.keys(s.envelopes)) act({ t, type: "open", helperId: id });
+    obs((t += 1000), []);
+    t = T0 + (d + 1) * 86400000;
+    engine.advance(s, t);
+  }
+  const text = engine.serialize(s);
+  assert.ok(text.length < 512 * 1024, `${text.length} bytes`);
+  const now = s.clock + 1000;
+  const live = roster(30);
+  for (const term of live.terminals) term.created_ms = now - 5000 + term.created_ms;
+  const host = await createHost({
+    modRoot: MOD,
+    scenario: { ...scenario(0), ...live, now, files: { [SAVE]: text } },
+  });
+  try {
+    const load = await host.load();
+    const steps = [load.ms.init];
+    steps.push(...host.advance(0).stepMs);
+    for (let i = 0; i < 40; i++) steps.push(...host.advance(1000).stepMs);
+    assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
+    for (const ms of steps) assert.ok(ms < BUDGETS.timer, `step ${ms} ms`);
+    const save = slotJson(host, ".save");
+    assert.equal(save.status, "ok", JSON.stringify(save));
+    assert.equal(save.writing, null);
+    const disk = host.readFile(SAVE);
+    assert.notEqual(disk, text, "a save cycle wrote the file");
+    const back = engine.parseSave(disk);
+    assert.equal(back.ok, true);
+    assert.equal(Object.values(back.state.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
+    log(`qjs ${DAYS}-day churn save: ${(text.length / 1024).toFixed(0)} KiB, ${n} Album helpers; slowest step ${f1(Math.max(...steps))} ms`);
+  } finally {
+    host.dispose();
+  }
+});

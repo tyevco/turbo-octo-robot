@@ -280,10 +280,13 @@ Every screenshot is looked at by a person/agent before a round is called clean.
 *As built (integration):* every view in all six themes of `themes.json` and at zoom 1 and 1.5
 (`<view>-<theme>[-z1.5].png`), grey / deuteranopia / protanopia captures of `flock-34`,
 `flock-64-dense`, `ribbon-64-1440` and `rail-64` in graphite and paper
-(`<view>-<theme>-<grey|deuteranopia|protanopia>.png`), and whole windows at both sizes in four
-layout states (`window-<w>x<h>[-folded|-hidden|-files]-<theme>.png`). A window's game blocks run
-as copies of the View sharing ONE mock herdr window (one handover slot, as in herdr), each sized
-by its root's `on_size_change`. `svg()` masks are inlined as `data:` URIs (a `file://` page cannot
+(`<view>-<theme>-<grey|deuteranopia|protanopia>.png`), and whole windows at both sizes, at zoom 1
+and 1.5, in four layout states (`window-<w>x<h>[-folded|-hidden|-files]-<theme>[-z1.5].png`). A
+window's game blocks run as copies of the View sharing ONE mock herdr window (one handover slot,
+as in herdr), each sized by its root's `on_size_change` with the content box herdr would give it
+(`render/window.mjs` `layoutBoxes`, a port of herdr's `pane_size::shares` / `block_bounds`, in
+zoomed px; B15). The renderer gives weight nodes herdr's normalised grow (weight ÷ the shown
+siblings' total weight). `svg()` masks are inlined as `data:` URIs (a `file://` page cannot
 fetch a `file://` CSS mask: masks are CORS requests). Sheets: `contact-sheet.png` (graphite +
 paper), `contact-sheet-zoom.png`, `contact-sheet-vision.png`, `contact-sheet-<theme>.png`.
 `--preview` writes `preview.png` at 1600×1000 (the 1440×900 window at 10/9) and
@@ -929,8 +932,10 @@ panel copy is alive, not hidden and not folded, and `window()?.active`.
 acts only when it does (or, with an unreadable `layout()`, when no ribbon copy is alive).
 `layout()` is read tolerantly (a tree of `{id, hidden, size, children}`; a node missing from a
 known tree counts as hidden). `fold`: hidden panel → `layout.show` + `layout.resize` to the last
-width; rail (< 140) → last width; else remember the width (slot + `localStorage`
-`creaseworks.panelWidth`, try/catch) and resize to 64. Group keys `"needs"` / `"finished"` pick
+weight; rail (< 140) → last weight; else remember the width (slot + `localStorage`
+`creaseworks.panelWidth`) and the panel's `{weight}` from `layout()` (slot `widths.lastWeight` +
+`localStorage` `creaseworks.panelWeight`, try/catch) and resize to `{px: 64}`. Unfolding is always
+`{weight}` (the last one, else 0.39), never `{px}` (B15). Group keys `"needs"` / `"finished"` pick
 the longest-waiting / oldest tile (fledglings drawn as pips are skipped) and cycle on repeats
 within 30 s.
 
@@ -943,7 +948,9 @@ banners, a wall-clock step back for `clock`). Where luck or hours decide a state
 one engine field that decides it (spawn clock due, a storm's end time, banked folds) and lets the
 engine do the rest. Ribbon views are `ribbon-<n>-<1100|1440>`; `flock-12` (block `cw-panel`) and
 `ribbon-window` (block `cw-ribbon`) fill the whole-window shots; `windowScenario` gives the
-chrome the same 12 agents.
+chrome the same 12 agents. `garlands` is 320×1160 (`GARLANDS_SIZE`): at 784 the String tab ends at
+the Perks heading and the garland stripes it is named for were below the fold (review r1-29;
+`test/glue/views.test.mjs` lays it out in chromium and checks every stripe is in view).
 
 ### B14. Integration as built (integration round; A2–A12 and B1–B13 still hold)
 
@@ -963,9 +970,42 @@ chrome the same 12 agents.
 * **Footer save line** (`store.saveInfo`): a `conflict` notice reads "Merging another window's
   save…" and a `fresh` one "Started fresh · saved …", so the problem glyph never sits next to a
   bare "Saved".
-* **Narrow window with Files open (§2.3).** herdr applies a node's `min` as a CSS min at render,
-  so `main`'s `"min": 360` keeps the terminals at 360 px and, at 1100 px with Files open, the
-  panel overflows the work row and is clipped (only its left ~70 px show) until the player takes
-  the ribbon's "fold to a rail?" hint; folded, everything fits (360 + 368 + 64 + gaps = 824 ≤ 832).
-  §2.3's `mainEst = 112` assumed `main` could shrink below its min. Left as designed (a judged
-  must-fix keeps `min: 360`); `window-1100x700-files-*.png` shows it.
+* **Narrow windows and zoom.** Superseded by B15 (the panel used to be `{px: 320}` and was
+  pushed off-screen at 1100 px with Files open and at zoom 1.5).
+
+### B15. Panel sizing in herdr's geometry (review r1-32)
+
+* **What herdr does.** `sized()` (src/window.rs) makes a `{px}` node `flex_none` at px × zoom;
+  `min` / `max` only add `min_w` / `max_w` (× zoom, settings::z). A `{weight}` node grows from a 0
+  basis by weight ÷ the shown siblings' total weight, shrinks to its `min`, and a too-narrow row
+  is clipped. So with `cw-panel` `{px: 320}` and Files `{px: 368}`, only `main` could give way and,
+  with `main`'s `min: 360`, the last node (the game) was pushed off-screen: at 1100×700 with Files
+  open only ~79 px of it showed, and at zoom 1.5 every px node is half as wide again (1100 px:
+  ~130 of 480 px; with Files, none).
+* **The layout now.** `cw-panel` is `{"weight": 0.39}`, `min: 64`, no `max`; herdr's Files
+  column (`panel`) is `{"weight": 0.66}` (its `min: 280`, `max: 900` and every other field kept);
+  `main` keeps `min: 360` and weight 1. Widths at 1440×900: terminals 825, game 322 (Files open:
+  556 / 367 / 217); at 1100×700: 581 / 226 (Files: 373 / 280 / 146); at zoom 1.5 the game gives
+  way first (1100×700: terminals 540, game 121 screen px, the rail). The game panel is wider on
+  big windows (1920: 456, Wide). Whenever the window has room for herdr's own nodes at their
+  mins plus the 64 px rail, everything is on screen; below that (zoom 1.5 with Files open under
+  ~1510 px) the game is still the node that gives way, and the ribbon's hint offers the fold.
+* **No `max` on a weight node.** herdr keeps grow factors normalised to the original siblings
+  after a node freezes at its max (`pane_size::shares`; taffy, CSS flexbox 9.7 step 4b), so a
+  capped weight node leaves the rest of its share empty: `{weight: 1, max: 320}` would leave a
+  254 px empty strip right of the panel at 1440×900. `test/layout` checks there is no strip.
+* **Commands.** Fold is `layout.resize {id: "cw-panel", px: 64}` (the rail); unfold and show are
+  `layout.resize {id: "cw-panel", weight}` with the last unfolded weight (a drag between `main`
+  and the panel changes both weights, src/window.rs `drag_to`), else 0.39
+  (`DEFAULT_PANEL_WEIGHT`, equal to `tools/layout/build.mjs` `PANEL_WEIGHT`). A panel left
+  `{px}` by an older state file becomes a weight at its first unfold.
+* **Tools.** `tools/render/window.mjs` exports `shares` and `layoutBoxes` (herdr's geometry,
+  screen px, with `inner` content boxes and `visible` clip rects); `tools/shots/shoot.mjs`
+  `blockSizes` uses them, so whole-window copies measure what herdr would give them at each zoom;
+  `tools/mock/commands.js` `applyLayoutCommand` applies `layout.toggle|show|hide|resize` to a
+  tree as the window does. Tests: `test/layout/layout.test.mjs` (every window state at 1100–2560
+  px, zoom 1 and 1.5), `test/glue/commands.test.mjs` (the commands' own runs applied and laid
+  out), `test/tooling/window.test.mjs` (geometry, zoom 1.5 window shots).
+* **DESIGN to follow** (owned elsewhere): §2.1's diagram ("320 (64 … 560)"), §2.2's table and
+  §2.5's layout block still show the px layout; `test/layout` "is exactly the layout in DESIGN
+  §2.5" fails until §2.5 shows `layouts/Creaseworks.json` as built.

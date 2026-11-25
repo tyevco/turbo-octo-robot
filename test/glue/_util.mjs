@@ -6,7 +6,7 @@
 import { createController, DEFAULT_NOW } from "../../tools/mock/controller.js";
 import { constructView, beginRender, renderRoot, serialize, installMockWindow } from "../../tools/mock/gpui-kit.js";
 import Creaseworks from "../../mods/creaseworks/main.js";
-import { dropSlot, getSlot } from "../../mods/creaseworks/glue/live.js";
+import { dropSlot, getSlot, newCodeGeneration } from "../../mods/creaseworks/glue/live.js";
 import * as engine from "../../mods/creaseworks/engine/index.js";
 
 export { engine, DEFAULT_NOW, getSlot, dropSlot, Creaseworks };
@@ -64,10 +64,16 @@ export function win(scenario = {}) {
     flush() {
       return ctl.flush();
     },
-    /** A hot reload: a new generation, every copy constructed and initialised again, then the old one cancelled. */
+    /**
+     * A hot reload: a new generation, every copy constructed and initialised
+     * again, then the old one cancelled. herdr evaluates the mod's modules
+     * again (a new codeGeneration() token); Node cannot, so the token is
+     * renewed by hand.
+     */
     async reload() {
       const old = ctl.generation;
       ctl.newGeneration();
+      newCodeGeneration();
       const roles = copies.map((v) => v.session.role);
       copies.length = 0;
       for (const role of roles) await w.copy(role);

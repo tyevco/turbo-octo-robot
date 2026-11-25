@@ -196,3 +196,17 @@ test("r1-19: the first gilded crane carries its one-time line until a crane is c
   s.spawn.crane = { id: "gY", slot: 1, born: s.spawn.shownMs, outcome: "song" };
   assert.equal(engine.view(s, T0 + 20, { role: "panel", width: 320 }).mat.crane.hint, null, "once: never again after the first catch");
 });
+
+test("r1-19: a missed first crane does not bring the line back on later cranes", () => {
+  const s = seeded(11);
+  s.ui.hints.fold = true;
+  // The first crane as the spawn clock makes it (cranesSeen counts it in).
+  s.spawn.cranesSeen = 1;
+  s.spawn.crane = { id: "g1", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  assert.equal(engine.view(s, T0, { role: "panel", width: 320 }).mat.crane.hint, "A gilded crane! Click it before it flies off.");
+  // It flies off uncaught; the second crane appears.
+  s.spawn.cranesSeen = 2;
+  s.spawn.crane = { id: "g2", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  assert.equal(s.ui.hints.crane, false);
+  assert.equal(engine.view(s, T0 + 20, { role: "panel", width: 320 }).mat.crane.hint, null);
+});

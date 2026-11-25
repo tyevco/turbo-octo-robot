@@ -107,6 +107,32 @@ test("r1-14: the parent's detail card offers an open button per waiting fledglin
   assert.ok(texts(tree.toJSON()).some((w) => w.startsWith("Open ") && w.includes("fledgling")));
 });
 
+test("r1-14: with 5+ waiting fledglings, '+N' opens the first one past the 4 pips", () => {
+  const { vm } = flockVm();
+  const t = vm.helpers.groups.flatMap((g) => g.tiles).find((x) => x.helperId === tileId(1));
+  const kids = Array.from({ length: 6 }, (_, i) => ({ helperId: `k${i}`, status: "blocked", name: `kid ${i}`, pane: null, tooltip: `kid ${i} (fledgling) · Needs you: click to open it` }));
+  t.kids = kids;
+  t.pips = kids.map((k) => k.status);
+  const ctx = makeCtx();
+  const tree = renderFlock(vm, {}, ctx);
+  const json = tree.toJSON();
+  for (let i = 0; i < 4; i++) assert.ok(findById(json, `cw-flock-kid-k${i}`));
+  assert.equal(findById(json, "cw-flock-kid-k4"), null);
+  const more = findById(json, "cw-flock-kid-more-k4");
+  assert.ok(more, "'+2' is its own target");
+  assert.ok(texts(more).includes("+2"));
+  const cx = fakeCx();
+  fire(tree, "cw-flock-kid-more-k4", "on_click", {}, cx);
+  assert.deepEqual(ctx.calls, [["openHelper", "k4"]]);
+  assert.equal(cx.stopped, 1);
+  // Past the 4th pip with nobody waiting: plain text.
+  t.kids = kids.map((k, i) => (i < 4 ? k : { ...k, status: "working" }));
+  t.pips = t.kids.map((k) => k.status);
+  const json2 = renderFlock(vm, {}, makeCtx()).toJSON();
+  assert.equal(findById(json2, "cw-flock-kid-more-k4"), null);
+  assert.ok(texts(json2).includes("+2"));
+});
+
 test("r1-17: clicking a needs-you tile opens its agent; other tiles select", () => {
   const { vm } = flockVm();
   const ctx = makeCtx();
@@ -224,11 +250,17 @@ test("r1-16: Share a save… opens a share card; the card picks a file or stops 
   let json = tree.toJSON();
   assert.ok(findById(json, "cw-set-share-card"));
   assert.ok(styleVal(findById(json, "cw-set-share-pick"), "disabled") === true || (findById(json, "cw-set-share-pick").handlers || {}).on_click === undefined);
+  // saveInfo without `shared`: this window is not known to share, so no Stop.
+  assert.equal(findById(json, "cw-set-share-stop"), null, "Stop sharing only when ctx.save.shared === true");
   ctx.calls.length = 0;
-  fire(tree, "cw-set-share-stop", "on_click", {}, fakeCx());
   fire(tree, "cw-set-share-cancel", "on_click", {}, fakeCx());
   fire(tree, "cw-set-share", "on_click", {}, fakeCx()); // the button closes the open card
-  assert.deepEqual(ctx.calls, [["sharePath", ""], ["cancel"], ["cancel"]]);
+  assert.deepEqual(ctx.calls, [["cancel"], ["cancel"]]);
+  // While sharing, Stop goes back to this window's own save.
+  const ctxS = makeCtx("graphite", { save: { ...save, shared: true } });
+  tree = renderSettings(s.vm, ui, ctxS);
+  fire(tree, "cw-set-share-stop", "on_click", {}, fakeCx());
+  assert.deepEqual(ctxS.calls, [["sharePath", ""]]);
   // With the picker handler the pick button asks for a file.
   const calls = [];
   const ctx2 = makeCtx("graphite", { save: { ...save, shared: false } });
@@ -261,31 +293,37 @@ test("r1-18: the wish moment: strands rise 30 px and fade (900 ms), then settle 
     vm.calm = calm;
     return lifts(renderString(vm, s.ui, makeCtx("graphite", { calm })).toJSON());
   };
+  // gpui samples a motion only while it is declared, and adopts the first
+  // declared target without animating: every frame must declare the same
+  // channels on the same ids, with 0 ms wherever nothing should move.
+  const motion = (el) => el.transitions.map((x) => [x.property, x.duration]).sort();
   const rise = at({ phase: "rise", strands: full });
   for (const { lift, fill } of rise) {
     assert.equal(styleVal(lift, "top"), WISH_RISE.dy);
     assert.equal(styleVal(lift, "opacity"), 0);
-    assert.deepEqual(lift.transitions.map((x) => [x.property, x.duration]).sort(), [["opacity", 900], ["top", 900]]);
+    assert.deepEqual(motion(lift), [["opacity", 900], ["top", 900]]);
     assert.equal(styleVal(fill, "h"), 200, "the String as it was wished away");
-    assert.deepEqual(fill.transitions, [], "no height motion during the moment");
+    assert.deepEqual(motion(fill), [["height", 0]], "no height motion during the moment");
   }
   const calm = at({ phase: "rise", strands: full }, true);
   for (const { lift } of calm) {
     assert.equal(styleVal(lift, "top"), 0, "calm: in place");
-    assert.deepEqual(lift.transitions.map((x) => [x.property, x.duration]), [["opacity", 300]]);
+    assert.deepEqual(motion(lift), [["opacity", 300], ["top", 0]]);
   }
   const settle = at({ phase: "settle", strands: full });
   for (const { lift, fill } of settle) {
     assert.equal(styleVal(lift, "top"), 0);
     assert.equal(styleVal(lift, "opacity"), 1);
-    assert.deepEqual(lift.transitions, []);
-    assert.deepEqual(fill.transitions, [], "nothing slides back into view");
+    assert.deepEqual(motion(lift), [["opacity", 0], ["top", 0]], "settle snaps back, still declared");
+    assert.deepEqual(motion(fill), [["height", 0]], "nothing slides back into view");
     assert.equal(styleVal(fill, "h"), 0);
   }
-  const normal = at(null);
-  for (const { lift, fill } of normal) {
-    assert.deepEqual(lift.transitions, []);
-    assert.deepEqual(fill.transitions.map((x) => x.property), ["height"]);
+  for (const calmMode of [false, true]) {
+    const normal = at(null, calmMode);
+    for (const { lift, fill } of normal) {
+      assert.deepEqual(motion(lift), [["opacity", 0], ["top", 0]], "the lift's motion state exists before the wish");
+      assert.deepEqual(motion(fill), [["height", calmMode ? 150 : 600]]);
+    }
   }
 });
 

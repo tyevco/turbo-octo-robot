@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, kid, observeAction, close, T0 } from "./_util.mjs";
+import { saltedId, rosterChanged } from "../../mods/creaseworks/engine/helpers.js";
 
 test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
   const id = engine.helperId("t1", 1001);
@@ -252,4 +253,155 @@ test("Mail Sorter opens Bundles 10 s after they land; Boost Keeper only while cl
   engine.advance(s, T0 + 30000);
   assert.ok(s.envelopes.z);
   assert.equal(me.act({ t: T0 + 30001, type: "switch", id: "thrifty-fox", on: true }).at(-1).reason, "switch");
+});
+
+// --- review fixes r1-15, r1-21, r1-22, r1-23, r1-24 -------------------------
+
+test("marginal bench pace: a fresh agent never lowers a warm bench's Hs0, and a waiting agent never raises it (§5.3, inv. 6)", () => {
+  // One helper warm ×3 with thanks ×1.5 (b = 4.5·base) and four fresh ones: under the old
+  // crowd(n)·Σb a fifth fresh agent lowered Hs0 (0.83 · 8.5 < 7.5 · 1).
+  const s = seeded();
+  const me = writer(s);
+  me.act(observeAction(T0, [agent(1, "idle", 0)]));
+  engine.advance(s, T0 + 31 * 60000, "wA"); // rest fills
+  me.act(observeAction(T0 + 31 * 60000, [agent(1, "blocked", 0)]));
+  me.act(observeAction(T0 + 32 * 60000, [agent(1, "working", 0)])); // warm ×2 and thanks ×1.5
+  const id1 = engine.helperId("t1", 1001);
+  assert.ok(s.helpers[id1].warm > 1 && s.helpers[id1].thanksUntil > s.clock);
+  let t = T0 + 32 * 60000;
+  const list = [agent(1, "working", 0)];
+  let prev = engine.rates(s).Hs0;
+  for (let i = 2; i <= 40; i++) {
+    list.push(agent(i, "working", 0));
+    me.act(observeAction((t += 1000), list));
+    const hs = engine.rates(s).Hs0;
+    assert.ok(hs > prev, `n=${i}: Hs0 ${hs} ≤ ${prev}`);
+    prev = hs;
+  }
+  // Any working agent that turns to Needs you lowers Hs0 (never raises it).
+  for (let i = 1; i <= 40; i++) {
+    const before = engine.rates(s).Hs0;
+    const flip = list.map((o, k) => (k === i - 1 ? { ...o, status: "blocked" } : o));
+    const c = engine.cloneState(s);
+    engine.apply(c, { w: "wA", s: 99999, ...observeAction(t + 500, flip) });
+    assert.ok(engine.rates(c).Hs0 < before, `agent ${i} waiting raised Hs0`);
+  }
+  // equal benches keep crowd(n)·Σ b exactly
+  const e = seeded();
+  writer(e).act(observeAction(T0, Array.from({ length: 9 }, (_, i) => agent(i + 1, "working", 0))));
+  close(engine.rates(e).Hs0, engine.crowd(9) * 9 * 0.3, 1e-12);
+});
+
+test("Elsewhere: helpers last seen by a writer nobody has heard from for 8 h are adopted into the Album (§12.5)", () => {
+  const s = seeded();
+  const old = writer(s, "w-old");
+  old.act(observeAction(T0 + 1000, [agent(1), agent(2), agent(3)]));
+  engine.advance(s, T0 + 5000, "w-old");
+  // herdr restarts: a new process, a new writer id; agents 1 and 2 ended meanwhile
+  const now = writer(s, "w-new");
+  let t = T0 + 600000;
+  now.act(observeAction(t, [agent(3)]));
+  const id1 = engine.helperId("t1", 1001);
+  const id2 = engine.helperId("t2", 1002);
+  // within 8 h the old window might still be observing them: Elsewhere
+  assert.equal(engine.groupFor(s.helpers[id1], "w-new"), "elsewhere");
+  t = T0 + 5000 + 8 * 3600000 - 1000;
+  engine.advance(s, t, "w-new");
+  now.act(observeAction(t, [agent(3)]));
+  assert.equal(s.helpers[id1].gone, false);
+  // past 8 h without a sighting: any window that does not list them moves them to the Album
+  t = T0 + 5000 + 8 * 3600000 + 1000;
+  engine.advance(s, t, "w-new");
+  now.act(observeAction(t, [agent(3)]));
+  for (const id of [id1, id2]) {
+    assert.equal(s.helpers[id].gone, true);
+    assert.equal(engine.groupFor(s.helpers[id], "w-new"), "album");
+  }
+  const vm = engine.view(s, t + 1, { writer: "w-new" });
+  assert.equal(vm.helpers.elsewhere.length, 0);
+  assert.equal(vm.helpers.albumCount, 2);
+  assert.equal(engine.rates(s, "w-new").nPresent, 1);
+  // a live second window's helpers are not adopted
+  const b = writer(s, "wB");
+  b.act(observeAction(t + 1000, [agent(9)]));
+  now.act(observeAction(t + 2000, [agent(3)]));
+  assert.equal(s.helpers[engine.helperId("t9", 1009)].gone, false);
+});
+
+/** Two terminals whose `addr#created` strings clash in the 32-bit hash. */
+function clashingPair() {
+  const created = 1795000000000;
+  const seen = new Map();
+  for (let i = 1; ; i++) {
+    const id = engine.helperId(`t${i}`, created + i);
+    if (seen.has(id)) return [seen.get(id), i, created];
+    seen.set(id, i);
+  }
+}
+
+test("a 32-bit id clash between two present agents loses neither: the later one takes a salted id (R6)", () => {
+  const [a, b, created] = clashingPair();
+  assert.equal(engine.helperId(`t${a}`, created + a), engine.helperId(`t${b}`, created + b));
+  const ag = (i, status) => agent(i, status, 0, { created: created + i });
+  const s = seeded();
+  const me = writer(s);
+  me.act(observeAction(T0, [ag(a, "working"), ag(b, "blocked")]));
+  const plain = engine.helperId(`t${a}`, created + a);
+  const salted = saltedId(`t${b}`, created + b, 1);
+  assert.equal(Object.keys(s.helpers).length, 2);
+  assert.equal(s.helpers[plain].addr, `t${a}`);
+  assert.equal(s.helpers[salted].addr, `t${b}`);
+  assert.equal(engine.groupFor(s.helpers[salted], "wA"), "needs");
+  // the same ids whatever the list order, and turns pay the right helper
+  me.act(observeAction(T0 + 1000, [agent(b, "idle", 1, { created: created + b }), ag(a, "working")]));
+  assert.equal(Object.keys(s.helpers).length, 2);
+  assert.equal(s.helpers[salted].stats.tasks, 1);
+  assert.equal(s.helpers[plain].stats.tasks, 0);
+  assert.equal(s.envelopes[salted].units, 1);
+  const back = engine.parseSave(engine.serialize(s));
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[salted].addr, `t${b}`);
+});
+
+test("display names: a newcomer takes the smallest free number; a returning namesake is renamed only on a clash (§5.1)", () => {
+  const ag = (i) => agent(i, "working", 0, { addr: `w1:t${i}` });
+  const byName = Object.create(null);
+  for (let i = 0; i < 5000; i++) (byName[engine.lookOf(engine.helperId(`w1:t${i}`, 1000 + i)).name] ||= []).push(i);
+  const [base, [a, b, c, d]] = Object.entries(byName).find(([, v]) => v.length >= 4);
+  const s = seeded();
+  const me = writer(s);
+  let t = T0;
+  const live = () => Object.values(s.helpers).filter((h) => !h.gone).map((h) => h.name).sort();
+  const obs = (list) => me.act(observeAction((t += 1000), list.map(ag)));
+  obs([a, b, c]);
+  assert.deepEqual(live(), [base, `${base} 2`, `${base} 3`].sort());
+  obs([b, c]); // the bare name leaves
+  obs([b, c, d]); // a newcomer takes it, not a second "3"
+  assert.deepEqual(live(), [base, `${base} 2`, `${base} 3`].sort());
+  obs([a, b, c, d]); // the first returns: its name is taken now
+  const names = live();
+  assert.equal(new Set(names).size, 4);
+  assert.deepEqual(names, [base, `${base} 2`, `${base} 3`, `${base} 4`].sort());
+  assert.equal(s.helpers[engine.helperId(`w1:t${d}`, 1000 + d)].name, base);
+});
+
+test("observing new agents does not rescan the helper map per agent (r1-24: O(new + total), not O(new × total))", () => {
+  const s = seeded();
+  const me = writer(s);
+  let t = T0;
+  // 400 helpers that came and went
+  for (let k = 0; k < 4; k++) {
+    me.act(observeAction((t += 1000), Array.from({ length: 100 }, (_, i) => agent(1000 + k * 100 + i))));
+    me.act(observeAction((t += 1000), []));
+  }
+  let enumerations = 0;
+  const hs = s.helpers;
+  s.helpers = new Proxy(hs, { ownKeys(target) { enumerations++; return Reflect.ownKeys(target); } });
+  const kids = Array.from({ length: 30 }, (_, i) => kid(5000 + i, 4000 + i, "working", 0));
+  me.act(observeAction((t += 1000), [...Array.from({ length: 130 }, (_, i) => agent(4000 + i)), ...kids]));
+  assert.ok(enumerations <= 8, `${enumerations} enumerations of the helper map for 160 new agents`);
+  s.helpers = hs;
+  rosterChanged(s);
+  assert.equal(Object.values(hs).filter((h) => !h.gone).length, 160);
+  for (const k of kids) assert.equal(hs[engine.helperId(k.addr, k.created)].parent, engine.helperId(`t${k.parent.slice(1)}`, 1000 + Number(k.parent.slice(1))));
 });

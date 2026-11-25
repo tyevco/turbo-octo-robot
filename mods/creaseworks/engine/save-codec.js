@@ -1,15 +1,47 @@
 // Save file codec (ARCHITECTURE A4): one JSON object
 // { "format": "creaseworks-save", "version": N, "check": "<fnv1a32 hex>", "state": {...} }.
 // The check covers the canonical state JSON: JSON.stringify of the state in its
-// own key order, which a parse → rebuild → stringify round trip preserves.
+// own key order, with each compact Album record (DESIGN R13, helpers.js
+// packAlbum) written as its short array. A parse → unpack → rebuild →
+// stringify round trip gives the same text.
 
 import { SAVE_FORMAT, ENVELOPES } from "./content.js";
 import { fnv1a32 } from "./hash.js";
-import { VERSION, MAP_FIELDS, rebuildMaps, migrate } from "./state.js";
+import { VERSION, MAP_FIELDS, rebuildMaps, migrate, makeMap } from "./state.js";
+import { packAlbum, unpackAlbum } from "./helpers.js";
 
-/** Canonical JSON of a state. */
+/** Canonical JSON of a state (compact Album records packed). */
 export function canonicalState(state) {
-  return JSON.stringify(state);
+  const hs = state && state.helpers;
+  let packed = null;
+  if (hs && typeof hs === "object") {
+    for (const id in hs) {
+      const h = hs[id];
+      if (!h || h.compact !== true) continue;
+      const a = packAlbum(h);
+      if (a) (packed || (packed = Object.create(null)))[id] = a;
+    }
+  }
+  if (!packed) return JSON.stringify(state);
+  const hs2 = Object.create(null);
+  for (const id in hs) hs2[id] = packed[id] !== undefined ? packed[id] : hs[id];
+  const copy = Object.create(null);
+  for (const k of Object.keys(state)) copy[k] = k === "helpers" ? hs2 : state[k];
+  return JSON.stringify(copy);
+}
+
+/** Expand the packed Album entries of a parsed save's helpers (in place); false if one is malformed. */
+function unpackHelpers(st) {
+  if (!isObj(st.helpers)) return true;
+  const hs = makeMap(st.helpers);
+  st.helpers = hs;
+  for (const id of Object.keys(hs)) {
+    if (!Array.isArray(hs[id])) continue;
+    const h = unpackAlbum(id, hs[id]);
+    if (!h) return false;
+    hs[id] = h;
+  }
+  return true;
 }
 
 /** The full save file text for `state`. */
@@ -74,12 +106,13 @@ export function parseSave(text) {
   if (!isObj(doc) || doc.format !== SAVE_FORMAT || !isNum(doc.version) || typeof doc.check !== "string" || !isObj(doc.state)) {
     return { ok: false, reason: "format" };
   }
-  if (fnv1a32(canonicalState(doc.state)) !== doc.check) return { ok: false, reason: "check" };
+  if (fnv1a32(JSON.stringify(doc.state)) !== doc.check) return { ok: false, reason: "check" };
+  const unpacked = unpackHelpers(doc.state);
   if (doc.version > VERSION || doc.state.version > VERSION) {
-    const why = validateState(doc.state);
+    const why = unpacked ? validateState(doc.state) : "helpers";
     return why ? { ok: false, reason: "newer" } : { ok: false, reason: "newer", state: rebuildMaps(doc.state) };
   }
-  if (validateState(doc.state)) return { ok: false, reason: "shape" };
+  if (!unpacked || validateState(doc.state)) return { ok: false, reason: "shape" };
   const state = rebuildMaps(doc.state);
   try {
     migrate(state);

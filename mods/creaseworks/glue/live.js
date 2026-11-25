@@ -20,11 +20,15 @@ export const DEBOUNCE_MS = 2000;
 export const CADENCE_MS = 15000;
 const URGENT = { buy: 1, wish: 1, setting: 1, switch: 1, open: 1, collect: 1, notified: 1 };
 /**
- * The unconfirmed-action log stays bounded while saves cannot land (A5):
- * past COALESCE_AT entries a roster observation replaces the previous one
- * (its turn counters still carry every finished task), and past PENDING_MAX
- * the log is given up (`save.logLost`): the next save then writes this
- * window's game whole, keeping any other writer's file aside (store.js).
+ * The unconfirmed-action log stays bounded while saves cannot land (A5).
+ * Past COALESCE_AT entries a roster observation that changed nothing the
+ * engine keeps (same agents, turn counters, statuses, parents and presence as
+ * the observation before it: only titles or pane names moved) is dropped when
+ * the next observation is the same again; an observation that changes a turn
+ * counter, a status or the roster is never dropped, because the engine pays at
+ * most one finished task per observation (engine/helpers.js observe). Past
+ * PENDING_MAX the log is given up (`save.logLost`): the next save then writes
+ * this window's game whole, keeping any other writer's file aside (store.js).
  */
 export const COALESCE_AT = 512;
 export const PENDING_MAX = 20000;
@@ -40,6 +44,15 @@ let generationToken = null;
 export function codeGeneration() {
   if (generationToken === null) generationToken = `g${randomId()}`;
   return generationToken;
+}
+
+/**
+ * What evaluating this module again does to the token (herdr loads relative
+ * imports under the new lease generation on every reload). Only for the Node
+ * harness, which cannot evaluate a module twice (test/glue/_util.mjs reload).
+ */
+export function newCodeGeneration() {
+  generationToken = null;
 }
 
 /** A random id (writerId, copy ids): 12 base-36 characters from Math.random (glue only). */
@@ -85,6 +98,8 @@ export function newSlot(home, paths) {
     bakText: null,
     bakAt: null,
     pending: [],
+    logObs: null, // { s, key, same } the latest roster observation recorded (record)
+    logEpoch: 0, // how many times the log was given up (record)
     state: null,
     notice: null, // the save notice on show: { kind, text?, message?, retryMs?, at }
     inflight: null, // { text, upto } while a save write is under way
@@ -103,6 +118,8 @@ export function newSlot(home, paths) {
       unreadable: null, recoveryText: null,
       // the next write replaces the file instead of merging (reset / restore, or a lost log)
       overwrite: null, logLost: false,
+      // applied[writerId] in the text this window last wrote (store.js: a drop means another window replaced the file)
+      ownApplied: 0,
     },
     bakState: null, // "ok" | "damaged" | null (unknown) for bakText
     notices: { load: null, write: null, bak: null },
@@ -168,21 +185,54 @@ export function dispatch(slot, partial, t) {
   return ev;
 }
 
-/** Adds `action` to the unconfirmed log, keeping it bounded (COALESCE_AT, PENDING_MAX). */
+/**
+ * What a roster observation changes in the engine (engine/helpers.js
+ * observe): per agent its address, created time, kind, status, turn counter
+ * and parent, plus the window presence and day. Titles, pane ids and names
+ * are left out: the next observation sets them again.
+ */
+export function rosterKey(action) {
+  let s = `${action.visible}|${action.active}|${action.matShown}|${action.day}`;
+  for (const o of action.helpers) {
+    if (!o || typeof o !== "object") {
+      s += "\u0002-";
+      continue;
+    }
+    s += `\u0002${o.addr}\u0001${o.created}\u0001${o.kind}\u0001${o.status}\u0001${o.turn}\u0001${o.parent}`;
+  }
+  return s;
+}
+
+/**
+ * Adds `action` to the unconfirmed log, keeping it bounded (COALESCE_AT,
+ * PENDING_MAX). `slot.logObs` = { s, key, same } describes the latest roster
+ * observation recorded: `same` when its key equals the one before it. That
+ * one is dropped only when it is `same` and the new observation has its key
+ * too, so the new one does exactly what it did (no finish, status change or
+ * new agent is lost or moved), only later.
+ */
 export function record(slot, action) {
   const P = slot.pending;
-  if (P.length >= COALESCE_AT && action.type === "observe" && Array.isArray(action.helpers)) {
-    for (let i = P.length - 1; i >= 0; i--) {
-      if (P[i].type === "observe" && Array.isArray(P[i].helpers)) {
-        P.splice(i, 1);
-        break;
+  if (action.type === "observe" && Array.isArray(action.helpers)) {
+    const key = rosterKey(action);
+    const last = slot.logObs || null;
+    const same = !!last && last.key === key;
+    if (same && last.same && P.length >= COALESCE_AT) {
+      for (let i = P.length - 1; i >= 0 && P[i].s >= last.s; i--) {
+        if (P[i].s === last.s && P[i].type === "observe" && Array.isArray(P[i].helpers)) {
+          P.splice(i, 1);
+          break;
+        }
       }
     }
+    slot.logObs = { s: action.s, key, same };
   }
   P.push(action);
   if (P.length > PENDING_MAX) {
     // Too long to replay onto another writer's file: the next save writes this game whole.
     slot.pending = [];
+    slot.logObs = null;
+    slot.logEpoch = (slot.logEpoch || 0) + 1; // a replay under way finishes the old array (store.js)
     slot.save.logLost = true;
   }
 }

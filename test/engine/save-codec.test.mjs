@@ -158,3 +158,130 @@ test("64 present helpers plus 500 Album helpers save in < 256 KiB (inv. 7)", () 
   assert.ok(text.length < 256 * 1024, `${text.length} bytes`);
   assert.equal(engine.parseSave(text).ok, true);
 });
+
+// --- Album compaction (DESIGN R13; review r1-02) -----------------------------
+
+/** `days` of churn: `perDay` pane agents a day, each with `kids` fledglings, a task each, then gone. */
+function churn(s, me, days, perDay = 20, kids = 3) {
+  const ag = (i, extra = {}) => agent(i, "working", 0, { addr: `w1:t${i}`, created: T0 + i * 997, title: "claude · refactor the payment module", ...extra });
+  let t = s.clock;
+  let n = 0;
+  for (let d = 0; d < days; d++) {
+    const list = [];
+    for (let k = 0; k < perDay; k++) {
+      const i = n++;
+      list.push(ag(i));
+      for (let j = 0; j < kids; j++) list.push(ag(1e6 + i * kids + j, { kind: "kid", pane: null, parent: `w1:t${i}` }));
+    }
+    me.act(observeAction((t += 1000), list));
+    me.act(observeAction((t += 3600000), list.map((o) => ({ ...o, turn: 2, status: "idle" }))));
+    for (const id of Object.keys(s.envelopes)) me.act({ t, type: "open", helperId: id });
+    me.act(observeAction((t += 1000), []));
+    t = T0 + (d + 1) * 86400000;
+    engine.advance(s, t);
+  }
+  return n;
+}
+
+test("Album compaction: old gone helpers are packed, never dropped, and a round trip is exact (R13)", () => {
+  const s = seeded(41);
+  const me = writer(s, "w-7f3a9c2e41");
+  const panes = churn(s, me, 20, 20, 1);
+  const hs = Object.values(s.helpers);
+  const K = engine.CONTENT.K;
+  // every pane agent is still a saved helper; only the newest K.albumKeep keep full records
+  assert.equal(hs.filter((h) => h.kind === "pane" && h.gone).length, panes);
+  assert.equal(hs.filter((h) => h.kind === "pane" && h.gone && !h.compact).length, K.albumKeep);
+  assert.equal(hs.filter((h) => h.kind === "kid").length, K.kidAlbumKeep);
+  const compact = hs.filter((h) => h.compact);
+  assert.equal(compact.length, panes - K.albumKeep);
+  // the oldest are the compacted ones; their folds from the fledglings that folded in stay
+  const newestCompact = Math.max(...compact.map((h) => h.missingSince));
+  const oldestFull = Math.min(...hs.filter((h) => h.kind === "pane" && h.gone && !h.compact).map((h) => h.missingSince));
+  assert.ok(newestCompact <= oldestFull);
+  assert.ok(compact.every((h) => h.stats.tasks === 1 && h.stats.kidsPast === 1));
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  const packed = Object.values(doc.state.helpers).filter(Array.isArray);
+  assert.equal(packed.length, compact.length);
+  assert.ok(packed.every((a) => a.length === 4 || a.length === 6));
+  assert.equal(doc.check, engine.fnv1a32(JSON.stringify(doc.state)));
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
+  // in memory a compact record is exactly what loading it gives (merge and reload change nothing)
+  for (const h of compact) assert.deepEqual({ ...back.state.helpers[h.id] }, { ...h });
+  const a = engine.cloneState(s);
+  const z = writer(a, "w-7f3a9c2e41");
+  const zb = writer(back.state, "w-7f3a9c2e41");
+  for (let k = 0; k < 500; k++) { z.make({}); zb.make({}); } // same sequence numbers
+  const more = [observeAction(a.clock + 1000, [agent(7, "working", 0)]), observeAction(a.clock + 2000, [])];
+  for (const x of more) { z.act(x); zb.act(x); }
+  engine.advance(a, a.clock + 60000);
+  engine.advance(back.state, back.state.clock + 60000);
+  assert.equal(engine.serialize(back.state), engine.serialize(a));
+  // the Album still lists every one of them
+  const vm = engine.view(s, s.clock, { writer: "w-7f3a9c2e41" });
+  assert.equal(vm.helpers.albumCount, panes);
+});
+
+test("a compacted helper whose agent returns rejoins with its name and stats; its turn is rebaselined (R13)", () => {
+  const s = seeded(42);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  let t = T0;
+  const first = agent(1, "working", 3);
+  me.act(observeAction((t += 1000), [first]));
+  me.act(observeAction((t += 61000), [{ ...first, turn: 4, status: "idle" }]));
+  for (const id of Object.keys(s.envelopes)) me.act({ t, type: "open", helperId: id });
+  me.act(observeAction((t += 1000), []));
+  const id = engine.helperId("t1", 1001);
+  const name = s.helpers[id].name;
+  for (let k = 0; k < K.albumKeep; k++) {
+    me.act(observeAction((t += 1000), [agent(100 + k)]));
+    me.act(observeAction((t += 1000), []));
+  }
+  assert.equal(s.helpers[id].compact, true);
+  assert.equal(s.helpers[id].stats.tasks, 1);
+  const units = s.stats.units.created;
+  me.act(observeAction((t += 1000), [{ ...first, turn: 9, status: "working" }]));
+  const h = s.helpers[id];
+  assert.equal(h.gone, false);
+  assert.equal(h.compact, undefined);
+  assert.equal(h.name, name);
+  assert.equal(h.stats.tasks, 1);
+  assert.equal(h.lastTurn, 9);
+  assert.equal(s.stats.units.created, units, "no reward for the turns it did while compacted");
+  me.act(observeAction((t += 61000), [{ ...first, turn: 10, status: "idle" }]));
+  assert.equal(h.stats.tasks, 2);
+});
+
+test("a compact record changed after compaction is saved whole; a malformed packed entry is 'shape' (R13)", () => {
+  const s = seeded(43);
+  const me = writer(s);
+  const K = engine.CONTENT.K;
+  let t = T0;
+  for (let k = 0; k < K.albumKeep + 3; k++) {
+    me.act(observeAction((t += 1000), [agent(100 + k)]));
+    me.act(observeAction((t += 1000), []));
+  }
+  const c = Object.values(s.helpers).filter((h) => h.compact);
+  assert.equal(c.length, 3);
+  me.act({ t: (t += 1000), type: "checkin", helperId: c[0].id }); // touches a field the packed form drops
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  assert.equal(Array.isArray(doc.state.helpers[c[0].id]), false);
+  assert.equal(Array.isArray(doc.state.helpers[c[1].id]), true);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(back.state.helpers[c[0].id].stats.checkIns, 1);
+  assert.equal(engine.serialize(back.state), text);
+  // a damaged packed entry with a matching check is a shape error, never a throw
+  for (const bad of [[], ["x"], [0, "1", 1, 1], [0, 1, 1, 1, 0, 0], ["", 1, 1, 1]]) {
+    const st = JSON.parse(JSON.stringify(doc.state));
+    st.helpers[c[1].id] = bad;
+    const body = JSON.stringify(st);
+    const forged = `{"format":"creaseworks-save","version":${engine.VERSION},"check":"${engine.fnv1a32(body)}","state":${body}}`;
+    assert.equal(engine.parseSave(forged).reason, "shape", JSON.stringify(bad));
+  }
+});

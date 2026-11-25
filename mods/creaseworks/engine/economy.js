@@ -29,6 +29,30 @@ export function crowd(n) {
   return n > 0 ? eff(n) / n : 1;
 }
 
+/**
+ * Hs0 from the working helpers' b_i (`bs`, summing to `sum`): marginal bench
+ * pace (§5.3). With the b_i sorted largest first, the k-th counts
+ * eff(k) − eff(k−1). That is crowd(n)·Σ b_i when every b_i is equal, and it
+ * never falls when a working agent joins (or rises when one stops working),
+ * whatever the warm, fledgling and thanks multipliers. Sorts `bs` in place.
+ */
+export function benchSum(bs, sum) {
+  const n = bs.length;
+  if (n <= K.knee) return sum; // eff(k) − eff(k−1) = 1 up to the knee
+  let same = true;
+  for (let i = 1; i < n && same; i++) same = bs[i] === bs[0];
+  if (same) return crowd(n) * sum;
+  bs.sort((a, b) => b - a);
+  let total = 0;
+  let prev = 0;
+  for (let k = 1; k <= n; k++) {
+    const e = eff(k);
+    total += (e - prev) * bs[k - 1];
+    prev = e;
+  }
+  return total;
+}
+
 /** Everything bought turned into the numbers the formulas use. */
 export function effects(state) {
   const b = state.bought;

@@ -139,7 +139,7 @@
               "type": "column",
               "hidden": true,
               "size": {
-                "px": 368
+                "weight": 0.66
               },
               "min": 280,
               "max": 900,
@@ -171,10 +171,9 @@
               "id": "cw-panel",
               "type": "block",
               "size": {
-                "px": 320
+                "weight": 0.39
               },
               "min": 64,
-              "max": 560,
               "radius": 10,
               "border": {
                 "width": 1,

@@ -112,31 +112,50 @@ const pause = (env) => (env && typeof env.sleep === "function" ? env.sleep(0) : 
 /**
  * replay(live, slot.pending) in slices (REPLAY_SLICE) with a task yield
  * between them. Actions dispatched during a yield join the end of the log and
- * are replayed too. Returns the engine's events, `null` when superseded, or
- * `"lost"` when the log was given up meanwhile (live.js PENDING_MAX).
+ * are replayed too. A log given up during a yield (live.js PENDING_MAX) is
+ * still replayed to its end from the array in hand, then the new log after
+ * it, so the result is whole. Returns the engine's events, `null` when
+ * superseded, or `"lost"` only when a whole log was given up unseen (two in
+ * one yield).
  */
 async function replayPending(live, slot, env, stale) {
   const ev = [];
-  const log = slot.pending;
+  let log = slot.pending;
+  let epoch = slot.logEpoch || 0;
   let cost = 0;
   let lastS = -Infinity;
-  for (let i = 0; i < log.length; i++) {
-    const a = log[i];
+  let i = 0;
+  for (;;) {
+    if (i >= log.length) {
+      if (slot.pending === log) break;
+      // The log was given up: everything in the old array is replayed; go on with the new one.
+      if ((slot.logEpoch || 0) - epoch > 1) return "lost";
+      epoch = slot.logEpoch || 0;
+      log = slot.pending;
+      i = 0;
+      while (i < log.length && log[i].s <= lastS) i++;
+      continue;
+    }
+    const a = log[i++];
     for (const e of apply(live, a)) ev.push(e);
     lastS = a.s;
     cost += 1 + (Array.isArray(a.helpers) ? a.helpers.length >> 3 : 0);
-    if (cost >= REPLAY_SLICE && i + 1 < log.length) {
+    if (cost >= REPLAY_SLICE && (i < log.length || slot.pending !== log)) {
       cost = 0;
       await pause(env);
       if (stale()) return null;
       if (env && typeof env.now === "function") slot.save.writingAt = env.now(); // progress
-      if (slot.pending !== log) return "lost";
-      // A coalesced observation may have left the log: resume after the last one replayed.
-      i = -1;
-      while (i + 1 < log.length && log[i + 1].s <= lastS) i++;
+      // A coalesced observation may have left the array: resume after the last one replayed.
+      i = 0;
+      while (i < log.length && log[i].s <= lastS) i++;
     }
   }
   return ev;
+}
+
+/** applied[writer] of `state` (0 when it holds none of that writer's actions). */
+function ownApplied(state, writer) {
+  return state && state.applied && Object.hasOwn(state.applied, writer) ? state.applied[writer] : 0;
 }
 
 /** Releases an abandoned save claim: status put right, a save made due at once. */
@@ -156,18 +175,20 @@ function dropClaim(slot, t, inflightToo = false) {
 
 /**
  * A copy's init adopts the slot (hot reload, A6). herdr cancels the old
- * generation's tasks without settling them, so a save claim made by a copy
- * this init took over (`gone`, live.js takeOver) or by an older code
- * generation is released, wherever that task stopped: the main write, the
- * backup rotation, a merge read, a Settings tool. True when the old main
- * write may have landed (`inflight`): the caller then runs resolveInflight.
+ * generation's tasks without settling them, so a save claim made by an older
+ * code generation (live.js codeGeneration: herdr evaluates the mod's modules
+ * again on every reload) is released, wherever that task stopped: the main
+ * write, the backup rotation, a merge read, a Settings tool. A claim made in
+ * this generation is kept even when its copy was taken over (a second panel
+ * opened, a panel closed and reopened): its task (owner: null) is still
+ * running and settles the claim itself; WRITE_STALL_MS covers the rest. True
+ * when an older main write may have landed (`inflight`): the caller then runs
+ * resolveInflight.
  */
-export function adopt(slot, t, gone = []) {
+export function adopt(slot, t) {
   const S = slot.save;
-  if (S.writing !== null && (S.writingGen !== codeGeneration() || (S.writingBy !== null && gone.indexOf(S.writingBy) >= 0))) {
-    dropClaim(slot, t);
-  }
-  return !!slot.inflight;
+  if (S.writing !== null && S.writingGen !== codeGeneration()) dropClaim(slot, t);
+  return !!slot.inflight && S.writing === null;
 }
 
 /**
@@ -204,6 +225,16 @@ async function readOrError(path) {
   } catch (e) {
     return { text: null, error: hostMessage(e) };
   }
+}
+
+/** The name of the kept-aside file (save.damaged-<n>.json) whose text is `text`, or null. */
+async function findKept(paths, text) {
+  if (typeof text !== "string") return null;
+  for (let n = DAMAGED_MAX; n >= 1; n--) {
+    const r = await readOrError(damagedPath(paths, n));
+    if (r.text === text) return baseName(damagedPath(paths, n));
+  }
+  return null;
 }
 
 /**
@@ -318,7 +349,11 @@ export async function load(slot, opts) {
     const r = rec.text !== null ? parseSave(rec.text) : null;
     const b = bak.text !== null ? parseSave(bak.text) : null;
     if (b) slot.bakState = b.ok ? "ok" : "damaged";
-    state = r && r.ok ? r.state : b && b.ok ? b.state : fresh();
+    // The newer of the two: a recovery file left from an earlier episode must
+    // not roll back the normally rotated backup (nothing retires it).
+    const rOk = r && r.ok ? r.state : null;
+    const bOk = b && b.ok ? b.state : null;
+    state = rOk && (!bOk || rOk.clock >= bOk.clock) ? rOk : bOk || fresh();
     S.unreadable = main.error;
     S.recoveryText = rec.error === null ? rec.text : null;
     notice = unreadableNotice(P, main.error, t0);
@@ -375,6 +410,8 @@ export async function load(slot, opts) {
   }
   slot.state = state;
   slot.pending = [];
+  slot.logObs = null;
+  S.ownApplied = ownApplied(state, slot.writerId);
   slot.inflight = null;
   S.writing = null;
   S.writingBy = null;
@@ -477,6 +514,23 @@ async function mergeFromDisk(slot, env, stale) {
     for (const k of Object.keys(live.applied)) {
       if (k !== slot.writerId && live.applied[k] > (Object.hasOwn(slot.state.applied, k) ? slot.state.applied[k] : 0)) foreign = true;
     }
+    // Actions this window already saved are missing: another window replaced
+    // the file (Reset, Restore, or a save it could not merge, which keeps the
+    // replaced file aside). Said, with the kept copy's name when it is found.
+    const had = Object.hasOwn(live.applied, slot.writerId) ? live.applied[slot.writerId] : 0;
+    if (had < (slot.save.ownApplied || 0)) {
+      const kept = await findKept(P, slot.baseText);
+      if (stale()) return { stop: true };
+      if (kept && slot.save.damaged.indexOf(kept) < 0) slot.save.damaged.push(kept);
+      slot.save.ownApplied = had;
+      setNotice(slot, "load", {
+        kind: "recovered",
+        text: kept
+          ? `Another window replaced the save, so this window's earlier progress left the game. It is kept in ${kept}.`
+          : "Another window replaced the save, so this window's earlier progress left the game. That window kept the old file aside.",
+        at: t,
+      });
+    }
     const ev = await replayPending(live, slot, env, stale);
     if (ev === null) return { stop: true };
     if (ev === "lost") return { ok: true, refunds: [], foreign: false }; // the log was given up: overwrite next
@@ -484,6 +538,7 @@ async function mergeFromDisk(slot, env, stale) {
     slot.state = live;
     slot.baseText = r.text;
     slot.save.baseOk = true;
+    slot.save.ownApplied = had;
     touch(slot);
     const refunds = [];
     for (const e of ev) if (e && e.kind === "ignored" && e.reason === "afford" && e.item) refunds.push(itemName(String(e.item)));
@@ -691,7 +746,8 @@ export async function cycle(slot, env) {
       const rev = slot.state.rev;
       const text = serialize(slot.state);
       const upto = slot.seq;
-      slot.inflight = { text, upto };
+      const own = ownApplied(slot.state, slot.writerId);
+      slot.inflight = { text, upto, own };
       try {
         await writeTextFile(P.save, text, slot.baseText);
       } catch (e) {
@@ -731,6 +787,7 @@ export async function cycle(slot, env) {
       slot.baseText = text;
       S.baseOk = true;
       S.confirmed = upto;
+      S.ownApplied = own;
       slot.pending = slot.pending.filter((a) => a.s > upto);
       S.status = "ok";
       S.savedAt = done;
@@ -782,8 +839,8 @@ export function expireNotices(slot, t) {
  */
 export async function resolveInflight(slot, env = null) {
   const inf = slot.inflight;
-  if (!inf) return;
   const S = slot.save;
+  if (!inf || S.writing !== null) return; // a live claim settles its own write
   const gen = claim(S, env);
   try {
     const r = await readOrError(slot.paths.save);
@@ -792,6 +849,7 @@ export async function resolveInflight(slot, env = null) {
       slot.baseText = inf.text;
       S.baseOk = true;
       S.confirmed = inf.upto;
+      if (typeof inf.own === "number") S.ownApplied = inf.own;
       slot.pending = slot.pending.filter((a) => a.s > inf.upto);
     }
     slot.inflight = null;
@@ -891,6 +949,8 @@ async function replaceGame(slot, env, make, reason) {
     S.baseOk = false;
     slot.state = next;
     slot.pending = [];
+    slot.logObs = null;
+    S.ownApplied = 0;
     slot.inflight = null;
     slot.readOnly = false;
     if (S.status === "readonly") S.status = "ok";
@@ -987,15 +1047,25 @@ export async function sharePath(slot, env, path) {
     slot.bakState = null;
     S.unreadable = null;
     S.recoveryText = null;
+    S.ownApplied = 0; // another file: none of this window's saves are in it yet
     if (parsed && parsed.ok) {
       const live = parsed.state;
       const ev = await replayPending(live, slot, env, stale);
       if (ev === null) return "stale";
-      advance(live, env.now(), slot.writerId);
-      slot.state = live;
-      slot.baseText = r.text;
-      S.baseOk = true;
-      if (ev === "lost") S.logLost = true;
+      if (ev === "lost") {
+        // This window's log could not be replayed onto that file (never seen in
+        // practice): its own game stays, and the first write keeps that file
+        // aside with a notice instead of merging (expecting "absent" makes the
+        // file there a CAS rejection; overwriteBase).
+        S.logLost = true;
+        slot.baseText = null;
+        S.baseOk = false;
+      } else {
+        advance(live, env.now(), slot.writerId);
+        slot.state = live;
+        slot.baseText = r.text;
+        S.baseOk = true;
+      }
     } else {
       slot.baseText = null; // absent: this window's game creates it
       S.baseOk = false;

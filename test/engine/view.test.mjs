@@ -107,7 +107,7 @@ test("fledglings are pips on their parent; a parentless fledgling gets its own t
   const all = tiles(vm);
   assert.deepEqual(all.map((x) => x.helperId).sort(), [id(1), id(4)].sort());
   const parent = all.find((x) => x.helperId === id(1));
-  assert.deepEqual(parent.pips, ["working", "blocked"]);
+  assert.deepEqual(parent.pips, ["blocked", "working"], "waiting fledglings first (r1-14)");
   assert.equal(all.find((x) => x.helperId === id(4)).kind, "kid");
   // Counts and marks are per tile: a blocked fledgling does not lift its parent (§5.2).
   assert.equal(vm.header.counts.needs, 0);
@@ -704,6 +704,28 @@ test("r1-03: Album rows are memoised and always equal a fresh build", () => {
   assert.deepEqual(v(s, t + 2000, { width: 100 }).helpers.album, [], "the rail");
 });
 
+test("r1-03: an agent status change (a new roster index) keeps the Album rows; changed records rebuild", () => {
+  const { s, me, t } = withAlbum(300);
+  const a = v(s, t + 1000).helpers.album;
+  // Every observe with a helper list rebuilds the helper index (rosterChanged).
+  me.act(observeAction(t + 1200, Array.from({ length: 34 }, (_, i) => agent(i, ["idle", "working", "done", "blocked"][i % 4], 0))));
+  assert.equal(v(s, t + 1300).helpers.album, a, "same Album: no sort, no format, the same array");
+  // A record changed in place (folds; leaving time, as compaction rounds it)
+  // is noticed at the next index rebuild.
+  const recs = Object.values(s.helpers).filter((h) => h.gone && h.kind === "pane");
+  recs[7].stats.folds += 1e6;
+  me.act(observeAction(t + 1400, Array.from({ length: 34 }, (_, i) => agent(i, "working", 0))));
+  const b = v(s, t + 1500).helpers.album;
+  assert.notEqual(b, a);
+  assert.deepEqual(b, v(engine.cloneState(s), t + 1500).helpers.album);
+  recs[3].missingSince -= 3 * 3600000;
+  me.act(observeAction(t + 1600, Array.from({ length: 34 }, (_, i) => agent(i, "idle", 0))));
+  const c = v(s, t + 1700).helpers.album;
+  assert.notEqual(c, b);
+  assert.deepEqual(c, v(engine.cloneState(s), t + 1700).helpers.album);
+  assert.equal(c[c.length - 1].helperId, recs[3].id, "re-sorted: it left longest ago");
+});
+
 test("r1-03: view() cost does not grow with the Album (2,500 helpers, warm median < 3 ms)", () => {
   const { s, t } = withAlbum(2500);
   assert.equal(Object.values(s.helpers).filter((h) => h.gone).length, 2500);
@@ -731,13 +753,31 @@ test("r1-14: a tile's fledglings carry their helper ids, in pip order, with a ne
   const vm = v(s, T0 + 60000);
   const parent = tiles(vm).find((x) => x.helperId === id(1, 1001));
   assert.equal(tiles(vm).length, 1, "fledglings with a present parent are pips, not tiles");
-  assert.deepEqual(parent.pips, ["working", "blocked"]);
+  assert.deepEqual(parent.pips, ["blocked", "working"]);
   assert.deepEqual(parent.kids.map((k) => [k.helperId, k.status, k.pane]), [
-    [engine.helperId("t20", 1020), "working", null],
     [engine.helperId("t21", 1021), "blocked", null],
+    [engine.helperId("t20", 1020), "working", null],
   ]);
-  assert.match(parent.kids[1].tooltip, /fledgling.*Needs you 1 m: click to open it$/);
-  assert.match(parent.kids[0].name, /^[\x20-\x7e]+$/);
+  assert.match(parent.kids[0].tooltip, /fledgling.*Needs you 1 m: click to open it$/);
+  assert.match(parent.kids[1].name, /^[\x20-\x7e]+$/);
+});
+
+test("r1-14: waiting fledglings come first in a tile's pips and kids, so the first 4 pips always include them", () => {
+  const s = seeded(5);
+  const me = writer(s, "wA");
+  me.act(observeAction(T0, [agent(1, "blocked"), kid(20, 1), kid(21, 1), kid(22, 1), kid(23, 1), kid(24, 1, "idle")]));
+  me.act(observeAction(T0 + 1000, [agent(1, "blocked"), kid(20, 1), kid(21, 1), kid(22, 1), kid(23, 1), kid(24, 1, "idle"), kid(25, 1, "blocked")]));
+  me.act(observeAction(T0 + 2000, [agent(1, "blocked"), kid(20, 1), kid(21, 1, "blocked"), kid(22, 1), kid(23, 1), kid(24, 1, "idle"), kid(25, 1, "blocked")]));
+  s.ui.hints.fold = true;
+  s.stats.hits = 10;
+  const parent = tiles(v(s, T0 + 60000)).find((x) => x.helperId === id(1, 1001));
+  assert.deepEqual(parent.pips.slice(0, 2), ["blocked", "blocked"]);
+  assert.deepEqual(parent.pips.slice(2).sort(), ["idle", "working", "working", "working"]);
+  assert.deepEqual(parent.kids.map((k) => k.status), parent.pips, "kids in pip order");
+  assert.deepEqual(parent.kids.slice(0, 2).map((k) => k.helperId), [
+    engine.helperId("t25", 1025), // waiting since +1 s: longest wait first
+    engine.helperId("t21", 1021),
+  ]);
 });
 
 test("r1-03: opts.album false (the Album folded) builds no rows; albumCount always counts", () => {

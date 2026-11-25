@@ -148,7 +148,7 @@ export const K = f({
   stormFromCraneMs: 15000, songMs: 60000, songCapMs: 120000,
   boatLo: 1800, boatSpread: 900, boatLifeMs: 20000, boatRp: 120, tailwindOpens: 3, tailwindMs: 10 * 60000,
   calmLife: 2,
-  helperFlat: 0.3, helperRw: 0.04, folkMult: 1.5, knee: 4, crowdExp: 0.15, // exponent †
+  helperFlat: 0.3, helperRw: 0.04, folkMult: 1.5, knee: 4, crowdExp: 0.07, // exponent †
   restFullMin: 30, restMax: 1, warmMs: 20 * 60000, kidBonus: 0.25, kidMax: 4,
   thanksMs: 5 * 60000, thanksWindowMs: 5 * 60000, thanksMult: 1.5,
   songMult: 3, chorusMult: 2,
@@ -160,6 +160,7 @@ export const K = f({
   busyMs: 30 * 60000,
   mailSorterMs: 10000, foxEveryMs: 10000, foxBankMult: 4, keeperHandMs: 60000, creaseHelperAt: 0.8, creaseHelperValue: 0.5,
   kidAlbumMs: 30 * 86400000, writerPruneMs: 30 * 86400000,
+  albumKeep: 200, kidAlbumKeep: 200, // R13: full Album records kept; older ones are compacted / folded
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,
   noticesMax: 12, noteLifeMs: 60000,

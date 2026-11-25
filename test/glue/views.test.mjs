@@ -9,7 +9,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runView, validateViews, entryForBlock } from "../../tools/shots/shoot.mjs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { runView, validateViews, entryForBlock, viewDocument, launchBrowser } from "../../tools/shots/shoot.mjs";
 import VIEWS, { windowScenario } from "../../mods/creaseworks/glue/views.js";
 import Creaseworks from "../../mods/creaseworks/main.js";
 import { dropSlot } from "../../mods/creaseworks/glue/live.js";
@@ -90,7 +93,9 @@ const CHECKS = {
   album: (r) => r.vm.helpers.album.length === 9,
   "string-locked": (r) => r.vm.string.can === false && r.vm.string.cranes > 0,
   "string-ready": (r) => r.vm.string.can === true,
-  garlands: (r) => r.vm.string.garlands.length >= 3,
+  // r1-29: several sources per garland (helpers, your hands, workshops), not one "everyone else" bar.
+  garlands: (r) => r.vm.string.garlands.length >= 3 &&
+    r.vm.string.garlands.every((g) => g.stripes.filter((st) => st[1] > 0).length >= 5 && g.stripes.some((st) => st[0] === "hands" && st[1] > 0)),
   settings: (r) => r.vm.settings.notify.master === true,
   away: (r) => r.vm.away && r.vm.away.kind === "away",
   busy: (r) => r.vm.away && r.vm.away.kind === "busy",
@@ -152,4 +157,58 @@ test("whole windows run every game block as copies of one window: expanded, fold
     "panel folded to the rail": { panel: "rail", mini: true },
     "panel hidden": { panel: "none", mini: true },
   });
+});
+
+// r1-29: a shot must show what it is named for. Laid out by chromium (as the rig
+// does), the garlands view's "one per wish" stripes sit inside the scrolling
+// content area, above the footer, in both themes and at zoom 1.5.
+let browser = null;
+let noBrowser = false;
+try {
+  browser = await launchBrowser();
+} catch (error) {
+  noBrowser = `chromium cannot launch: ${String(error.message).split("\n")[0]}`;
+}
+test.after(async () => {
+  if (browser) await browser.close();
+});
+
+test("the garlands shot shows every garland stripe above the fold", { skip: noBrowser }, async () => {
+  const entry = VIEWS.find((v) => v.name === "garlands");
+  const dir = mkdtempSync(join(tmpdir(), "garlands-"));
+  try {
+    for (const zoom of [1, 1.5]) {
+      for (const themeName of ["graphite", "paper"]) {
+        const result = await runView(Creaseworks, entry, themeName, { mod: "creaseworks", zoom });
+        assert.deepEqual(result.errors, []);
+        const file = join(dir, `${themeName}-${zoom}.html`);
+        writeFileSync(file, viewDocument(result, entry, []));
+        const page = await browser.newPage({ viewport: { width: entry.size.width * zoom, height: entry.size.height * zoom } });
+        try {
+          await page.goto(pathToFileURL(file).href);
+          const box = await page.evaluate(() => {
+            const at = (id) => {
+              const e = document.querySelector(`[data-id="${id}"]`);
+              return e ? e.getBoundingClientRect().toJSON() : null;
+            };
+            const stripes = [...document.querySelectorAll('[data-id^="cw-string-g"]')].filter((e) => /^cw-string-g\d+$/.test(e.dataset.id));
+            return { content: at("cw-content"), garlands: at("cw-string-garlands"), stripes: stripes.map((e) => e.getBoundingClientRect().toJSON()) };
+          });
+          const at = `${themeName} zoom ${zoom}`;
+          assert.ok(box.content && box.garlands, `${at}: the String tab and its garlands render`);
+          assert.ok(box.stripes.length >= 3, `${at}: ${box.stripes.length} garlands`);
+          const parts = await page.evaluate(() => document.querySelectorAll('[data-id^="cw-string-g"][data-id*="-s"]').length);
+          assert.ok(parts >= 5 * box.stripes.length, `${at}: ${parts} coloured parts`);
+          for (const r of [box.garlands, ...box.stripes]) {
+            assert.ok(r.top >= box.content.top - 0.5 && r.bottom <= box.content.bottom + 0.5, `${at}: ${JSON.stringify(r)} outside the content area ${JSON.stringify(box.content)}`);
+          }
+        } finally {
+          await page.close();
+        }
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    dropSlot();
+  }
 });

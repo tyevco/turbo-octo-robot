@@ -4,8 +4,10 @@
 // whose roster keeps changing; then the disk recovers and another window's
 // save is found on it. The merge replays the whole backlog onto that file in
 // cx.sleep(0) slices, so no task step reaches herdr's 500 ms budget, nothing
-// is lost or counted twice, and saving goes on. The roster observations in
-// the unconfirmed log coalesce, so it stays small.
+// is lost or counted twice (every finished task and reward unit of the live
+// game is in the merged one), and saving goes on. Observations that change
+// only titles coalesce in the unconfirmed log; every one that moves a turn
+// counter stays (the engine pays one finish per observation).
 //
 // Run with: npm run test:qjs (about 30 s).
 
@@ -23,13 +25,13 @@ const SAVE = `${HOME}/data/creaseworks/save.json`;
 const SLOT = "globalThis[Symbol.for('creaseworks/live')]";
 const STATUSES = ["working", "idle", "blocked", "done", "working", "idle", "working"];
 
-/** 30 pane agents; `turn` bumps their turn counters and shifts their statuses (a roster change). */
-function roster(n, turn = 0) {
+/** 30 pane agents; `turn` bumps their turn counters and shifts their statuses (a roster change); `tag` changes only titles. */
+function roster(n, turn = 0, tag = 0) {
   const agents = [];
   const terminals = [];
   for (let i = 1; i <= n; i++) {
     const status = STATUSES[(i + turn) % STATUSES.length];
-    agents.push({ address: `t${i}`, pane: `p${i}`, status, title: `agent ${i}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
+    agents.push({ address: `t${i}`, pane: `p${i}`, status, title: `agent ${i} · ${tag}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
     terminals.push({ address: `t${i}`, status: status === "done" ? "idle" : status, turn, created_ms: 1000 + i * 997 });
   }
   return { agents, terminals };
@@ -56,12 +58,14 @@ test("a 15-minute backlog of failed saves merges within the 500 ms task budget",
     let maxStep = 0;
     let maxPending = 0;
     let turn = 0;
+    let titles = 0;
     for (let s = 0; s < 900; s++) {
       for (let k = 0; k < 5; k++) host.fire("cw-sheet", "on_mouse_down", { local_position: { x: 56, y: 56 } });
-      if (s % 20 === 0) {
-        // the roster changes every 20 s: an observation of all 30 agents each time
-        turn += 1;
-        const r = roster(30, turn);
+      if (s % 5 === 0) {
+        // the roster changes every 20 s (every agent finishes a turn); in between titles change every 5 s
+        if (s % 20 === 0) turn += 1;
+        else titles += 1;
+        const r = roster(30, turn, s);
         host.evalInVm(`globalThis.__herdr.setAgents(${JSON.stringify(r.agents)}); globalThis.__herdr.setTerminals(${JSON.stringify(r.terminals)})`);
       }
       const r = host.advance(1000);
@@ -73,10 +77,14 @@ test("a 15-minute backlog of failed saves merges within the 500 ms task budget",
     console.log(`# backlog: ${pending} unconfirmed actions (${rosters} roster observations), status ${host.evalInVm(`${SLOT}.save.status`)}, max step ${maxStep.toFixed(1)} ms`);
     assert.equal(host.evalInVm(`${SLOT}.save.status`), "error", "the outage is shown");
     assert.ok(pending >= 4500, "every click waits for a save");
-    // 45 roster changes: those before the log reached COALESCE_AT (512) stay, later ones replace each other.
-    assert.ok(turn === 45 && rosters <= 8, `roster observations coalesce (${rosters} of ${turn})`);
+    // 45 turn changes all stay; of the 135 title-only changes about one per 20 s stays.
+    assert.equal(turn, 45);
+    assert.ok(rosters >= turn && rosters <= 2 * turn + 25, `title-only observations coalesce, turn changes stay (${rosters} of ${turn + titles + 1})`);
     const seq = host.evalInVm(`${SLOT}.seq`);
     const writer = host.evalInVm(`${SLOT}.writerId`);
+    const rewards = (st) => JSON.stringify({ tasks: st.stats.tasks, units: st.stats.units });
+    const live = host.evalInVm(`JSON.stringify({ tasks: ${SLOT}.state.stats.tasks, units: ${SLOT}.state.stats.units })`);
+    assert.ok(JSON.parse(live).tasks >= 30 * 40, `the agents finished tasks (${live})`);
 
     // The disk recovers, and another window's save (a different text) is on it.
     host.evalInVm("globalThis.__herdr.failQueue.length = 0");
@@ -96,7 +104,9 @@ test("a 15-minute backlog of failed saves merges within the 500 ms task budget",
     assert.equal(host.evalInVm(`${SLOT}.pending.length`), 0);
     const disk = JSON.parse(host.readFile(SAVE));
     assert.ok(disk.state.applied[writer] >= seq, "the whole backlog reached the disk");
-    assert.ok(maxPending <= 4600, `bounded log (${maxPending})`);
+    assert.equal(rewards(disk.state), live, "every finished task and reward unit of the live game is in the merged save");
+    assert.equal(host.evalInVm(`JSON.stringify({ tasks: ${SLOT}.state.stats.tasks, units: ${SLOT}.state.stats.units })`), live, "and in memory: no rollback");
+    assert.ok(maxPending <= 4500 + 2 * turn + 25, `bounded log (${maxPending})`);
   } finally {
     host.dispose();
   }

@@ -94,14 +94,18 @@ test("§6 shares: the four buckets cover every income source the engine credits,
     assert.ok(b, row.label);
   }
   assert.ok(bal.dayShares.length >= 9);
+  // every profile that clicks has a §6.2 row (P2 never clicks; P12 equals P1): P9 has its own floor
+  const rowed = new Set(bal.dayShares.map((r) => r.id));
+  for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
+  assert.deepEqual(bal.dayShares.find((r) => r.id === "P9").mins, [0.005, 0.005, 0.02]);
   assert.ok(bal.sessions.p1Min > bal.sessions.handsMin);
 });
 
 test("§7 invariant numbers parse", () => {
   const I = bal.invariants;
   assert.deepEqual(
-    [I.cadenceP1Min, I.cadenceHandsMin, I.cadenceP2Hours, I.awayF, I.saveKiB, I.albumExtra, I.twoWindowRel, I.calmRel, I.firstWishGain, I.deadWallHours],
-    [10, 15, 3, 0.45, 256, 500, 0.01, 0.03, 10, 24],
+    [I.cadenceP1Min, I.cadenceHandsMin, I.cadenceP2Hours, I.awayF, I.saveKiB, I.albumExtra, I.churnPerDay, I.churnKids, I.churnKiB, I.twoWindowRel, I.calmRel, I.firstWishGain, I.deadWallHours],
+    [10, 15, 3, 0.45, 256, 500, 20, 3, 512, 0.01, 0.03, 10, 24],
   );
 });
 

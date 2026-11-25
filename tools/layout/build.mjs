@@ -6,11 +6,20 @@
 //
 // Input: tools/layout/main.json, a byte-identical copy of herdr-app 0.1.18
 // `defaults/layouts/main.json` (Apache-2.0). Every node and root field of it is
-// kept; the build adds exactly:
+// kept; the build adds and changes exactly:
 //   root      "preview": mods/<mod>/art/layout-preview.png (travels with the mod folder)
-//   main      "min": 360 (a drag never squeezes the terminals below 360 px)
-//   work-body last child "cw-panel": the game, 320 px, folds to a 64 px rail
+//   main      "min": 360 (neither a drag nor a narrow window squeezes the terminals below 360 px)
+//   panel     (herdr's Files/Changes column) "size": {"weight": 0.66} instead of {"px": 368}
+//   work-body last child "cw-panel": the game, {"weight": 0.39}, min 64 (folds to a 64 px rail)
 //   work      "cw-ribbon" (30 px) between work-body and status
+// Why weights (ARCHITECTURE B15): herdr makes a {px} node flex_none, and min/max
+// only add min_w/max_w (src/window.rs sized()), so a {px} node never gives way
+// and a narrow window or zoom 1.5 pushes the last node of the row off-screen.
+// Weight nodes shrink to their min first: main keeps 360, Files 280, the game
+// 64. No max on cw-panel: herdr keeps grow factors normalised after a node
+// freezes at its max, so a capped weight node leaves the rest of its share
+// empty (src/window/pane_size.rs shares()). 0.39 gives the game 322 px and Files
+// 367 px at 1440 x 900, close to the shipped 368 and the designed 320.
 // Field names are src/layout.rs's; tools/layout/schema.mjs checks the result.
 // <mod> and <Name> come from tools/game.json.
 
@@ -59,11 +68,16 @@ function need(root, id) {
   return n;
 }
 
+/** The game panel's weight beside main (weight 1): 322 px at 1440 x 900 (glue/commands.js DEFAULT_PANEL_WEIGHT). */
+export const PANEL_WEIGHT = 0.39;
+/** herdr's Files/Changes column as a weight: 367 px at 1440 x 900 with the game panel open (shipped: 368 px). */
+export const FILES_WEIGHT = 0.66;
+
 /** The game's two blocks (DESIGN §2.1, §2.5). */
 export function gameNodes(mod) {
   return {
     panel: {
-      id: "cw-panel", type: "block", size: { px: 320 }, min: 64, max: 560,
+      id: "cw-panel", type: "block", size: { weight: PANEL_WEIGHT }, min: 64,
       radius: 10, border: { width: 1, color: "border" }, background: "chrome",
       content: { mod, props: { role: "panel" } },
     },
@@ -92,6 +106,13 @@ export function buildLayout(main, { mod }) {
   const mainIndex = workBody.children.indexOf(mainNode);
   const { id, type, ...rest } = mainNode;
   workBody.children[mainIndex] = { id, type, min: 360, ...rest };
+
+  // herdr's Files/Changes column shrinks by weight (to its own min 280) instead of
+  // pushing the game panel off-screen; every other field of it is kept.
+  const files = need(root, "panel");
+  if (!workBody.children.includes(files)) throw new Error("main.json changed shape: panel is no longer in work-body");
+  if (!files.size || typeof files.size.px !== "number") throw new Error("main.json changed shape: panel is no longer {px}-sized");
+  files.size = { weight: FILES_WEIGHT };
 
   const { panel, ribbon } = gameNodes(mod);
   workBody.children.push(panel);

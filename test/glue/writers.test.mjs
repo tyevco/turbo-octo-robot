@@ -172,32 +172,169 @@ test("r1-05: a read-only game records no unconfirmed actions", async () => {
   assert.equal(A.seq, 500, "actions still apply to the live game");
 });
 
-test("r1-05: roster observations coalesce past COALESCE_AT; past PENDING_MAX the log is given up", async () => {
+/** The agent rewards of a state: finished tasks, reward units, envelopes on the mat. */
+const rewards = (st) => ({ tasks: st.stats.tasks, units: { ...st.stats.units }, envelopes: Object.keys(st.envelopes).length });
+
+/** The live game of `slot` moved to `now` (what a merge onto an unchanged file must give). */
+function liveAt(slot, now) {
+  const st = engine.parseSave(engine.serialize(slot.state)).state;
+  engine.advance(st, now, slot.writerId);
+  return st;
+}
+
+/** Another writer (wB) adds one click to the file on disk. */
+function otherWriterSaves(ctl, t) {
+  const other = engine.parseSave(ctl.readFile(SAVE)).state;
+  engine.apply(other, { w: "wB", s: 1, t, type: "click", target: "sheet" });
+  const text = engine.serialize(other);
+  ctl.externalWrite(SAVE, text);
+  return text;
+}
+
+test("r1-05: turn counters are never coalesced: a merge after a long backlog keeps every finished task", async () => {
+  // engine/helpers.js observe pays at most one finish per observation, so an
+  // observation that moves a turn counter must stay in the log.
   w = win();
   w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) })));
   const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
   const t = Date.now();
-  for (let i = 0; i < COALESCE_AT; i++) click(A, t + i * 100);
-  for (let k = 0; k < 50; k++) observe(A, t + 10000 + k * 1000, k);
+  observe(A, t + 100, 0); // the observation that introduces the agent
+  for (let i = 0; i < COALESCE_AT; i++) click(A, t + 1000 + i * 100);
+  for (let k = 1; k <= 20; k++) observe(A, t + 60000 + k * 120000, k);
   const rosters = A.pending.filter((a) => a.type === "observe" && Array.isArray(a.helpers));
-  assert.equal(rosters.length, 1, "one roster observation kept");
-  assert.equal(rosters[0].helpers[0].turn, 49, "the latest one (its turn counter carries every finish)");
+  assert.equal(rosters.length, 21, "every observation that moves a turn counter (or adds the agent) stays");
+  const end = t + 60000 + 21 * 120000;
+  const want = rewards(liveAt(A, end));
+  assert.equal(want.tasks, 20);
+  assert.ok(want.units.created > 0 && want.envelopes > 0, JSON.stringify(want));
+  otherWriterSaves(w.ctl, t + 500);
+  w.ctl.setNow(end);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
+  const disk = parsed(w.ctl).state;
+  assert.equal(disk.applied.wA, A.seq, "the whole backlog reached the disk");
+  assert.equal(disk.applied.wB, 1, "and the other writer's click");
+  assert.deepEqual(rewards(disk), want, "every finished task, reward unit and envelope on disk");
+  assert.deepEqual(rewards(A.state), want, "and in memory: no rollback");
+});
+
+test("r1-05: an observation that changes nothing the engine keeps coalesces; status changes stay", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  const look = (tt, turn, status, title) =>
+    dispatch(A, { type: "observe", helpers: obs(turn, status).map((o) => ({ ...o, title })), visible: true, active: true, matShown: true, day: localDay(t) }, tt);
+  look(t + 100, 0, "working", "start");
+  for (let i = 0; i < COALESCE_AT; i++) click(A, t + 1000 + i * 100);
+  // 50 title changes, then a turn bump, a status change and 50 more title changes
+  for (let k = 0; k < 50; k++) look(t + 60000 + k * 1000, 0, "working", `title ${k}`);
+  look(t + 120000, 1, "working", "done one");
+  look(t + 121000, 1, "blocked", "asks");
+  for (let k = 0; k < 50; k++) look(t + 130000 + k * 1000, 1, "blocked", `asks ${k}`);
+  const rosters = A.pending.filter((a) => a.type === "observe" && Array.isArray(a.helpers));
+  assert.ok(rosters.length <= 7, `title-only observations coalesce (${rosters.length} of 103 kept)`);
+  assert.deepEqual(rosters.map((a) => `${a.helpers[0].turn}:${a.helpers[0].status}`).filter((x, i, xs) => xs.indexOf(x) === i), ["0:working", "1:working", "1:blocked"], "every turn and status change kept");
+  assert.equal(rosters[rosters.length - 1].helpers[0].title, "asks 49", "the latest observation is kept");
   assert.ok(A.pending.every((a, i) => i === 0 || a.s > A.pending[i - 1].s), "still in order");
-  for (let i = A.pending.length; i <= PENDING_MAX; i++) click(A, t + 100000 + i * 100);
+  const end = t + 200000;
+  const live = liveAt(A, end);
+  otherWriterSaves(w.ctl, t + 500);
+  w.ctl.setNow(end);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
+  const disk = parsed(w.ctl).state;
+  assert.deepEqual(rewards(disk), rewards(live));
+  const h = Object.values(disk.helpers)[0];
+  assert.equal(h.status, "blocked");
+  assert.equal(h.title, "asks 49");
+  assert.equal(h.joined, Object.values(live.helpers)[0].joined, "the observation that added the agent is kept");
+});
+
+test("r1-05: past PENDING_MAX the log is given up; the other window is told its saved progress was replaced", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const B = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wB");
+  const t = Date.now();
+  for (let i = 0; i <= PENDING_MAX; i++) click(A, t + i * 10);
   assert.ok(A.pending.length < COALESCE_AT, `given up (${A.pending.length})`);
   assert.equal(A.save.logLost, true);
-  // Another writer saved meanwhile: its file is kept aside (never merged against a lost log) and this game is written.
-  const other = engine.parseSave(w.ctl.readFile(SAVE)).state;
-  engine.apply(other, { w: "wB", s: 1, t: t + 500, type: "click", target: "sheet" });
-  const otherText = engine.serialize(other);
-  w.ctl.externalWrite(SAVE, otherText);
-  w.ctl.setNow(t + 2200000);
+  // B saved meanwhile: its file is kept aside (never merged against a lost log) and A's game is written.
+  for (let i = 1; i <= 3; i++) click(B, t + i * 300);
+  w.ctl.setNow(t + 210000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(B, env)), true);
+  const bText = w.ctl.readFile(SAVE);
+  w.ctl.setNow(t + 220000);
   assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
   assert.equal(parsed(w.ctl).state.applied.wA, A.seq, "this window's game on disk");
-  assert.equal(w.ctl.readFile(`${SAVE.replace(/\.json$/, "")}.damaged-1.json`), otherText, "the other writer's file kept aside");
+  assert.equal(w.ctl.readFile(`${SAVE.replace(/\.json$/, "")}.damaged-1.json`), bText, "the other writer's file kept aside");
   assert.equal(A.notice.kind, "recovered");
   assert.match(A.notice.text, /kept aside as save\.damaged-1\.json/);
   assert.equal(A.save.logLost, false);
+  // B's next save merges onto A's file: its saved clicks left the game, and B says where they are.
+  click(B, t + 230000);
+  w.ctl.setNow(t + 231000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(B, env)), true);
+  assert.equal(B.notice.kind, "recovered");
+  assert.match(B.notice.text, /Another window replaced the save.*kept in save\.damaged-1\.json/);
+  assert.ok(B.save.damaged.includes("save.damaged-1.json"), "listed in Details");
+  // Shown once: later merges are ordinary.
+  store.dismiss(B, "recovered");
+  click(A, t + 240000);
+  w.ctl.setNow(t + 241000);
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  click(B, t + 250000);
+  w.ctl.setNow(t + 251000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(B, env)), true);
+  assert.notEqual(B.notice && B.notice.kind, "recovered");
+});
+
+test("r1-05: a Reset in another window is not a silent loss either", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 4, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const B = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wB");
+  const t = Date.now();
+  for (let i = 1; i <= 3; i++) click(B, t + i * 300);
+  w.ctl.setNow(t + 5000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(B, env)), true);
+  const flashes = [];
+  const envA = { now: () => Date.now(), seed: () => 7, flash: (x) => flashes.push(x) };
+  assert.equal(await hostWork(w.ctl, () => store.resetGame(A, envA)), "ok");
+  assert.match(flashes[0], /Started a new game\. The old save was kept as save\.damaged-1\.json/);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, env)), true);
+  click(B, t + 9000);
+  w.ctl.setNow(t + 10000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(B, env)), true);
+  assert.match(B.notice.text, /kept in save\.damaged-1\.json/);
+  assert.equal(parsed(w.ctl).state.stats.hits, 1, "the reset holds; B's newer click joins it");
+});
+
+test("r1-05: a log given up while a merge yields is still replayed whole", async () => {
+  w = win();
+  w.ctl.externalWrite(SAVE, engine.serialize(engine.newGame({ seed: 5, now: Date.now(), day: localDay(Date.now()) })));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const t = Date.now();
+  const N = 2000;
+  for (let i = 0; i < N; i++) click(A, t + i * 10);
+  otherWriterSaves(w.ctl, t + 5);
+  let sleeps = 0;
+  const sliced = {
+    now: () => Date.now(),
+    sleep: () => {
+      sleeps += 1;
+      // during the first yield the log grows past PENDING_MAX and is given up
+      if (sleeps === 1) for (let i = 0; i <= PENDING_MAX - N + 5; i++) click(A, t + (N + i) * 10);
+      return Promise.resolve();
+    },
+  };
+  w.ctl.setNow(t + 300000);
+  assert.equal(await hostWork(w.ctl, () => store.cycle(A, sliced)), true);
+  assert.ok(sleeps > 1);
+  const disk = parsed(w.ctl).state;
+  assert.equal(disk.applied.wA, A.seq, "every action of this window");
+  assert.equal(disk.applied.wB, 1, "merged, not overwritten: the other writer's click stays");
+  assert.equal(A.save.logLost, false);
+  assert.equal(w.ctl.readFile(`${SAVE.replace(/\.json$/, "")}.damaged-1.json`), null, "nothing kept aside");
 });
 
 test("r1-05: a long backlog merges in slices with a yield between them, nothing lost or doubled", async () => {

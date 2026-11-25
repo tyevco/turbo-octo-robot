@@ -3,7 +3,9 @@
 // middle: one mark per helper, never capped (density A chips, B two-row pips,
 // C tallies beyond B), right block 100 (envelope count, mini Sheet while the
 // panel is folded or hidden, fold toggle). A save chip, the "Welcome back"
-// pill or the narrow-window hint take the first place of the middle area.
+// pill or the narrow-window hint take the first place of the middle area;
+// their reserved width is subtracted before the density level is chosen
+// (`ribbonLayout`), so a lead chip never pushes a mark past the edge.
 // The ribbon draws no loops (the view's budget gives it none).
 
 import { div, svg } from "gpui-kit";

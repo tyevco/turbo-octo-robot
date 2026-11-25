@@ -398,6 +398,22 @@ test("r1-09: an unreadable save.json: progress goes to save.recovery.json, the b
   assert.equal(parsed(w.ctl).state.stats.hits, 5);
   assert.equal(w.slot.notice, null);
   assert.equal(w.slot.save.status, "ok");
+  // Later play rotates the backup past the left-over recovery file.
+  await w.hits(v2, 3);
+  await w.advance(16000);
+  await w.hits(v2, 2);
+  await w.advance(6 * 60000);
+  const bak = parsed(w.ctl, BAK).state;
+  assert.ok(bak.stats.hits > 4 && bak.clock > parsed(w.ctl, RECOVERY).state.clock, `backup rotated (${bak.stats.hits} hits)`);
+  // save.json turns unreadable again: the newer backup is loaded, not the stale recovery file.
+  const later = Object.fromEntries([...w.ctl.files].filter(([p]) => p.startsWith(DIR)));
+  later[SAVE] = huge;
+  w.dispose();
+  w = win({ files: later });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.state.stats.hits, bak.stats.hits, "no rollback to the old recovery file");
+  assert.equal(w.slot.notice.kind, "error");
 });
 
 test("r1-09: save.json replaced by a readable file while unreadable: it is kept aside, not lost", async () => {

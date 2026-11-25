@@ -202,8 +202,74 @@ test("r1-33: a clock that moves back and then returns credits nothing for time a
   const r = engine.rates(s);
   assert.ok(s.lifetime - L <= (r.Rw + r.Hs) * 1.001 + 1e-9, `at most the one live second (${s.lifetime - L})`);
   assert.equal(s.clock, T0 + 31000);
-  assert.equal(s.notices.some((n) => n.kind === "clock"), false, "the clock notice goes once the clock is back");
+  assert.equal(s.notices.filter((n) => n.kind === "clock").length, 1, "the clock notice stays until dismissed");
   assert.equal(s.away.highWater, T0 + 31000);
+});
+
+test("r1-33: a clock wrong forward, then corrected, costs at most one absence, and never silently", () => {
+  const { s, me } = setup();
+  const D = 24 * H;
+  engine.advance(s, T0 + 30000);
+  engine.advance(s, T0 + 30 * D); // a bogus jump (credited: it cannot be told from a real one)
+  engine.advance(s, T0 + 31000); // corrected: rebase
+  s.notices.length = 0; // the player dismisses the clock notice
+  let t = T0 + 31000;
+  const L0 = s.lifetime;
+  for (let i = 0; i < 60; i++) engine.advance(s, (t += 1000));
+  assert.ok(s.lifetime > L0, "live play below the mark is credited");
+  const nights = [];
+  for (let k = 0; k < 3; k++) {
+    if (s.away.pot) me.act({ t, type: "collect" });
+    s.notices.length = 0;
+    // 6 min of live play between nights, so each night gets its own 8 h cap (§10.1).
+    for (let i = 0; i < 360; i++) engine.advance(s, (t += 1000));
+    const ev = engine.advance(s, (t += 8 * H));
+    nights.push({ away: ev.find((e) => e.kind === "away"), clock: s.notices.some((n) => n.kind === "clock") });
+  }
+  assert.equal(nights[0].away, undefined, "the first absence pays back the stretch already counted");
+  assert.equal(nights[0].clock, true, "…and says so: the clock notice is raised again");
+  for (const k of [1, 2]) {
+    assert.equal(nights[k].away && nights[k].away.seconds, 8 * 3600, `night ${k} is an ordinary away segment`);
+    assert.equal(nights[k].clock, false, `night ${k}: no clock notice`);
+  }
+  assert.equal(s.away.highWater, s.clock);
+});
+
+test("r1-33: during a clock-back, a hidden window's 5 s ticks (even late) are credited", () => {
+  const s = seeded(2);
+  s.owned["paper-stack"] = 30;
+  engine.advance(s, T0 + 30000);
+  engine.advance(s, T0 + 30000 - 600000);
+  const r = engine.rates(s);
+  let t = T0 + 30000 - 600000;
+  const L = s.lifetime;
+  for (let i = 0; i < 60; i++) engine.advance(s, (t += 5010));
+  close(s.lifetime - L, r.Rw * 60 * 5.01);
+  assert.equal(s.away.highWater, T0 + 30000 + 60 * 5010, "the mark moved on with the credited ticks");
+});
+
+test("r1-33: a partial clock restore cannot be farmed either", () => {
+  const { s } = setup();
+  let t = T0 + 30000;
+  engine.advance(s, t);
+  for (let k = 0; k < 3; k++) {
+    engine.advance(s, t - 8 * H);
+    const ev = engine.advance(s, t - 5 * 60000); // put right only to 5 min short of the mark
+    assert.equal(ev.some((e) => e.kind === "away"), false, `round ${k}`);
+    assert.equal(s.away.pot, null, `round ${k}`);
+    t -= 5 * 60000;
+  }
+});
+
+test("r1-33: the clock put right after the notice was dismissed raises it again", () => {
+  const { s, me } = setup();
+  engine.advance(s, T0 + 30000);
+  engine.advance(s, T0 + 30000 - 10 * 60000);
+  me.act({ t: T0 + 30000 - 10 * 60000, type: "dismiss", notice: "clock" });
+  assert.equal(s.notices.some((n) => n.kind === "clock"), false);
+  const ev = engine.advance(s, T0 + 31000);
+  assert.equal(ev.some((e) => e.kind === "away"), false);
+  assert.equal(s.notices.filter((n) => n.kind === "clock").length, 1);
 });
 
 test("r1-33: an 8 h clock-back round trip cannot be farmed for a fresh away cap", () => {

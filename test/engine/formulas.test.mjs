@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, agent, observeAction, close, T0 } from "./_util.mjs";
+import { benchSum, eff, crowd } from "../../mods/creaseworks/engine/economy.js";
 
 const { CONTENT } = engine;
 
@@ -90,11 +91,11 @@ test("upgrade costs match §7.3", () => {
     [["mail-sorter", 25000], ["thrifty-fox", 500000], ["boost-keeper", 2.5e6], ["crease-helper", 5e6]]);
 });
 
-test("eff(n): 4.44 / 5.41 / 6.06, strictly increasing; adding an agent never lowers Hs0", () => {
+test("eff(n): 4.20 / 4.61 / 4.86, strictly increasing; adding an agent never lowers Hs0", () => {
   assert.equal(engine.eff(4), 4);
-  assert.equal(engine.eff(8).toFixed(2), "4.44");
-  assert.equal(engine.eff(30).toFixed(2), "5.41");
-  assert.equal(engine.eff(64).toFixed(2), "6.06");
+  assert.equal(engine.eff(8).toFixed(2), "4.20");
+  assert.equal(engine.eff(30).toFixed(2), "4.61");
+  assert.equal(engine.eff(64).toFixed(2), "4.86");
   for (let n = 0; n < 200; n++) assert.ok(engine.eff(n + 1) > engine.eff(n), `eff(${n + 1})`);
   let prev = 0;
   for (let n = 1; n <= 64; n++) {
@@ -107,6 +108,32 @@ test("eff(n): 4.44 / 5.41 / 6.06, strictly increasing; adding an agent never low
     close(Hs0, engine.eff(n) * 0.3);
     assert.ok(Hs0 > prev);
     prev = Hs0;
+  }
+});
+
+test("marginal bench pace: Hs0 = Σ (eff(k) − eff(k−1)) · b_(k), largest b first (§5.3)", () => {
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  // up to the knee every helper counts in full; equal helpers give crowd(n)·Σb
+  assert.equal(benchSum([4.5, 1, 1, 1], 7.5), 7.5);
+  close(benchSum([2, 2, 2, 2, 2, 2], 12), crowd(6) * 12, 1e-15);
+  // the old crowd(n)·Σb let a fifth fresh helper lower a warm bench: 0.957 · 8.5 < 7.5
+  assert.ok(crowd(5) * 8.5 < 7.5);
+  close(benchSum([1, 1, 4.5, 1, 1], 8.5), 7.5 + (eff(5) - 4) * 1, 1e-12);
+  // order of the input does not matter; the largest b take the largest weights
+  const b = [1, 3, 1.25, 2, 1, 1.5, 1, 1, 4.5];
+  const want = [...b].sort((x, y) => y - x).reduce((acc, x, k) => acc + (eff(k + 1) - eff(k)) * x, 0);
+  close(benchSum([...b], sum(b)), want, 1e-12);
+  close(benchSum([...b].reverse(), sum(b)), want, 1e-12);
+  // monotone: adding any b ≥ 0 never lowers it, removing one never raises it
+  const rnd = (() => { let x = 7; return () => ((x = (x * 1103515245 + 12345) >>> 0) / 4294967296); })();
+  for (let trial = 0; trial < 300; trial++) {
+    const bs = Array.from({ length: 1 + Math.floor(rnd() * 40) }, () => 0.3 * (1 + 3.5 * rnd()) * (rnd() < 0.3 ? 1.5 : 1));
+    const h = benchSum([...bs], sum(bs));
+    const extra = 0.3 * (1 + rnd());
+    assert.ok(benchSum([...bs, extra], sum(bs) + extra) >= h - 1e-12, `add to ${bs.length}`);
+    const i = Math.floor(rnd() * bs.length);
+    const less = bs.filter((_, k) => k !== i);
+    assert.ok(benchSum(less, sum(less)) <= h + 1e-12, `remove from ${bs.length}`);
   }
 });
 

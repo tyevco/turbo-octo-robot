@@ -126,13 +126,18 @@ const extraAgents = (n) => Array.from({ length: n }, (_, i) => ({
   pane: `px${i}`, title: `extra ${i}`, paneName: `pane x${i}`, space: "main", tab: "1", kind: "pane",
 }));
 
-/** Hs0 as agents join one by one, on top of the `base` observation. */
+/**
+ * Hs0 with 0, 1, … `upTo` fresh agents on top of the `base` observation, each
+ * bench observed at the same instant (so no warm or thanks timer ends between
+ * two of them: only the added agents differ).
+ */
 function hsCurve(s, base, upTo) {
-  let t = s.clock;
-  const out = [engine.rates(s).Hs0];
-  for (let n = 1; n <= upTo; n++) {
-    act(s, observeAt((t += 1000), [...base, ...extraAgents(n)], s.day));
-    out.push(engine.rates(s).Hs0);
+  const t = s.clock + 1000;
+  const out = [];
+  for (let n = 0; n <= upTo; n++) {
+    const c = engine.cloneState(s);
+    act(c, observeAt(t, [...base, ...extraAgents(n)], c.day));
+    out.push(engine.rates(c).Hs0);
   }
   return out;
 }
@@ -147,18 +152,36 @@ test("inv. 6: eff(n) is strictly increasing; adding a working agent to a bench o
   for (let n = 1; n < hs.length; n++) assert.ok(hs[n] > hs[n - 1], `n=${n}: Hs0 ${hs[n]} ≤ ${hs[n - 1]}`);
 });
 
-// Known defect (reported, not fixed here): with unequal helpers, crowd(n) applied
-// to the whole sum lets a newcomer lower Hs0. At P1 seed 1's day-2 close, agent a2
-// works with warm ×3 and thanks ×1.5 (b = 4.5 × base); four fresh agents raise Hs0
-// to 21,463, the fifth (n = 5, crowd 0.83) lowers it to 20,714, and it keeps
-// falling to 19,750 at n = 9. DESIGN §5.3 "every working agent adds output" holds
-// only for equal b_i.
-test("inv. 6 at simulator scale: adding a fresh working agent to P1's day-2 bench never lowers Hs0", {
-  todo: "DESIGN §5.3 applies crowd(n) to the whole sum; with unequal b_i a newcomer can lower Hs0",
-}, () => {
-  const hs = hsCurve(fresh(), agentObservation("P1", P2_SEC), 70);
-  for (let n = 1; n < hs.length; n++) assert.ok(hs[n] >= hs[n - 1], `n=${n}: Hs0 ${hs[n]} < ${hs[n - 1]}`);
-});
+// With unequal helpers (warm, fledglings, thanks) a crowd(n) applied to the whole
+// sum let a newcomer lower Hs0 (P1 seed 1's day-2 close: n = 5 fell from 21,463 to
+// 20,714). The marginal pace (DESIGN §5.3) must hold on the benches the sim reaches.
+for (const [id, label] of [["P1", "P1's day-2 bench"], ["P7", "P7's day-2 bench"]]) {
+  const st = id === "P1" ? day2.finalState : runProfile(id, 1, { days: 2, wish: false }).finalState;
+  const base = agentObservation(id, P2_SEC);
+
+  test(`inv. 6 at simulator scale: adding a fresh working agent to ${label} never lowers Hs0`, () => {
+    const hs = hsCurve(engine.cloneState(st), base, 70);
+    for (let n = 1; n < hs.length; n++) assert.ok(hs[n] >= hs[n - 1], `n=${n}: Hs0 ${hs[n]} < ${hs[n - 1]}`);
+  });
+
+  test(`inv. 6 at simulator scale: a working agent of ${label} that stops working never raises Hs0`, () => {
+    const s0 = engine.cloneState(st);
+    act(s0, observeAt(s0.clock + 1000, base, s0.day));
+    const before = engine.rates(s0).Hs0;
+    let checked = 0;
+    for (let i = 0; i < base.length; i++) {
+      if (base[i].kind !== "pane" || base[i].status !== "working") continue;
+      for (const status of ["blocked", "idle"]) {
+        const s = engine.cloneState(s0);
+        act(s, observeAt(s.clock + 1000, base.map((o, k) => (k === i ? { ...o, status, raw: status } : o)), s.day));
+        const after = engine.rates(s).Hs0;
+        assert.ok(after <= before, `agent ${base[i].addr} ${status}: Hs0 ${after} > ${before}`);
+        checked++;
+      }
+    }
+    assert.ok(checked > 0, "no working agent on the bench");
+  });
+}
 
 test("inv. 7 and 9: after the P7 run the save holds 64 pane helpers and their fledglings; with 500 Album helpers it is < 256 KiB", (ctx) => {
   const r = runProfile("P7", 1, {});
@@ -194,6 +217,37 @@ test("inv. 7 and 9: after the P7 run the save holds 64 pane helpers and their fl
   const v = s.stats.units;
   const waiting = Object.values(s.envelopes).reduce((a, e) => a + e.units, 0);
   assert.ok(Math.abs(v.created - (v.opened + v.converted + waiting)) < 1e-9);
+});
+
+test("inv. 7 (R13): a year of agents coming and going keeps every pane agent saved and the save under its bound", () => {
+  const s = engine.newGame({ seed: 7, now: day2.finalState.clock, day: day2.finalState.day });
+  const T = s.clock;
+  const ag = (i, extra = {}) => ({
+    addr: `w1:t${i}`, created: T + i * 997, status: "working", raw: "working", turn: 0, parent: null,
+    pane: `p${i}`, title: "claude · refactor the payment module", paneName: "", space: "main", tab: "1", kind: "pane", ...extra,
+  });
+  let t = T;
+  let n = 0;
+  for (let d = 0; d < 365; d++) {
+    const list = [];
+    for (let k = 0; k < I.churnPerDay; k++) {
+      const i = n++;
+      list.push(ag(i));
+      for (let j = 0; j < I.churnKids; j++) list.push(ag(1e6 + i * I.churnKids + j, { kind: "kid", pane: null, parent: `w1:t${i}` }));
+    }
+    act(s, observeAt((t += 1000), list, s.day));
+    act(s, observeAt((t += HOUR), list.map((o) => ({ ...o, turn: 2, status: "idle", raw: "idle" })), s.day));
+    for (const id of Object.keys(s.envelopes)) act(s, { t, type: "open", helperId: id });
+    act(s, observeAt((t += 1000), [], s.day));
+    t = T + (d + 1) * 24 * HOUR;
+    engine.advance(s, t);
+  }
+  assert.equal(Object.values(s.helpers).filter((h) => h.kind === "pane" && h.gone).length, n);
+  const text = engine.serialize(s);
+  assert.ok(text.length < I.churnKiB * 1024, `${(text.length / 1024).toFixed(0)} KiB`);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(engine.serialize(back.state), text);
 });
 
 test("inv. 8: drops are idempotent; turn < lastTurn and a first sighting give no reward", () => {

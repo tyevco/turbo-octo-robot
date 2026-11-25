@@ -7,9 +7,9 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  renderWindow, parseLayout, contentNodes, layoutColor, MAIN_LAYOUT, THEMES,
+  renderWindow, parseLayout, contentNodes, layoutColor, MAIN_LAYOUT, THEMES, layoutBoxes, shares,
 } from "../../tools/render/window.mjs";
-import { shoot, launchBrowser, parseArgs, validateViews, demoLayout } from "../../tools/shots/shoot.mjs";
+import { shoot, launchBrowser, parseArgs, validateViews, demoLayout, blockSizes, WINDOW_STATES } from "../../tools/shots/shoot.mjs";
 import { pngSize, listShots } from "../../tools/shots/contact-sheet.mjs";
 
 // herdr's shipped layout, when the research checkout is present.
@@ -111,7 +111,8 @@ test("layout schema: sizes, zoom, colours and errors", () => {
   assert.equal(parsed.children[0].id, "node-1", "ids are auto-filled like herdr");
   const html = renderWindow({ layout, zoom: 1.5, gameMod: null });
   assert.match(html, /data-node="node-1" style="[^"]*flex:0 0 60px;min-height:30px;max-height:90px/);
-  assert.match(html, /data-node="x" style="[^"]*flex:2 1 0px[^"]*border-radius:12px[^"]*border:3px solid #96b2d7[^"]*padding:6px 9px[^"]*gap:4.5px/);
+  // herdr's flex_grow is weight / the shown siblings' total weight (src/window.rs sized()).
+  assert.match(html, /data-node="x" style="[^"]*flex:1 1 0px[^"]*border-radius:12px[^"]*border:3px solid #96b2d7[^"]*padding:6px 9px[^"]*gap:4.5px/);
   assert.ok(html.includes("linear-gradient(90deg, #96b2d7, #102030)"));
   assert.equal(layoutColor("#abc", THEMES.paper), "#abc");
   assert.equal(layoutColor("border", THEMES.paper), THEMES.paper.border);
@@ -123,6 +124,48 @@ test("layout schema: sizes, zoom, colours and errors", () => {
   assert.throws(() => parseLayout({ type: "row", children: [], size: { pct: 3 } }), /size must be/);
   const blocks = contentNodes(clone(MAIN_LAYOUT));
   assert.deepEqual(blocks.filter((b) => b.hidden).map((b) => b.id), ["files", "changes"]);
+});
+
+test("grow factors are normalised like herdr's, so chromium lays out what herdr does", () => {
+  const layout = {
+    id: "r", type: "row",
+    children: [
+      { id: "a", type: "block", size: { weight: 1 }, content: { mod: "m" } },
+      { id: "b", type: "block", size: { weight: 3 }, max: 100, content: { mod: "m" } },
+      { id: "c", type: "block", size: { px: 50 }, content: { mod: "m" } },
+    ],
+  };
+  const html = renderWindow({ layout, width: 450, height: 100, gameMod: null });
+  assert.match(html, /data-node="a" style="[^"]*flex:0.25 1 0px/);
+  assert.match(html, /data-node="b" style="[^"]*flex:0.75 1 0px[^"]*max-width:100px/);
+  assert.match(html, /data-node="c" style="[^"]*flex:0 0 50px/);
+  // shares(): b freezes at its max, a keeps its normalised quarter, the rest stays empty (taffy 9.7 4b).
+  const b = layoutBoxes(layout, { width: 450, height: 100 });
+  assert.deepEqual([b.a.width, b.b.width, b.c.width], [100, 100, 50]);
+  assert.deepEqual(shares(layout.children, 450), [100, 100, 50]);
+  assert.deepEqual(shares(layout.children, 450, 1.5), [93.75, 150, 75], "zoom: b's max is 150, a keeps a quarter of 375");
+});
+
+test("layoutBoxes: herdr's geometry with separators, padding, borders, zoom and clipping", () => {
+  const layout = JSON.parse(readFileSync(new URL("../../layouts/Creaseworks.json", import.meta.url), "utf8"));
+  const b = layoutBoxes(layout, { width: 1440, height: 900 });
+  assert.equal(b.sidebar.width, 268);
+  assert.equal(b.work.x, 269, "the 1 px divider");
+  assert.equal(b["work-body"].inner.x, 277, "padding 8");
+  assert.ok(Math.abs(b.main.width + 8 + b["cw-panel"].width - (1440 - 269 - 16)) < 0.01, "gap 8, the row filled");
+  assert.equal(b["cw-panel"].inner.width, b["cw-panel"].width - 2, "1 px border");
+  assert.equal(b["cw-ribbon"].height, 30);
+  assert.equal(b.panel, undefined, "hidden nodes have no box");
+  // Zoom scales px, min, max, gaps and padding (settings::z); clipping is reported.
+  const z = layoutBoxes(layout, { width: 1000, height: 700, zoom: 1.5 });
+  assert.equal(z.sidebar.width, 402);
+  assert.equal(z.main.width, 540, "main keeps min 360 x 1.5");
+  assert.ok(z["cw-panel"].visible.width < z["cw-panel"].width, "a window too narrow for 360 + 64 at zoom 1.5 clips the panel");
+  // What the game's copies measure: content boxes, in zoomed px.
+  const sizes = blockSizes(layout, { width: 1100, height: 700 }, 1.5);
+  assert.equal(sizes["cw-ribbon"].height, 45);
+  assert.equal(sizes["cw-panel"].width, Math.round(z["cw-panel"].width === 0 ? 0 : layoutBoxes(layout, { width: 1100, height: 700, zoom: 1.5 })["cw-panel"].inner.width));
+  assert.deepEqual(WINDOW_STATES.map((s) => s.name), ["", "folded", "hidden", "files"]);
 });
 
 test("shoot CLI arguments and views validation", () => {
@@ -186,6 +229,11 @@ test("a whole window is screenshot at its size", { skip: noBrowser }, async () =
     assert.ok(!existsSync(join(out, "demo-graphite.png")), "--only window skips the views");
     // the game's layout in four states (expanded, folded to the rail, hidden, Files open)
     for (const state of ["folded", "hidden", "files"]) assert.ok(existsSync(join(out, `window-1440x900-${state}-graphite.png`)), state);
+    // and at zoom 1.5, where herdr gives every px, min and max half as much again (r1-32)
+    for (const state of ["", "-folded", "-hidden", "-files"]) {
+      const file = join(out, `window-1100x700${state}-paper-z1.5.png`);
+      assert.deepEqual(pngSize(file), { width: 1100, height: 700 }, file);
+    }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

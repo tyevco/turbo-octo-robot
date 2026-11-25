@@ -3,7 +3,7 @@
 
 import { K, SPECIES, NAME_A, NAME_B } from "./content.js";
 import { fnv1a32n } from "./hash.js";
-import { crowd } from "./economy.js";
+import { crowd, benchSum } from "./economy.js";
 import { addUnits } from "./envelopes.js";
 import { clip, cleanTitle } from "./text.js";
 
@@ -13,6 +13,16 @@ const GROUP_OF = { working: "working", blocked: "needs", done: "finished", idle:
 /** Helper id: FNV-1a 32 hex of `address + "#" + created_ms` (§5.1). */
 export function helperId(addr, created) {
   return hex8(fnv1a32n(`${addr}#${created}`));
+}
+
+/**
+ * The id a terminal gets when its plain id is already held by a different
+ * present terminal (a 32-bit hash clash, R6): attempt k ≥ 1 hashes
+ * `address#created_ms#k`. Deterministic, so the clashing agent keeps the same
+ * salted id on every observation.
+ */
+export function saltedId(addr, created, k) {
+  return hex8(fnv1a32n(`${addr}#${created}#${k}`));
 }
 
 function hex8(n) {
@@ -92,6 +102,7 @@ export function flock(state, E, idx, t, writer) {
   }
   const working = [];
   const stale = [];
+  const bs = [];
   let sum = 0;
   for (const h of idx.panes) {
     const fr = freshness(state, h, t, writer);
@@ -102,13 +113,19 @@ export function flock(state, E, idx, t, writer) {
     const thanks = t < h.thanksUntil ? K.thanksMult : 1;
     const b = base * warm * kids * thanks;
     working.push([h, b]);
+    bs.push(b);
     sum += b;
   }
   const n = working.length;
   const N = idx.panes.length;
-  const c = crowd(n);
+  // Bench pace is marginal (§5.3): the k-th largest b_i counts eff(k) − eff(k−1),
+  // so every working agent adds output and none can lower it. `crowd` is the
+  // effective pace Hs0 / Σ b_i (crowd(n) when every b_i is equal), which the
+  // per-helper credit shares.
+  const Hs0 = benchSum(bs, sum);
+  const c = sum > 0 ? Hs0 / sum : crowd(n);
   return {
-    n, crowd: c, Hs0: c * sum,
+    n, crowd: c, Hs0,
     Hstale: E.awayF * crowd(N) * base * stale.length,
     working, stale, N, base,
   };
@@ -169,13 +186,133 @@ function toAlbum(h, t) {
   h.stats.run = round6(h.stats.run);
 }
 
+// ---------------------------------------------------------------------------
+// Album compaction (DESIGN R13). Beyond the K.albumKeep most recently gone pane
+// helpers, an Album record is compacted: in memory it keeps only what the
+// Album shows ({id, name, species, hue, folds, tasks, missingSince to the
+// minute}, every other field at its default, `compact: true`), and the save
+// codec writes it as a short array (packAlbum / unpackAlbum), about 40 bytes
+// instead of about 290. The in-memory record is always exactly what loading
+// its packed form gives, so a reload (or a merge, which replays onto the
+// loaded save) changes nothing. Gone fledglings beyond K.kidAlbumKeep fold
+// into their parent early, as they do after 30 days. Nothing is dropped.
+
+const MINUTE = 60000;
+
+/** The packed save form of a compact Album record, or null if `h` no longer matches its compact form. */
+export function packAlbum(h) {
+  if (!h || h.compact !== true || h.gone !== true || h.kind !== "pane" || h.parent !== null) return null;
+  const s = h.stats;
+  if (!s || typeof s !== "object" || typeof h.name !== "string") return null;
+  if (h.joined !== 0 || h.status !== "idle" || h.lastTurn !== 0 || h.rest !== 0 || h.env !== 0) return null;
+  if (s.run !== 0 || s.envelopes !== 0 || s.checkIns !== 0) return null;
+  if (!Number.isFinite(s.folds) || !Number.isFinite(s.tasks)) return null;
+  const m = h.missingSince;
+  if (typeof m !== "number" || !Number.isFinite(m) || m % MINUTE !== 0) return null;
+  const look = lookOf(h.id);
+  if (h.species !== look.species || h.hue !== look.hue) return null;
+  const a = [h.name === look.name ? 0 : h.name, s.folds, s.tasks, m / MINUTE];
+  if (s.kidsPast > 0) {
+    if (!Number.isFinite(s.kidsPast) || !Number.isFinite(s.kidsFolds)) return null;
+    a.push(s.kidsPast, s.kidsFolds);
+  } else if (s.kidsPast !== undefined && s.kidsPast !== 0) {
+    return null;
+  }
+  return a;
+}
+
+const isFiniteNum = (v) => typeof v === "number" && Number.isFinite(v);
+
+/** The in-memory compact record of a packed Album entry, or null when the entry is malformed. */
+export function unpackAlbum(id, a) {
+  if (typeof id !== "string" || !/^[0-9a-f]{8}$/.test(id) || !Array.isArray(a)) return null;
+  if (a.length !== 4 && a.length !== 6) return null;
+  if (a[0] !== 0 && (typeof a[0] !== "string" || a[0].length === 0)) return null;
+  for (let i = 1; i < a.length; i++) if (!isFiniteNum(a[i])) return null;
+  const look = lookOf(id);
+  const stats = { tasks: a[2], folds: a[1], run: 0, envelopes: 0, checkIns: 0 };
+  if (a.length === 6) {
+    if (!(a[4] > 0)) return null;
+    stats.kidsPast = a[4];
+    stats.kidsFolds = a[5];
+  }
+  return {
+    id, kind: "pane", parent: null, species: look.species, hue: look.hue,
+    name: a[0] === 0 ? look.name : a[0],
+    joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0, stats,
+    missingSince: a[3] * MINUTE, gone: true, compact: true,
+  };
+}
+
+const round4 = (x) => (x === 0 || !Number.isFinite(x) ? 0 : Number(x.toPrecision(4)));
+
+/** Compact a gone pane record in place: exactly unpackAlbum(packAlbum(...)) of it. */
+function compactRecord(h) {
+  const s = h.stats || {};
+  const m = typeof h.missingSince === "number" && Number.isFinite(h.missingSince) ? h.missingSince : 0;
+  const a = [h.name, round4(s.folds), isFiniteNum(s.tasks) ? s.tasks : 0, Math.floor(m / MINUTE)];
+  if (s.kidsPast > 0 && isFiniteNum(s.kidsPast)) a.push(s.kidsPast, isFiniteNum(s.kidsFolds) ? s.kidsFolds : 0);
+  const look = lookOf(h.id);
+  if (a[0] === look.name || typeof a[0] !== "string" || a[0].length === 0) a[0] = 0;
+  const c = unpackAlbum(h.id, a);
+  for (const k of Object.keys(h)) delete h[k];
+  Object.assign(h, c);
+}
+
+const byLeft = (a, b) => a.missingSince - b.missingSince || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// ---------------------------------------------------------------------------
+// Display names (§5.1): the base name from the hash, and " 2", " 3"… for the
+// smallest number no present helper with that base holds.
+
+function nameParts(name) {
+  const sp = name.indexOf(" ");
+  if (sp < 0) return [name, 1];
+  const n = name.slice(sp + 1);
+  return [name.slice(0, sp), /^[1-9][0-9]{0,5}$/.test(n) ? Number(n) : 0];
+}
+
+/** base → { taken number: true } over the present helpers. */
+function nameSlots(present) {
+  const slots = Object.create(null);
+  for (const x of present) takeName(slots, x.name);
+  return slots;
+}
+
+function takeName(slots, name) {
+  if (typeof name !== "string") return;
+  const [base, k] = nameParts(name);
+  if (!k) return;
+  (slots[base] || (slots[base] = Object.create(null)))[k] = true;
+}
+
+function nameTaken(slots, name) {
+  if (typeof name !== "string") return false;
+  const [base, k] = nameParts(name);
+  return k > 0 && slots[base] !== undefined && slots[base][k] === true;
+}
+
+function freeName(slots, base) {
+  const used = slots[base];
+  let k = 1;
+  if (used) while (used[k] === true) k++;
+  return k === 1 ? base : `${base} ${k}`;
+}
+
 /** A returning agent (same address and created_ms) rejoins with its history. */
-function rejoin(h, o) {
+function rejoin(h, o, slots) {
+  const wasCompact = h.compact === true;
   h.gone = false;
   h.missingSince = null;
+  delete h.compact;
   for (const k of Object.keys(LIVE_FIELDS)) if (!(k in h)) h[k] = LIVE_FIELDS[k];
   h.addr = String(o.addr);
   h.created = Number(o.created) || 0;
+  // A compacted record kept no turn: rebaseline to this sighting (no reward).
+  if (wasCompact) h.lastTurn = Number(o.turn) || 0;
+  // Its old name may have been given to a present namesake meanwhile.
+  if (nameTaken(slots, h.name)) h.name = freeName(slots, lookOf(h.id).name);
+  takeName(slots, h.name);
 }
 
 function cleanStatus(s) {
@@ -187,17 +324,10 @@ function str(v, max) {
   return clip(cleanTitle(v), max);
 }
 
-function newRecord(state, o, id, t, w) {
+function newRecord(o, id, t, w, slots) {
   const look = lookOf(id);
-  let name = look.name;
-  let same = 0;
-  for (const k in state.helpers) {
-    const x = state.helpers[k];
-    if (x.gone) continue;
-    const sp = x.name.indexOf(" ");
-    if ((sp < 0 ? x.name : x.name.slice(0, sp)) === look.name) same++;
-  }
-  if (same > 0) name = `${look.name} ${same + 1}`;
+  const name = freeName(slots, look.name);
+  takeName(slots, name);
   const status = cleanStatus(o.status);
   return {
     id, addr: String(o.addr), created: Number(o.created) || 0,
@@ -270,12 +400,28 @@ export function observe(state, ctx, action, t, ev) {
   const hs = state.helpers;
   const list = Array.isArray(action.helpers) ? action.helpers : null;
   if (list) {
+    // Present helpers before this observation: their names and addresses are
+    // indexed once (not rescanned per new agent, whatever the Album's size).
+    const before = indexHelpers(state).present;
+    let slots = null;
+    const names = () => slots || (slots = nameSlots(before));
+    let addrs = null;
+    const byAddrPresent = () => {
+      if (addrs) return addrs;
+      addrs = Object.create(null);
+      for (const x of before) {
+        const a = String(x.addr);
+        if (addrs[a] === undefined) addrs[a] = x;
+      }
+      return addrs;
+    };
     const byAddr = Object.create(null);
     const ids = new Array(list.length);
+    const claim = Object.create(null); // id → list index that holds it in this observation
     for (let i = 0; i < list.length; i++) {
       const o = list[i];
       if (!o || typeof o !== "object") continue;
-      ids[i] = helperId(o.addr, Number(o.created) || 0);
+      ids[i] = claimId(hs, claim, list, o, i);
       byAddr[String(o.addr)] = i;
     }
     const seen = Object.create(null);
@@ -288,12 +434,12 @@ export function observe(state, ctx, action, t, ev) {
       let h = hs[id];
       const status = cleanStatus(o.status);
       if (!h) {
-        h = newRecord(state, o, id, t, w);
+        h = newRecord(o, id, t, w, names());
         hs[id] = h;
       } else {
         // a stale observation replayed after a newer one (or after the agent left)
         if (h.gone ? t < h.missingSince : t < h.lastSeen) continue;
-        if (h.gone) rejoin(h, o);
+        if (h.gone) rejoin(h, o, names());
         const turn = Number(o.turn) || 0;
         if (turn > h.lastTurn) {
           h.lastTurn = turn;
@@ -303,7 +449,7 @@ export function observe(state, ctx, action, t, ev) {
         }
         transition(h, status, t, E);
       }
-      resolveParent(state, h, o, list, ids, byAddr);
+      resolveParent(h, o, list, ids, byAddr, byAddrPresent);
       h.lastSeen = t;
       h.seenBy = w;
       h.group = GROUP_OF[h.status];
@@ -316,7 +462,10 @@ export function observe(state, ctx, action, t, ev) {
     for (const id in hs) {
       const h = hs[id];
       if (h.gone || seen[id]) continue;
-      if (!h.seenBy || h.seenBy === w) {
+      // Another window's helper stays in Elsewhere while that window may still
+      // be observing it; once nobody has seen it for 8 h (its window closed, or
+      // herdr restarted with a new writer id), any window adopts it (§12.5).
+      if (!h.seenBy || h.seenBy === w || freshness(state, h, t, w) === 0) {
         if (t < h.lastSeen) continue;
         toAlbum(h, t);
       } else {
@@ -338,7 +487,35 @@ export function observe(state, ctx, action, t, ev) {
   prune(state, t);
 }
 
-function resolveParent(state, h, o, list, ids, byAddr) {
+/**
+ * The id list entry `i` takes: its plain id, unless that id is held by a
+ * different terminal (an earlier entry of this list, or a present helper with
+ * another address or created_ms), when it takes the first free salted id (R6).
+ * The same terminal always resolves to the same id. undefined = no id (a
+ * duplicate of an earlier entry, or no free salt).
+ */
+function claimId(hs, claim, list, o, i) {
+  const addr = String(o.addr);
+  const created = Number(o.created) || 0;
+  let id = helperId(addr, created);
+  for (let k = 1; k <= 16; k++) {
+    const j = claim[id];
+    if (j !== undefined) {
+      const p = list[j];
+      if (String(p.addr) === addr && (Number(p.created) || 0) === created) return id; // the same terminal twice
+    } else {
+      const h = hs[id];
+      if (!h || h.gone || (h.addr === addr && h.created === created)) {
+        claim[id] = i;
+        return id;
+      }
+    }
+    id = saltedId(addr, created, k);
+  }
+  return undefined;
+}
+
+function resolveParent(h, o, list, ids, byAddr, byAddrPresent) {
   if (h.kind !== "kid") return;
   let addr = o.parent;
   for (let hop = 0; hop < 32 && addr !== null && addr !== undefined; hop++) {
@@ -348,30 +525,55 @@ function resolveParent(state, h, o, list, ids, byAddr) {
       addr = list[j].parent;
       continue;
     }
-    for (const id in state.helpers) {
-      const x = state.helpers[id];
-      if (!x.gone && x.addr === String(addr)) {
-        if (x.kind === "pane") { h.parent = x.id; return; }
-        if (x.parent) { h.parent = x.parent; return; }
-        break;
-      }
+    const x = byAddrPresent()[String(addr)];
+    if (x !== undefined && !x.gone) {
+      if (x.kind === "pane") { h.parent = x.id; return; }
+      if (x.parent) { h.parent = x.parent; return; }
     }
     return;
   }
 }
 
-/** Fledglings gone for 30 days fold into their parent; writers unseen for 30 days are pruned. */
+/** A gone fledgling folds into its parent's record (kidsPast, kidsFolds) and leaves the save. */
+function foldKid(state, h) {
+  const hs = state.helpers;
+  const p = h.parent ? hs[h.parent] : null;
+  if (p) {
+    p.stats.kidsPast = (p.stats.kidsPast || 0) + 1;
+    p.stats.kidsFolds = (p.stats.kidsFolds || 0) + h.stats.folds;
+  }
+  delete hs[h.id];
+  rosterChanged(state);
+}
+
+/**
+ * Keep the save bounded (R13): fledglings gone for 30 days, or beyond the
+ * K.kidAlbumKeep most recently gone, fold into their parent; gone pane helpers
+ * beyond the K.albumKeep most recently gone are compacted. Writers unseen for
+ * 30 days are pruned.
+ */
 export function prune(state, t) {
   const hs = state.helpers;
+  const kids = [];
+  const full = [];
   for (const id in hs) {
     const h = hs[id];
-    if (h.kind !== "kid" || !h.gone || h.missingSince === null || t - h.missingSince <= K.kidAlbumMs) continue;
-    const p = h.parent ? hs[h.parent] : null;
-    if (p) {
-      p.stats.kidsPast = (p.stats.kidsPast || 0) + 1;
-      p.stats.kidsFolds = (p.stats.kidsFolds || 0) + h.stats.folds;
+    if (!h.gone) continue;
+    if (h.kind === "kid") {
+      if (typeof h.missingSince !== "number") continue;
+      if (t - h.missingSince > K.kidAlbumMs) foldKid(state, h);
+      else kids.push(h);
+    } else if (h.compact !== true) {
+      full.push(h);
     }
-    delete hs[id];
+  }
+  if (kids.length > K.kidAlbumKeep) {
+    kids.sort(byLeft);
+    for (let i = 0, n = kids.length - K.kidAlbumKeep; i < n; i++) foldKid(state, kids[i]);
+  }
+  if (full.length > K.albumKeep) {
+    full.sort(byLeft);
+    for (let i = 0, n = full.length - K.albumKeep; i < n; i++) compactRecord(full[i]);
     rosterChanged(state);
   }
   for (const w in state.writersSeen) {

@@ -14,7 +14,7 @@
 //   --no-windows   skip the whole-window shots
 //   --no-sheet     skip the contact sheets
 //   --themes a,b   only these themes (default: all six in tools/mock/themes.json)
-//   --zooms 1,1.5  zoom levels per view (default 1 and 1.5; 1.5 adds -z1.5 to the name)
+//   --zooms 1,1.5  zoom levels per view and window (default 1 and 1.5; 1.5 adds -z1.5 to the name)
 //   --no-vision    skip the grey / deuteranopia / protanopia captures
 //
 // For every view in mods/<mod>/glue/views.js (default export: an array of
@@ -24,11 +24,13 @@
 // `setup(view, tools)` when given, settles ready host calls, renders, maps the
 // tree to HTML (tools/render/html.mjs) and screenshots it with Playwright
 // chromium to <out>/<view>-<theme>.png. Then whole windows (tools/render/window.mjs)
-// at 1440x900 and 1100x700 in every theme and four states of the game's layout
-// (expanded; panel folded to its 64 px rail; panel hidden; herdr's Files panel
-// open): <out>/window-<w>x<h>[-<state>]-<theme>.png. A window's game blocks are
-// copies of the View sharing ONE mock herdr window (as in herdr: one VM, one
-// handover slot), each sized to its block by its root's on_size_change. A view
+// at 1440x900 and 1100x700 in every theme, at each zoom, and four states of the
+// game's layout (expanded; panel folded to its 64 px rail; panel hidden; herdr's
+// Files panel open): <out>/window-<w>x<h>[-<state>]-<theme>[-z<zoom>].png. A
+// window's game blocks are copies of the View sharing ONE mock herdr window (as
+// in herdr: one VM, one handover slot), each sized to its block by its root's
+// on_size_change with the content box herdr gives it (render/window.mjs
+// layoutBoxes: herdr's own geometry, zoomed px). A view
 // or window that throws becomes a red error tile and the run exits 1.
 // Contact sheets: contact-sheet.png (graphite and paper, views and windows) and
 // contact-sheet-<theme>.png for every other theme shot.
@@ -56,7 +58,7 @@ import { THEME_NAMES, PALETTES, isLight } from "../mock/theme-resolve.js";
 import { h_flex, v_flex, Button } from "../mock/gpui-base.js";
 import { agents, theme as herdrTheme, settings } from "../mock/herdr.js";
 import { renderToHtml, renderDocument } from "../render/html.mjs";
-import { renderWindow, MAIN_LAYOUT, THEMES, REPO_ROOT, loadGame, contentNodes, parseLayout } from "../render/window.mjs";
+import { renderWindow, MAIN_LAYOUT, THEMES, REPO_ROOT, loadGame, contentNodes, parseLayout, layoutBoxes } from "../render/window.mjs";
 import { buildContactSheet, loadPlaywright, launchBrowser } from "./contact-sheet.mjs";
 
 /** Every theme the mock knows (tools/mock/themes.json), with its appearance. */
@@ -340,7 +342,8 @@ export async function runView(Class, entry, themeName, extra = {}) {
   }
 }
 
-function viewDocument(result, entry, warnings) {
+/** The HTML document a view shot is taken of (CSS px = the entry size x zoom). */
+export function viewDocument(result, entry, warnings) {
   return renderDocument(result.tree, {
     width: entry.size.width * result.zoom,
     height: entry.size.height * result.zoom,
@@ -373,14 +376,15 @@ function gameBlocks(layout, mod) {
  * herdr window (shared handover slot, as in herdr), sizes each copy through
  * its root's on_size_change, and renders them. Returns {blockId: {tree, ...}}.
  */
-export async function runWindowCopies(Class, target, themeName, size, layout) {
+export async function runWindowCopies(Class, target, themeName, size, layout, zoom = 1) {
   const palette = THEMES[themeName];
   const appearance = THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
   const blocks = contentNodes(layout).filter((b) => !b.hidden && b.content?.mod === target.mod && !b.float);
-  const geometry = blockSizes(layout, size);
+  const geometry = blockSizes(layout, size, zoom);
   const entry = entryForBlock(target.views, blocks.find((b) => b.content.props?.role !== "ribbon")?.id ?? null);
   const scenario = { ...(entry.scenario ?? {}), theme: themeName, layout: JSON.parse(JSON.stringify(layout)) };
   scenario.mod ??= target.mod;
+  scenario.zoom = zoom;
   const ctl = createController(scenario);
   const previousWindow = globalThis.window;
   globalThis.window = createMockWindow({ appearance, width: size.width, height: size.height, remSize: 13 * (scenario.zoom ?? 1) });
@@ -429,41 +433,25 @@ export async function runWindowCopies(Class, target, themeName, size, layout) {
   }
 }
 
-/** Logical sizes of the game's blocks in a window (the same flex rules as render/window.mjs, simplified). */
-function blockSizes(layout, size) {
+/**
+ * What each block's mod measures in a window: its content box in screen px at
+ * `zoom` (herdr reports zoomed px to on_size_change), laid out with herdr's own
+ * geometry (render/window.mjs layoutBoxes: px nodes fixed, weights shrink to
+ * their min, overflow clipped). Hidden blocks are absent.
+ */
+export function blockSizes(layout, size, zoom = 1) {
   const out = {};
-  const measure = (node, w, h) => {
-    out[node.id] = { width: Math.round(w), height: Math.round(h) };
-    const kids = (node.children ?? []).filter((c) => !c.hidden);
-    if (!kids.length || node.type === "block") return;
-    if (node.type === "stack") {
-      for (const c of kids) measure(c, w, h);
-      return;
-    }
-    const pad = typeof node.padding === "number" ? node.padding : 0;
-    const gap = typeof node.gap === "number" ? node.gap : 0;
-    const row = node.type === "row";
-    const total = (row ? w : h) - 2 * pad - gap * (kids.length - 1);
-    const fixed = kids.map((c) => (c.size && typeof c.size.px === "number" ? c.size.px : null));
-    const weights = kids.map((c, i) => (fixed[i] === null ? (c.size && typeof c.size.weight === "number" ? c.size.weight : 1) : 0));
-    const free = Math.max(0, total - fixed.reduce((a, b) => a + (b ?? 0), 0));
-    const wsum = weights.reduce((a, b) => a + b, 0) || 1;
-    kids.forEach((c, i) => {
-      const len = fixed[i] ?? (free * weights[i]) / wsum;
-      if (row) measure(c, len, h - 2 * pad);
-      else measure(c, w - 2 * pad, len);
-    });
-  };
-  measure(layout, size.width, size.height);
+  const boxes = layoutBoxes(layout, { width: size.width, height: size.height, zoom });
+  for (const id of Object.keys(boxes)) out[id] = { width: Math.round(boxes[id].inner.width), height: Math.round(boxes[id].inner.height) };
   return out;
 }
 
-async function windowDocument(target, themeName, size, warnings, state = WINDOW_STATES[0]) {
+async function windowDocument(target, themeName, size, warnings, state = WINDOW_STATES[0], zoom = 1) {
   const layout = parseLayout(JSON.parse(JSON.stringify(target.layout)));
   state.edit(layout, gameBlocks(layout, target.mod));
   const modBlocks = {};
   if (!target.demo) {
-    const results = await runWindowCopies(target.Class, target, themeName, size, layout);
+    const results = await runWindowCopies(target.Class, target, themeName, size, layout, zoom);
     for (const e of results.errors) warnings.push(`logged by the view: ${e.message ?? JSON.stringify(e)}`);
     for (const block of contentNodes(layout)) {
       const r = results[block.id];
@@ -476,15 +464,14 @@ async function windowDocument(target, themeName, size, warnings, state = WINDOW_
       const entry = entryForBlock(target.views, block.id);
       let props = block.content.props ?? null;
       if (block.float) props = { ...(props ?? {}), float: block.id };
-      const result = await runView(target.Class, entry, themeName, { props, mod: target.mod });
+      const result = await runView(target.Class, entry, themeName, { props, mod: target.mod, zoom });
       const html = renderToHtml(result.tree, { zoom: result.zoom, theme: result.palette, assetRoot: REPO_ROOT, warnings });
       modBlocks[block.id] = block.float ? { html, width: entry.size.width, height: entry.size.height } : html;
     }
   }
   const scenario = target.windowScenario ?? entryForBlock(target.views, null)?.scenario ?? {};
   return renderWindow({
-    layout, width: size.width, height: size.height, theme: themeName, scenario, modBlocks, gameMod: target.mod,
-    zoom: scenario.zoom ?? 1,
+    layout, width: size.width, height: size.height, theme: themeName, scenario, modBlocks, gameMod: target.mod, zoom,
   });
 }
 
@@ -599,11 +586,15 @@ export async function shoot(options = {}) {
 
     if (options.windows !== false && selectsWindows(options.only)) {
       const states = target.demo ? WINDOW_STATES.slice(0, 1) : WINDOW_STATES;
-      for (const size of WINDOW_SIZES) {
-        for (const state of states) {
-          for (const { name: themeName } of themes) {
-            const name = `window-${size.width}x${size.height}${state.name ? `-${state.name}` : ""}-${themeName}`;
-            await shot(name, size.width, size.height, (warnings) => windowDocument(target, themeName, size, warnings, state));
+      // Zoom 1.5 too: herdr scales px, min and max by the zoom (settings::z), so a
+      // window at zoom 1.5 has two thirds of the room (r1-32).
+      for (const zoom of zooms) {
+        for (const size of WINDOW_SIZES) {
+          for (const state of states) {
+            for (const { name: themeName } of themes) {
+              const name = `window-${size.width}x${size.height}${state.name ? `-${state.name}` : ""}-${themeName}${zoom === 1 ? "" : `-z${zoom}`}`;
+              await shot(name, size.width, size.height, (warnings) => windowDocument(target, themeName, size, warnings, state, zoom));
+            }
           }
         }
       }

@@ -260,3 +260,32 @@ export function debugString(s) {
 export function unknownCommand(name) {
   return `unknown command ${debugString(name)}: see \`herdr-app commands\`; a mod's are <mod>.<command> and need the mod loaded`;
 }
+
+/**
+ * What the window does to the shown layout tree for layout.toggle / show / hide /
+ * resize (src/window.rs:3640-3656): `px` wins over `weight`; a missing node is an
+ * error. Changes `tree` in place; returns null, or the error text.
+ */
+export function applyLayoutCommand(tree, name, args) {
+  const id = isPlainObject(args) && typeof args.id === "string" ? args.id : "";
+  const findIn = (n) => {
+    if (!isPlainObject(n)) return null;
+    if (n.id === id) return n;
+    for (const c of Array.isArray(n.children) ? n.children : []) {
+      const f = findIn(c);
+      if (f) return f;
+    }
+    for (const f of Array.isArray(n.floating) ? n.floating : []) if (isPlainObject(f) && f.id === id) return f;
+    return null;
+  };
+  const node = findIn(tree);
+  if (!node) return `no node ${debugString(id)}`;
+  if (name === "layout.toggle") node.hidden = !node.hidden;
+  else if (name === "layout.show") node.hidden = false;
+  else if (name === "layout.hide") node.hidden = true;
+  else if (name === "layout.resize") {
+    if (typeof args.px === "number") node.size = { px: args.px };
+    else if (typeof args.weight === "number") node.size = { weight: args.weight };
+  } else return `${name} is not a layout command`;
+  return null;
+}

@@ -24,6 +24,13 @@ import * as store from "./store.js";
 /** The mock's start time (tools/mock/controller.js DEFAULT_NOW: 2026-01-01T09:00:00Z). */
 const T0 = 1767258000000;
 const PANEL = { width: 320, height: 784 };
+/**
+ * The String tab down to its garlands: a standard-width panel tall enough that
+ * the strand card, the wish button, Clears/Keeps, Perks and the "one per wish"
+ * stripes all show above the footer (at 784 the tab ends at a clipped PERKS
+ * heading and the stripes are below the fold: review r1-29).
+ */
+export const GARLANDS_SIZE = Object.freeze({ width: 320, height: 1160 });
 const RIBBON_W = { 1100: 832, 1440: 1172 };
 const TITLES = [
   "Refactor auth middleware", "Fix flaky login test", "Write the release notes", "Migrate to the new router",
@@ -126,6 +133,27 @@ function grant(folds) {
   s.bank += folds;
   s.runFolds += folds;
   s.lifetime += folds;
+}
+
+/**
+ * Splits this run's folds between its sources the way a played run would
+ * (`grant` adds folds with no source, so a wish made after it records a
+ * single "everyone else" stripe): pane helpers in falling shares, your hands
+ * (Sheet clicks) and workshops; what is left stays "everyone else". `k`
+ * varies the split per wish. Moves only the fields the garland reads.
+ */
+function creditRun(k) {
+  const s = state();
+  const run = s.runFolds;
+  const panes = Object.keys(s.helpers).map((id) => s.helpers[id]).filter((h) => h.kind === "pane" && !h.gone);
+  // Helpers 62 % (falling: 1/(i+1+k mod 3)), hands 14-23 %, workshops 10 %, the rest everyone else.
+  const parts = panes.map((_, i) => 1 / (i + 1 + (k % 3)));
+  const sum = parts.reduce((a, x) => a + x, 0) || 1;
+  panes.forEach((h, i) => {
+    h.stats.run = Math.round((run * 0.62 * parts[i]) / sum);
+  });
+  s.stats.runBySource.sheet = Math.round(run * (0.14 + 0.03 * k));
+  s.stats.runBySource.workshops = Math.round(run * 0.1);
 }
 
 function buyAll(view, items) {
@@ -316,12 +344,13 @@ add("string-confirm", { roster: STD }, async (v, tools) => {
   h.confirm("wish", undefined);
   await tools.advance(1600);
 });
-add("garlands", { roster: { working: 6, resting: 4, needs: 1, finished: 1 } }, async (v, tools) => {
+add("garlands", { roster: { working: 6, resting: 4, needs: 1, finished: 1 }, size: GARLANDS_SIZE }, async (v, tools) => {
   for (let k = 0; k < 4; k++) {
     midGame(v, 7e9 * (k + 1) ** 3);
     await finish(tools, [`t${k + 1}`, `t${k + 5}`]);
     await sheetHits(v, tools, 5);
     await tools.advance(30000);
+    creditRun(k); // the stripes are what this view is for (r1-29)
     if (wishInfo(state()).can) act(v, { type: "wish" });
   }
   midGame(v, 8.4e8);

@@ -114,7 +114,7 @@ export class Session {
     if (!slot) slot = installSlot(newSlot(home, store.slotPaths(home)));
     this.slot = slot;
     this.copyId = `${this.role}:${randomId()}`;
-    const gone = takeOver(slot, this.copyId);
+    takeOver(slot, this.copyId);
     if (slot.widths.lastPanel === null) {
       const w = recallWidth();
       if (w !== null) slot.widths.lastPanel = w;
@@ -123,7 +123,7 @@ export class Session {
     if (slot.state === null) this.startLoad(cx);
     // A hot reload: release the older generation's save claim (its task never
     // settles), then settle a main write that may have landed.
-    else if (store.adopt(slot, t, gone)) cx.spawn(() => store.resolveInflight(slot, { now: clockNow, owner: this.copyId }), { owner: null });
+    else if (store.adopt(slot, t)) cx.spawn(() => store.resolveInflight(slot, { now: clockNow, owner: this.copyId }), { owner: null });
     const win = herdrWindow();
     this.retime(cx, !win || win.visible !== false);
     startCommandLoop(cx, (name, tcx) => this.onCommand(name, tcx));

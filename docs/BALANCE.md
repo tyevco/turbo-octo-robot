@@ -157,8 +157,17 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P1 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 9.1 / 28.1 / 37.6 % |
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
+| P9 | ≥ 0.5 % | ≥ 0.5 % | ≥ 2 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
+
+P9 has its own floor, not the 5 / 10 / 12 % bar. It plays 4 sessions a day, all in the first 2 h
+of 8 open hours (about 10 active minutes, a third of P1's), so for 6 h a day the helpers and
+workshops earn live income with nobody clicking; a day's click share must be small. Its row only
+guards against regressions. Whether a click is worth making for P9 is checked per active second
+instead: §6.3 (≥ 1.5× `Rp` per active second in every session, P9 included) and §5 (P9's first
+wish ≥ P1's + 6:00, so clicking less costs real progress). P2 never clicks and P12 equals P1, so
+neither has a row.
 
 ### 6.3 A session is worth showing up for
 
@@ -186,9 +195,14 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
    `0.45 · (Rw + crowd(N) · Σ (0.3·G + 0.04·Rw) · folk)`; boost timers and afterglow are unchanged
    across an away segment.
 5. **Click cap**: a scripted 100 hits/s earns exactly the value of 12.5 hits/s.
-6. **Bench pace**: `eff(n)` is strictly increasing; adding a working agent never lowers `Hs0`.
+6. **Bench pace**: `eff(n)` is strictly increasing; adding a working agent never lowers `Hs0`, and
+   a working agent that stops working (Needs you, Finished, Resting) never raises it, whatever the
+   helpers' warm, fledgling and thanks multipliers (marginal pace, DESIGN §5.3). Asserted on equal
+   benches and on the benches P1 and P7 actually reach.
 7. **Every agent is saved**: after the P7 run the save holds 64 pane helpers and all their
-   fledglings; with 500 Album helpers added the save text is < 256 KiB.
+   fledglings; with 500 Album helpers added the save text is < 256 KiB. With Album compaction
+   (DESIGN R13), after a year of 20 agents a day, each with 3 fledglings, coming and going, every
+   pane agent is still an Album helper and the save stays < 512 KiB.
 8. **Drops are idempotent**: replaying the same `observe` twice, or from two writers, creates each
    envelope unit once; `turn < lastTurn` and first sighting give no reward.
 9. **No envelope is lost**: units created = units opened + units converted + units waiting.
@@ -211,12 +225,16 @@ and this file together.
 | Order | Knob (DESIGN ref) | Current value | Moves mostly |
 |---|---|---|---|
 | 1 | prestige scale `Lw` (§9) | 6e6 | M15 for every profile |
-| 2 | bench-pace exponent (§5.3) | 0.15, knee 4 | P5–P7 relative to P1 |
+| 2 | bench-pace exponent (§5.3) | 0.07, knee 4 | P5–P7 relative to P1 |
 | 3 | Echo levels (§7.3) | 0.03 base; 0.06 / 0.10 / 0.18 / 0.28 / 0.40 | click share, P2 gap |
 | 4 | chain payouts (§4.4) | 2·Vc per node, 3·k·Vc finish | click share, P8, P11 |
 | 5 | away factor (§10.2) | 0.25 / 0.35 / 0.45 | away share, P9 |
 | 6 | workshop growth (§7.2) | 1.16 | purchase cadence, mid milestones |
 | 7 | later-wish gate (§9) | `max(5, ceil(0.25·W))` | M17 only |
+
+Knob 2 was 0.15 while the bench pace scaled the whole sum of `b_i`. Making it marginal (DESIGN
+§5.3, inv. 6) stopped fresh agents diluting warm ones, which sped up P6 and P7 (first wish medians
+12:30 and 10:32 at 0.15); 0.07 puts them back inside their windows (12:42 and 11:21).
 
 The calibration prototype was a throwaway script outside the repository; it is not a reference.
 The shipped simulator is.

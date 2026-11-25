@@ -406,7 +406,7 @@ returns (`ui.hints.fold`). The first gilded crane is fixed at 390 active seconds
 │          Working 14 m · 2 fledglings · 1.3M folds this run             │
 │          rest ▮▮▮▮▯ 80 % → next task ×1.8     [Open pane ›] 88×24       │
 └─────────────────────────────────────────────────────────────────────────┘
- Flock 30 · 9 working · bench pace 50 %         [?] legend    11 T.muted
+ Flock 30 · 9 working · bench pace 47 %         [?] legend    11 T.muted
  ▲ NEEDS YOU 2                                    header 24, 11/600, fold ▾
  [tile][tile]
  ✓ FINISHED 1
@@ -783,19 +783,31 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 * **Helper id** = FNV-1a 32-bit hex of `address + "#" + created_ms`. This deliberately leaves out
   the home: two herdr homes that see the **same** terminal (same address, same `created_ms`) get
   **one** helper and one drop per finish, and an address reused after a terminal restart gets a
-  new `created_ms`, so a new helper. Two different terminals collide only with the same address
-  and the same creation millisecond; that residual risk is in §17. (fit.md's `homeId:` prefix was
+  new `created_ms`, so a new helper. Two different terminals share a plain id when they have the
+  same address and creation millisecond, or when their strings clash in the 32-bit hash. When an
+  observation's plain id is already held by a different terminal (an earlier entry of the same
+  list, or a present helper with another address or `created_ms`), that terminal takes the first
+  free **salted id**, FNV-1a of `address + "#" + created_ms + "#" + k` for k = 1, 2, …; the
+  present helper keeps its id, so each terminal resolves to the same id on every observation and
+  no present agent is ever lost. The residual risk is in §17 (R6). (fit.md's `homeId:` prefix was
   rejected because it would credit a shared terminal twice; judge 2.)
 * **Look from the hash h**: species `SPECIES[h % 12]`; hue `(h >>> 4) % 8`; name
   `A[(h >>> 8) % 16] + B[(h >>> 12) % 12]` with A = `Mi Ko Pi Ta Su No Ri Ha Yu Fe Lo Bi Ka Mo Ze Wu`,
   B = `na to b ki ri mo sa ku ro n li po` (192 short **ASCII** names: Mina, Koto, Pib, Taki, Yuro,
-  Fen, Lopo…). On a clash among present helpers the later one gets " 2", " 3" (ASCII).
+  Fen, Lopo…). On a clash among present helpers a new helper takes the smallest free number:
+  the bare name, then " 2", " 3"… (ASCII); a helper returning from the Album keeps its name unless
+  a present helper now holds it, when it too takes the smallest free number.
 * **Every agent is a saved helper.** No cap, no daily limit, no unsaved extras. Pane helpers are
   never aggregated or dropped; gone ones move to the Album and keep their record. Fledglings
   (sub-agents) are saved as their own records while present and in the Album for 30 days; after
   that their totals are folded into their parent's record (`kidsPast`, `kidsFolds`) because a
   fledgling is part of its parent helper (brief: "sub-agents are mini-helpers that add to their
-  parent's output"). Record (≈ 170 bytes):
+  parent's output"). To keep the save bounded (R13), gone fledglings beyond the 200 most recently
+  gone (`K.kidAlbumKeep`) fold into their parent at once, and gone pane helpers beyond the 200 most
+  recently gone (`K.albumKeep`) are **compacted**: they keep `{id, name, species, hue, folds,
+  tasks}`, the minute they left and any `kidsPast`/`kidsFolds`, and the save writes each as a
+  short array (≈ 40 bytes). A compacted helper stays in the Album; if its agent returns it rejoins
+  with those stats and its turn is rebaselined (no reward). Record (≈ 170 bytes):
   `{id, addr, created, kind:"pane"|"kid", parent, species, hue, name, joined, lastSeen, seenBy,
   status, lastTurn, lastFinishAt, blockedAt, rest, warm, warmUntil, thanksUntil, env, stats:{tasks, folds, envelopes, checkIns}}`.
 * Fuzz: addresses `__proto__`, `constructor`, `toString`, `t1/../x`, remote `peer/t7`, and the
@@ -836,9 +848,10 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 ```
 b_i     = (0.3·G + 0.04·Rw) · folk · warm_i · kids_i · thanks_i        per working pane helper
 eff(n)  = n                         for n ≤ 4
-        = 4 · (n / 4)^0.15          for n > 4        (eff(8) 4.44 · eff(30) 5.41 · eff(64) 6.06)
+        = 4 · (n / 4)^0.07          for n > 4        (eff(8) 4.20 · eff(30) 4.61 · eff(64) 4.86)
 crowd(n)= eff(n) / n                n = working pane helpers
-Hs0     = crowd(n) · Σ_working b_i
+Hs0     = Σ_k (eff(k) − eff(k−1)) · b_(k)    b_(1) ≥ b_(2) ≥ … the working b_i, largest first
+        (= crowd(n) · Σ b_i when every b_i is equal; = Σ b_i for n ≤ 4)
 Hs      = Hs0 · step · song          (0 when "Helpers gather" is off)
 step    = 1.5 In step (2.0 Shared Rhythm); else 1.25 while afterglow > 0 (1.5 Shared Rhythm); else 1
 song    = 3 during Flock Song, else 2 during Chorus, else 1
@@ -850,10 +863,16 @@ thanks_i= 1.5 for 5 min after the helper goes from Needs you to Working within 5
 
 * The flat `0.3·G` makes each working agent a real auto-clicker in the first hour (about a third
   of a hand click per second); the `0.04·Rw` term keeps helpers relevant all game.
-* **Bench pace** (crowding) is diminishing returns, not a cap: every working agent adds output,
-  and the Flock header says "9 working · bench pace 50 %" (`crowd(n)` as a percentage). The exponent 0.15 and
-  the fixed knee of 4 were calibrated so 30 and 64 agents reach the first wish on day 2 of open
-  time, not on day 1 (BALANCE.md P6, P7). There are **no** bench-room upgrades or perks (they
+* **Bench pace** (crowding) is diminishing returns, not a cap, and it is **marginal**: the k-th
+  strongest working helper adds `eff(k) − eff(k−1)` of its `b_i`. So every working agent adds
+  output and none lowers it, whatever the warm, fledgling and thanks multipliers (a fresh agent
+  never dilutes a warm one), and an agent that stops working (Needs you, Finished, Resting) never
+  raises it (BALANCE inv. 6). The Flock header says "9 working · bench pace 47 %" (`crowd(n)` as a
+  percentage: the pace of a bench of equal helpers). Per-helper credit (Flock card, garland) is
+  each `b_i` times the bench's effective pace `Hs0 / Σ b_i`. The exponent 0.07 and the fixed knee
+  of 4 were calibrated so 30 and 64 agents reach the first wish on day 2 of open time, not on
+  day 1 (BALANCE.md P6, P7); the exponent was 0.15 while the pace scaled the whole sum, which let
+  a fresh agent lower a warm bench's output. There are **no** bench-room upgrades or perks (they
   broke big-flock pacing in calibration).
 * **Thanks** stays in calm mode (calm changes no earnings). It needs no click on our cue: answering
   from herdr's own sidebar or toast counts.
@@ -1210,7 +1229,9 @@ The mechanism is ARCHITECTURE A4–A6 exactly; this section is the player-facing
 
 Written only with `writeTextFile(path, text, expected)` (CAS, atomic rename), read with
 `readTextFile`; absolute paths from `appHome()`; nothing is ever written under `mods/` (that would
-reload the mod, life §1). Save text < 256 KiB at 64 helpers plus 500 Album helpers (test).
+reload the mod, life §1). Save text < 256 KiB at 64 helpers plus 500 Album helpers, and
+< 512 KiB after a year of 20 agents a day (each with 3 fledglings) thanks to Album compaction (R13;
+tests).
 Cadence: 2 s after a purchase, wish, setting change or envelope open; every 15 s while anything
 changed; on `close(cx)` one final write at once.
 
@@ -1266,7 +1287,10 @@ Two herdr windows are two processes with two app homes (life §4). Sharing is ex
 4. Each window observes its own agents; helpers last seen by the other window show in the
    **Elsewhere** group (and last in the ribbon at 50 % opacity) with their last known status, and
    follow the away rule of §10.2 when that window stops observing them for 60 s. A window moves a
-   helper to the Album only if it was the last to see it (`seenBy`).
+   helper to the Album only if it was the last to see it (`seenBy`), or once nobody has seen it
+   for 8 h (the other window closed for good, or herdr restarted and the process got a new
+   `writerId`): then any window that does not list it adopts it into the Album, so an agent that
+   ended while herdr was down never stays in Elsewhere for more than 8 h.
 5. Displayed numbers may jump slightly when a merge lands (the merged state replaces the local
    guess). The `merged` banner explains it.
 6. **Residual race**: `writeTextFile`'s compare-and-swap has no cross-process lock; another
@@ -1554,14 +1578,14 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R3 | `layout.resize` on a px node may not persist in `layouts/.state/Creaseworks.json` | unverified | the panel copy re-applies the stored width (localStorage) on `init`, guarded by `checking()` |
 | R4 | `layout()` may not expose node sizes (Files panel width) | unverified | assume 368 px for `mainEst` |
 | R5 | Hosted spinners paint above the view (gpui §9); clipping inside scroll areas and under the away card is unverified | open | spinners only on visible tiles, ≤ 6, never under absolute cards (cards hide spins while shown) |
-| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once); a remote terminal named differently in two homes becomes two helpers | accepted | documented; ids are hashes of exact strings; a collision merges two helpers' stats, it never loses an agent |
+| R6 | Helper id `address#created_ms` collides if two different terminals share address and creation ms (two homes starting cores at once), or their strings clash in the 32-bit hash (≈ 1e-7 for 30 present agents); a remote terminal named differently in two homes becomes two helpers | mitigated | a terminal whose plain id is held by a different present terminal takes a salted id (§5.1), so a clash never loses a present agent; Album records keep no address, so a returning agent whose id clashes with a gone helper's record rejoins that record (their stats merge) |
 | R7 | Cross-process CAS race (life §6.3) | accepted | idempotent actions + merge; ≤ 15 s of one window's progress can be overwritten until its next save re-applies it |
 | R8 | `turn` behaviour across a core restart | rebaseline rules (§6.1) | `turn < lastTurn` → rebaseline, no reward |
 | R9 | Clicking a mod block might move keyboard focus off the terminal | unverified | nothing is focusable; verify by hand; if focus moves, refocus the last `focused()` pane on mouse-up |
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size with years of Album entries | bounded | fledglings fold into parents after 30 days; if the save exceeds 512 KiB, the oldest Album pane helpers are compacted to `{id, name, species, hue, folds, tasks}` (~60 B); never dropped |
-| R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row with the † constants unchanged (P1 first wish median 21:39, day 3 13:39); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
+| R13 | Save size with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Measured: 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 350 KB (save cycle ≈ 280 ms in the QuickJS harness). Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day) |
+| R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
 | R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |

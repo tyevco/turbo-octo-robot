@@ -3,9 +3,12 @@
 // Keys and palette entries reach every shown copy through nextCommand(). Each
 // command acts once: the ribbon copy handles them; the panel copy handles them
 // only while the ribbon is hidden (layout() says so, or no ribbon copy is
-// alive). `fold` toggles the panel and the 64 px rail with layout.resize
-// (remembering the last unfolded width in localStorage, every call in
-// try/catch); `answer` opens the helper that has needed you longest;
+// alive). `fold` toggles the panel and the 64 px rail with layout.resize: the
+// rail is {px: 64}, the unfolded panel a {weight} (ARCHITECTURE B15: a {px}
+// node never shrinks in herdr, so a px-sized panel would be pushed off-screen
+// by a narrow window or zoom; a weight gives way down to its min). The last
+// unfolded weight is remembered in the slot and localStorage, every call in
+// try/catch; `answer` opens the helper that has needed you longest;
 // `envelope` opens the oldest envelope.
 
 import { nextCommand, run } from "herdr";
@@ -15,8 +18,14 @@ export const PANEL_ID = "cw-panel";
 export const RIBBON_ID = "cw-ribbon";
 export const RAIL_PX = 64;
 export const DEFAULT_PANEL_PX = 320;
+/** layouts/Creaseworks.json's cw-panel weight beside main (tools/layout/build.mjs PANEL_WEIGHT). */
+export const DEFAULT_PANEL_WEIGHT = 0.39;
+/** Remembered weights outside this range are ignored (a stray value never hides the panel or the terminals). */
+const WEIGHT_MIN = 0.05;
+const WEIGHT_MAX = 20;
 export const RAIL_BELOW = 140;
 const WIDTH_KEY = "creaseworks.panelWidth";
+const WEIGHT_KEY = "creaseworks.panelWeight";
 const CYCLE_MS = 30000;
 
 // ---------------------------------------------------------------------------
@@ -49,12 +58,24 @@ const pxOf = (node) => {
   return null;
 };
 
+const weightOf = (node) => {
+  const s = node && node.size;
+  if (s && typeof s === "object" && typeof s.weight === "number") return s.weight;
+  if (node && typeof node.weight === "number") return node.weight;
+  return null;
+};
+
+const goodWeight = (w) => typeof w === "number" && Number.isFinite(w) && w >= WEIGHT_MIN && w <= WEIGHT_MAX;
+
 /**
  * What the commands need from `layout()`: { known, ribbonHidden, panelHidden,
- * filesShown, filesPx }. A node missing from a known tree counts as hidden.
+ * filesShown, filesPx, panelWeight }. A node missing from a known tree counts
+ * as hidden. `filesPx` is the Files column's px size, else 368 (its width at
+ * 1440 x 900 as a weight); `panelWeight` is cw-panel's {weight} or null
+ * (px-sized, or not reported).
  */
 export function layoutInfo(tree) {
-  if (!tree || typeof tree !== "object") return { known: false, ribbonHidden: false, panelHidden: false, filesShown: false, filesPx: 368 };
+  if (!tree || typeof tree !== "object") return { known: false, ribbonHidden: false, panelHidden: false, filesShown: false, filesPx: 368, panelWeight: null };
   const ribbon = findNode(tree, RIBBON_ID);
   const panel = findNode(tree, PANEL_ID);
   const files = findNode(tree, "panel");
@@ -64,6 +85,7 @@ export function layoutInfo(tree) {
     panelHidden: !panel || panel.hidden === true,
     filesShown: !!files && files.hidden !== true,
     filesPx: pxOf(files) ?? 368,
+    panelWeight: weightOf(panel),
   };
 }
 
@@ -90,6 +112,29 @@ export function rememberWidth(px) {
   }
 }
 
+/** This copy's remembered unfolded weight, or null. */
+export function recallWeight() {
+  try {
+    const ls = globalThis.localStorage;
+    if (!ls) return null;
+    const raw = ls.getItem(WEIGHT_KEY);
+    if (raw === null || raw === undefined || raw === "") return null;
+    const v = Number(raw);
+    return goodWeight(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberWeight(w) {
+  try {
+    const ls = globalThis.localStorage;
+    if (ls) ls.setItem(WEIGHT_KEY, String(Math.round(w * 1000) / 1000));
+  } catch {
+    // per-copy convenience only
+  }
+}
+
 function safeRun(name, args) {
   try {
     run(name, args);
@@ -99,34 +144,56 @@ function safeRun(name, args) {
   }
 }
 
-/** The panel's last unfolded width (slot, then this copy's localStorage, then 320). */
+/** The panel's last unfolded width in px (slot, then this copy's localStorage, then 320): for display only. */
 export function lastWidth(slot) {
   const w = slot.widths.lastPanel;
   return typeof w === "number" && w >= RAIL_BELOW ? w : recallWidth() ?? DEFAULT_PANEL_PX;
 }
 
-/** Records the panel copy's measured width; an unfolded one is remembered. */
+/** The weight an unfold resizes to: the last unfolded weight (slot, then localStorage), else the layout's 0.39. */
+export function lastWeight(slot) {
+  const w = slot.widths.lastWeight;
+  if (goodWeight(w)) return w;
+  return recallWeight() ?? DEFAULT_PANEL_WEIGHT;
+}
+
+/** Remembers the panel's current weight (from `layout()`) while it is unfolded at `px`. */
+function keepWeight(slot, px) {
+  const L = slot.layout;
+  const w = L ? L.panelWeight : null;
+  if (typeof px !== "number" || px < RAIL_BELOW || !goodWeight(w) || w === slot.widths.lastWeight) return;
+  slot.widths.lastWeight = w;
+  rememberWeight(w);
+}
+
+/** Records the panel copy's measured width; an unfolded one (and its weight) is remembered. */
 export function notePanelWidth(slot, px) {
   slot.widths.panel = px;
   if (px >= RAIL_BELOW && px !== slot.widths.lastPanel) {
     slot.widths.lastPanel = px;
     rememberWidth(px);
   }
+  keepWeight(slot, px);
+}
+
+/** The unfolded panel: a {weight}, never {px}, so a narrow window or zoom shrinks it instead of pushing it off-screen. */
+function unfoldArgs(slot) {
+  return { id: PANEL_ID, weight: lastWeight(slot) };
 }
 
 /** `creaseworks.fold`: panel ↔ rail; a hidden panel is shown (and unfolded) first. */
 export function fold(slot, info) {
   const L = info ?? slot.layout;
-  const last = lastWidth(slot);
   if (L.panelHidden) {
     safeRun("layout.show", { id: PANEL_ID });
-    return safeRun("layout.resize", { id: PANEL_ID, px: last }) ? "shown" : "failed";
+    return safeRun("layout.resize", unfoldArgs(slot)) ? "shown" : "failed";
   }
   const w = slot.widths.panel;
-  if (typeof w === "number" && w < RAIL_BELOW) return safeRun("layout.resize", { id: PANEL_ID, px: last }) ? "unfolded" : "failed";
+  if (typeof w === "number" && w < RAIL_BELOW) return safeRun("layout.resize", unfoldArgs(slot)) ? "unfolded" : "failed";
   if (typeof w === "number") {
     slot.widths.lastPanel = w;
     rememberWidth(w);
+    keepWeight(slot, w);
   }
   return safeRun("layout.resize", { id: PANEL_ID, px: RAIL_PX }) ? "folded" : "failed";
 }
@@ -136,12 +203,12 @@ export function show(slot, info) {
   const L = info ?? slot.layout;
   if (L.panelHidden) {
     safeRun("layout.show", { id: PANEL_ID });
-    safeRun("layout.resize", { id: PANEL_ID, px: lastWidth(slot) });
+    safeRun("layout.resize", unfoldArgs(slot));
     return "shown";
   }
   const w = slot.widths.panel;
   if (typeof w === "number" && w < RAIL_BELOW) {
-    safeRun("layout.resize", { id: PANEL_ID, px: lastWidth(slot) });
+    safeRun("layout.resize", unfoldArgs(slot));
     return "unfolded";
   }
   return "noop";
