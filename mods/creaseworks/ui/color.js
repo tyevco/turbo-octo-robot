@@ -85,8 +85,15 @@ export function mix(a, b, t) {
 
 /** `fg` composited over an opaque `bg` (its own alpha ignored), as `#rrggbb`. */
 export function over(fg, bg) {
+  const key = typeof fg === "string" && typeof bg === "string" ? fg + bg : null;
+  if (key !== null) {
+    const hit = OVER.get(key);
+    if (hit !== undefined) return hit;
+  }
   const a = alphaOf(fg);
-  return a >= 1 ? hex6(fg) : mix(hex6(bg), hex6(fg), a);
+  const out = a >= 1 ? hex6(fg) : mix(hex6(bg), hex6(fg), a);
+  if (key !== null) remember(OVER, key, out);
+  return out;
 }
 
 function channel(v) {
@@ -105,10 +112,30 @@ export function luminance(c) {
  * first composited over `b`; `b` is taken as opaque (its alpha is ignored).
  */
 export function contrast(a, b) {
+  const key = typeof a === "string" && typeof b === "string" ? a + b : null;
+  if (key !== null) {
+    const hit = CONTRAST.get(key);
+    if (hit !== undefined) return hit;
+  }
   const fg = over(a, b);
   const x = luminance(fg);
   const y = luminance(b);
-  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  const out = (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  if (key !== null) remember(CONTRAST, key, out);
+  return out;
+}
+
+// Render-time memo tables (A2 rule 6: a 64-helper render calls the guards
+// hundreds of times with a handful of distinct colours). Filled lazily, never
+// at import; bounded so a theme switch cannot grow them without end.
+const CONTRAST = new Map();
+const GUARDED = new Map();
+const OVER = new Map();
+const MEMO_MAX = 512;
+
+function remember(map, key, value) {
+  if (map.size >= MEMO_MAX) map.clear();
+  map.set(key, value);
 }
 
 /** Herdr status for a game status word or group key (`needs` → `blocked`, …). */
@@ -142,10 +169,21 @@ export function statusColor(T, status, surface) {
   const bg = surfaceColor(T, surface);
   const key = statusKey(status);
   const first = key && T ? T[key] : undefined;
-  for (const c of [first, T && T.muted, T && T.foreground]) {
-    if (isHex(c) && contrast(c, bg) >= GUARD_MIN) return hex6(c);
+  const muted = T && T.muted;
+  const fg = T && T.foreground;
+  const memo = `${first}|${muted}|${fg}|${bg}`;
+  const hit = GUARDED.get(memo);
+  if (hit !== undefined) return hit;
+  let out = null;
+  for (const c of [first, muted, fg]) {
+    if (isHex(c) && contrast(c, bg) >= GUARD_MIN) {
+      out = hex6(c);
+      break;
+    }
   }
-  return contrast("#000000", bg) >= contrast("#ffffff", bg) ? "#000000" : "#ffffff";
+  if (out === null) out = contrast("#000000", bg) >= contrast("#ffffff", bg) ? "#000000" : "#ffffff";
+  remember(GUARDED, memo, out);
+  return out;
 }
 
 /** A surface given as a theme key or a colour, as `#rrggbb` (white when unusable). */

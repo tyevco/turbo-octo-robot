@@ -1381,7 +1381,7 @@ because a bad one there fails silently (gpui §5).
 | `layout-preview.png` | 1 | 216×124 | from the 1440×900 whole-window shot (A10) |
 | `logo.svg` | 1 | 64 | README, RECIPE |
 
-Total: 121 SVG + 1 PNG in the mod, plus repo `preview.png`. If the facet split is not needed the
+Total: 120 SVG + 1 PNG in the mod (121 files), plus repo `preview.png`. If the facet split is not needed the
 36 `-a/-b/-c` files are still generated but unused (they cost nothing at run time). Runtime vector
 art (no files): mat grid (2 elements), mat edge, crease lines, streak track, progress and countdown
 bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
@@ -1562,6 +1562,6 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
 | R13 | Save size with years of Album entries | bounded | fledglings fold into parents after 30 days; if the save exceeds 512 KiB, the oldest Album pane helpers are compacted to `{id, name, species, hue, folds, tasks}` (~60 B); never dropped |
-| R14 | The pacing targets come from a calibration prototype, not the engine | open | the shipped simulator asserts BALANCE.md; † constants are the retune knobs, in the order BALANCE.md lists |
-| R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional; retune the gate, not `Lw` |
+| R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row with the † constants unchanged (P1 first wish median 21:39, day 3 13:39); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
+| R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |

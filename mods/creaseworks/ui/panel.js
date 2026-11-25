@@ -121,7 +121,7 @@ function header(vm, ui, ctx) {
     .border_color(T.border)
     .child(iconButton("cw-hdr-fold", "fold", "Fold Creaseworks to a rail (ctrl-shift-g)", { size: 16, onClick: (e, cx) => fold(cx) }, T))
     .child(v_flex().flex_1().min_w(0).child(row1).child(row2))
-    .child(iconButton("cw-hdr-gear", "gear", "Settings", { size: 24, color: activeTab(ui) === "settings" ? T.foreground : T.muted, onClick: (e, cx) => tab("settings", cx) }, T));
+    .child(iconButton("cw-hdr-gear", "gear", "Settings", { size: 18, hit: 28, color: activeTab(ui) === "settings" ? T.foreground : T.muted, onClick: (e, cx) => tab("settings", cx) }, T));
 }
 
 function boostBar(vm, ctx) {

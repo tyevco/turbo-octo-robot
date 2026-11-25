@@ -450,7 +450,9 @@ test("widgets: switch is Switch.new(id) with a 32×18 track and a knob that tran
   assert.equal(knob.id, "cw-calm-knob");
   assert.equal(st(knob, "left"), 16);
   assert.equal(st(knob, "w"), 14);
-  assert.equal(st(knob, "bg"), T.foreground);
+  // on the accent track the knob is whichever of foreground / accent_foreground stands out more
+  assert.equal(st(knob, "bg"), W.knobOn(T));
+  for (const t of Object.values(THEMES)) assert.ok(C.contrast(W.knobOn(t), t.accent) >= 2.5, `knob on accent ${t.accent}`);
   assert.deepEqual(knob.transitions, [{ kind: "transition", property: "left", duration: 120, delay: 0, easing: "ease-out" }]);
   assert.equal(row.children[1].children[0].text, "On");
   const off = W.toggle("cw-calm", false, {}, T, P.S_DARK).toJSON();

@@ -48,7 +48,7 @@ export function pngSize(file) {
 /** The shots in `dir` (top level only, the sheet itself excluded), views first. */
 export function listShots(dir) {
   if (!existsSync(dir)) return [];
-  const names = readdirSync(dir).filter((n) => n.endsWith(".png") && n !== SHEET_NAME);
+  const names = readdirSync(dir).filter((n) => n.endsWith(".png") && !/^contact-sheet(-[A-Za-z0-9_-]+)?\.png$/.test(n));
   const isWindow = (n) => n.startsWith("window-");
   return names.sort((a, b) => Number(isWindow(a)) - Number(isWindow(b)) || a.localeCompare(b));
 }
@@ -81,15 +81,15 @@ export function sheetHtml(dir, shots, { columns = 4, tile = 340, errors = [], ti
  * Builds `<dir>/contact-sheet.png` (or `out`). Reuses `browser` when given.
  * Returns the file written, or null when there are no shots.
  */
-export async function buildContactSheet({ dir = DEFAULT_DIR, out, browser, errors = [], columns, tile } = {}) {
-  const shots = listShots(dir);
+export async function buildContactSheet({ dir = DEFAULT_DIR, out, browser, errors = [], columns, tile, filter, title } = {}) {
+  const shots = filter ? listShots(dir).filter(filter) : listShots(dir);
   if (!shots.length) return null;
   const file = out ?? join(dir, SHEET_NAME);
   const htmlDir = join(dir, "html");
   mkdirSync(htmlDir, { recursive: true });
-  const htmlFile = join(htmlDir, "contact-sheet.html");
+  const htmlFile = join(htmlDir, file.replace(/^.*[\\/]/, "").replace(/\.png$/, ".html"));
   const cols = columns ?? Math.min(4, shots.length);
-  const html = sheetHtml(dir, shots, { columns: cols, tile, errors });
+  const html = sheetHtml(dir, shots, { columns: cols, tile, errors, title });
   writeFileSync(htmlFile, html);
   let own = null;
   if (!browser) own = await launchBrowser();

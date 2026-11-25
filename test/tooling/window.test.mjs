@@ -129,6 +129,8 @@ test("shoot CLI arguments and views validation", () => {
   assert.deepEqual(parseArgs(["--only", "a, b", "--out", "x", "--preview", "--no-windows", "--scale", "1"]),
     { only: ["a", "b"], out: "x", preview: true, windows: false, scale: 1 });
   assert.throws(() => parseArgs(["--bogus"]), /unknown option --bogus/);
+  assert.deepEqual(parseArgs(["--themes", "ink,win98"]).themes, ["ink", "win98"]);
+  assert.deepEqual(parseArgs(["--zooms", "1,1.5", "--no-vision"]), { zooms: [1, 1.5], vision: false });
   assert.throws(() => parseArgs(["--scale", "0"]), /--scale/);
   assert.throws(() => validateViews({}, "v"), /must be an array/);
   assert.throws(() => validateViews([{ name: "a b", size: { width: 1, height: 1 } }], "v"), /name must be/);
@@ -157,7 +159,9 @@ test.after(async () => {
 test("the demo view is screenshot in both themes, with a contact sheet", { skip: noBrowser }, async () => {
   const out = mkdtempSync(join(tmpdir(), "shots-"));
   try {
-    const result = await shoot({ only: ["demo"], out, windows: false, browser, log: () => {} });
+    // `root: out` has no tools/game.json, so the rig shoots its built-in demo
+    // even now that the game's glue/views.js exists.
+    const result = await shoot({ only: ["demo"], themes: ["graphite", "paper"], out, windows: false, browser, log: () => {}, root: out });
     assert.equal(result.demo, true);
     assert.deepEqual(result.errors, []);
     for (const theme of ["graphite", "paper"]) {
@@ -175,11 +179,13 @@ test("the demo view is screenshot in both themes, with a contact sheet", { skip:
 test("a whole window is screenshot at its size", { skip: noBrowser }, async () => {
   const out = mkdtempSync(join(tmpdir(), "shots-"));
   try {
-    const result = await shoot({ only: ["window"], out, scale: 1, sheet: false, browser, log: () => {} });
+    const result = await shoot({ only: ["window"], themes: ["graphite", "paper"], out, scale: 1, sheet: false, browser, log: () => {} });
     assert.deepEqual(result.errors, []);
     assert.deepEqual(pngSize(join(out, "window-1440x900-graphite.png")), { width: 1440, height: 900 });
     assert.deepEqual(pngSize(join(out, "window-1100x700-paper.png")), { width: 1100, height: 700 });
     assert.ok(!existsSync(join(out, "demo-graphite.png")), "--only window skips the views");
+    // the game's layout in four states (expanded, folded to the rail, hidden, Files open)
+    for (const state of ["folded", "hidden", "files"]) assert.ok(existsSync(join(out, `window-1440x900-${state}-graphite.png`)), state);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -208,7 +214,7 @@ test("a view that throws becomes a red error tile and is reported", { skip: noBr
       "];",
     ].join("\n"));
     const out = join(root, "shots");
-    const result = await shoot({ root, only: ["ok", "bad"], out, scale: 1, browser, log: () => {} });
+    const result = await shoot({ root, only: ["ok", "bad"], themes: ["graphite", "paper"], zooms: [1], out, scale: 1, browser, log: () => {} });
     assert.equal(result.demo, false);
     assert.deepEqual(result.errors.map((e) => e.name).sort(), ["bad-graphite", "bad-paper"]);
     assert.match(result.errors[0].error.message, /kaboom in render/);

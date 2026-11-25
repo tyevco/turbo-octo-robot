@@ -190,7 +190,7 @@ export function renderSettings(vm, ui, ctx) {
 
   // 1. Calm mode
   root.child(heading("cw-set-h-calm", "CALM MODE", T));
-  root.child(switchRow("cw-set-calm", "Calm mode", "No motion, no floating numbers; earnings unchanged", calm, {
+  root.child(switchRow("cw-set-calm", "Calm mode", "No motion or floating numbers; same earnings", calm, {
     onChange: (on, cx) => setting("calm", Boolean(on), cx),
   }, ctx));
 

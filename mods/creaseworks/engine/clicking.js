@@ -239,7 +239,7 @@ function pickSlots(state, sp, k) {
 
 function craneInterval(state, E) {
   const sp = state.spawn;
-  return (E.craneLo + E.craneLo * keyed(state, `crane-gap:${sp.cranesSeen}:${sp.seq}`)) * 1000;
+  return (E.craneLo + E.craneLo * keyed(state, `crane-gap:${sp.cranesSeen}:${Math.round(sp.activeMs)}`)) * 1000;
 }
 
 function creaseHelperOn(state) {
@@ -337,7 +337,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         if (sp.crane) { sp.nextCraneAt = sp.activeMs + craneInterval(state, E); break; }
         const slots = pickSlots(state, sp, 1);
         if (!slots) { sp.nextCraneAt = sp.activeMs + craneInterval(state, E); break; }
-        const u = keyed(state, `crane:${sp.seq}`);
+        const u = keyed(state, `crane:${sp.cranesSeen}`);
         const outcome = u < 0.5 ? "lucky" : u < 0.8 ? "storm" : "song";
         const id = `g${sp.seq++}`;
         sp.crane = { id, slot: slots[0], born: sp.shownMs, outcome };
@@ -347,7 +347,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         break;
       }
       case "boat-in": {
-        sp.nextBoatAt = sp.activeMs + (K.boatLo + K.boatSpread * keyed(state, `boat:${sp.seq}`)) * 1000;
+        sp.nextBoatAt = sp.activeMs + (K.boatLo + K.boatSpread * keyed(state, `boat:${Math.round(sp.activeMs)}`)) * 1000;
         if (sp.boat) break;
         const id = `b${sp.seq++}`;
         sp.boat = { id, born: sp.shownMs };

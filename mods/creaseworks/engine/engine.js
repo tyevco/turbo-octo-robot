@@ -304,7 +304,14 @@ export function apply(state, action) {
   if (!(seen >= t)) state.writersSeen[w] = t;
   const now = state.clock;
   if (PLAYER[action.type]) look(state, t);
-  if (action.type === "click" && t >= state.presence.lastHandAt) state.presence.handBy = w;
+  if (action.type === "click" && t >= state.presence.lastHandAt) {
+    // A hand-over merged in late: the previous owner's lineage ran the spawn
+    // clocks past t while idle (no active time), so the new owner's clocks
+    // restart at t and its merged clicks find the pieces it saw.
+    const p = state.presence;
+    if (p.handBy && p.handBy !== w && state.spawn.syncedTo > t && p.lastHandAt + K.activeWindowMs <= t) state.spawn.syncedTo = t;
+    p.handBy = w;
+  }
   // The owner's actions see the spawn clocks at their own time (merges replay them late).
   if (spawnOwner(state, w)) syncSpawns(state, ctx, Math.min(t, now), ev);
   switch (action.type) {

@@ -223,11 +223,28 @@ function absoluteLength(b, method) {
 }
 
 /** Validates one parametric style argument exactly as `style::apply_param` does. */
+// Fast paths with the same outcome as the full checks below: any number is a
+// valid Length / DefiniteLength / AbsoluteLength / number argument (it bridges
+// to `{ px }`), and a colour string that parsed once parses again. They keep
+// the mock's own cost per style call low, so the QuickJS harness's render
+// timings measure the mod rather than the recorder.
+const NUMERIC_KINDS = new Set(["Length", "DefiniteLength", "AbsoluteLength", "number"]);
+const GOOD_COLORS = new Set();
+
 function checkParam(name, kind, args) {
   if (args.length === 0 || args[0] === undefined) {
     throw new TypeError(`\`${name}\` expects at least 1 argument(s), got 0`);
   }
-  const b = bridge(args[0]);
+  const v = args[0];
+  if (typeof v === "number" && name !== "font_weight" && (name === "line_height" || NUMERIC_KINDS.has(kind))) return;
+  if (kind === "Color" && typeof v === "string" && GOOD_COLORS.has(v)) return;
+  if (kind === "Color" && typeof v === "string") {
+    colorFromBridged(bridge(v));
+    if (GOOD_COLORS.size > 4096) GOOD_COLORS.clear();
+    GOOD_COLORS.add(v);
+    return;
+  }
+  const b = bridge(v);
   if (b.t === "fn") throw new TypeError(`\`${name}\` does not take a function`);
   if (name === "line_height") {
     if (b.t !== "num") definiteLength(b, name);
@@ -386,6 +403,7 @@ function makeFallback() {
 }
 
 let proto = null;
+const EMPTY_ARGS = Object.freeze([]);
 
 function elementProto() {
   if (proto) return proto;
@@ -397,10 +415,12 @@ function elementProto() {
     };
   }
   for (const [name, kind] of Object.entries(METHODS.param)) {
-    p[name] = function (...args) {
+    // Only the first argument is read (style.rs apply_param); a one-element
+    // array keeps checkParam's signature without a rest-args allocation.
+    p[name] = function (a) {
       const r = live(this);
-      checkParam(name, kind, args);
-      r.styles.push([name, args[0]]);
+      checkParam(name, kind, a === undefined ? EMPTY_ARGS : [a]);
+      r.styles.push([name, a]);
       return this;
     };
   }

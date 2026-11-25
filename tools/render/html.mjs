@@ -28,7 +28,7 @@
 //     frame, `spin` unrotated, transitions at their target.
 // Anything the renderer does not know throws, so tests catch unsupported use.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lengthOf, parseColor, serialize, tryParseColor } from "../mock/gpui-core.js";
@@ -526,7 +526,23 @@ function assetUrl(path, ctx) {
       `asset \`${path}\` was not found at ${file}; asset paths resolve against the application directory, not against the file that asked for them`,
     );
   }
-  return { url: pathToFileURL(file).href, exists };
+  return { url: pathToFileURL(file).href, exists, file };
+}
+
+// CSS masks are fetched in CORS mode, which a file:// page (origin "null")
+// fails for file:// images: the sprite would silently draw nothing. svg()
+// masks are therefore inlined as data: URIs.
+const maskCache = new Map();
+function maskUrl(asset) {
+  if (!asset.exists || !existsSync(asset.file)) return asset.url;
+  let uri = maskCache.get(asset.file);
+  if (!uri) {
+    const data = readFileSync(asset.file);
+    const type = asset.file.endsWith(".svg") ? "image/svg+xml" : asset.file.endsWith(".png") ? "image/png" : "application/octet-stream";
+    uri = `data:${type};base64,${data.toString("base64")}`;
+    maskCache.set(asset.file, uri);
+  }
+  return uri;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +658,10 @@ function stopColor(color, opacity) {
 function renderPath(node, state, ctx) {
   const [path, bg] = node.args;
   // A path element paints only its geometry; its own box takes layout styles.
-  const css = stateCss(state, ctx, { paintable: false });
+  // Element opacity still applies (styles apply to a paint_path element:
+  // research gpui-ui.md §8, mod.rs:6370-6384), and so does a loop on it.
+  let css = stateCss(state, ctx, { paintable: false });
+  if (state.opacity !== null) css = [css, `opacity:${num(Math.min(1, Math.max(0, state.opacity)))}`].filter(Boolean).join(";");
   const w = absPx(state.size.width, ctx) ?? 0;
   const h = absPx(state.size.height, ctx) ?? 0;
   const geometry = gpuiPathData(path, w, h, ctx.zoom);
@@ -792,7 +811,7 @@ function renderNode(node, ctx) {
     case "svg": {
       const asset = assetUrl(node.args[0], ctx);
       if (!asset.exists) return open() + "</div>";
-      const mask = `url('${asset.url.replace(/'/g, "%27")}') center / 100% 100% no-repeat`;
+      const mask = `url('${maskUrl(asset).replace(/'/g, "%27")}') center / 100% 100% no-repeat`;
       return open(`background-color:currentColor;-webkit-mask:${mask};mask:${mask}`) + "</div>";
     }
     case "image": {

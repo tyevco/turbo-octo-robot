@@ -194,7 +194,7 @@ export function toggle(id, on, opts = {}, T, _S = undefined) {
     .w(14)
     .h(14)
     .rounded(7)
-    .bg(T.foreground)
+    .bg(checked ? knobOn(T) : T.foreground)
     .transition("left", 120);
   const track = div()
     .relative()
@@ -212,6 +212,20 @@ export function toggle(id, on, opts = {}, T, _S = undefined) {
   if (opts.onChange && !disabled) el.on_change(opts.onChange);
   if (opts.label) el.accessibility_label(String(opts.label));
   return el.child(row);
+}
+
+/**
+ * The knob on the accent track: T.foreground or T.accent_foreground, whichever
+ * stands out more from T.accent (T.foreground is dark-on-blue in paper and
+ * win98, light-on-light-blue in graphite).
+ */
+export function knobOn(T) {
+  const a = T.accent;
+  const fg = T.foreground;
+  const af = T.accent_foreground;
+  if (!isHex(a) || !isHex(af)) return fg;
+  if (!isHex(fg)) return af;
+  return contrast(af, a) > contrast(fg, a) ? af : fg;
 }
 
 /** Alias of `toggle` under the DESIGN name. */

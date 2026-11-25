@@ -85,7 +85,8 @@ function chipMark(m, T, S, hues, h) {
         .rounded(5)
         .bg(S.sheet)
         .border(1)
-        .border_color(T.border)
+        // T.muted, not T.border: a cream dot on a light chrome needs a real edge (paper, win98).
+        .border_color(T.muted)
         .cursor_pointer()
         .tooltip("Envelope ready: click to open")
         .on_click((e, cx) => {

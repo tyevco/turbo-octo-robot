@@ -152,7 +152,11 @@ test("svg() is a mask in the current text colour; image() an <img>", () => {
   const s = css(svg("/./star.svg").id("s").size_4().text_color("#ff0"), { id: "s" }, { assetRoot: dir });
   assert.equal(s["background-color"], "currentColor");
   assert.equal(s.color, "#ffff00");
-  assert.equal(s.mask, `url('${url}') center / 100% 100% no-repeat`);
+  // inlined: a file:// page cannot fetch a file:// mask (CSS masks are CORS requests)
+  const data = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>').toString("base64");
+  const full = renderToHtml(svg("/./star.svg").size_4(), { root: false, assetRoot: dir });
+  assert.ok(full.includes(`mask:url('data:image/svg+xml;base64,${data}') center / 100% 100% no-repeat`), full);
+  assert.ok(!full.includes(url), "no file:// mask");
   const warnings = [];
   const missing = renderToHtml(svg("missing.svg"), { root: false, assetRoot: dir, warnings });
   assert.doesNotMatch(missing, /mask/);

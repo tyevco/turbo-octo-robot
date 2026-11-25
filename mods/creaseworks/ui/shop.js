@@ -217,10 +217,10 @@ function itemRow(row, seg, count, ctx, sub = false) {
   return el;
 }
 
-function silhouette(seg, i, row, ctx) {
+function silhouette(seg, row, ctx) {
   const T = ctx.T;
   return h_flex()
-    .id(`cw-shop-unknown-${seg}-${i}`)
+    .id(`cw-shop-unknown-${str(row.id)}`)
     .w_full()
     .h(52)
     .flex_none()
@@ -307,7 +307,7 @@ export function renderShop(vm, ui, ctx) {
       for (const s of row.sub) if (s && typeof s.id === "string") list.child(itemRow(s, seg, count, ctx, true));
     }
   }
-  hidden.slice(0, SILHOUETTES).forEach((row, i) => list.child(silhouette(seg, i, row, ctx)));
+  for (const row of hidden.slice(0, SILHOUETTES)) list.child(silhouette(seg, row, ctx));
   if (hidden.length > SILHOUETTES) {
     const more = hidden.length - SILHOUETTES;
     list.child(text(clip(`+${more} more to discover`, SHOP_CLIP.more), { size: 11, color: T.muted }, T).pl(10).py(4));

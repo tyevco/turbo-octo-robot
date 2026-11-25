@@ -1,11 +1,12 @@
 # Creaseworks: balance target
 
 This file is the written target that `tools/sim/pacing.mjs` asserts (ARCHITECTURE A11) and
-`test/pacing.test.mjs` parses. Every formula and constant it depends on is in `docs/DESIGN.md`
+`test/pacing/*.test.mjs` parse. Every formula and constant it depends on is in `docs/DESIGN.md`
 §4–§10; the two files change together. The numbers in the "proto" columns come from a calibration
 prototype of the DESIGN formulas (1 s steps, the profiles below, 20 seeds). The shipped simulator
 replaces it and drives the **real engine** (`engine.apply` / `engine.advance`) through the same
-profiles.
+profiles. With the §8 knobs at their current values it passes every row below (P1 first wish
+median 21:39, min 21:21, max 22:07; run `npm run sim` for the full table).
 
 ---
 

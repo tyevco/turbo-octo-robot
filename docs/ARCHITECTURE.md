@@ -277,6 +277,18 @@ whole windows render `layouts/<Name>.json` with mock shipped chrome at 1440×900
 Output: `tools/out/shots/<view>-<theme>.png`, `window-<size>-<theme>.png`, and a contact sheet.
 `preview.png` and `mods/<mod>/art/layout-preview.png` are produced from the whole-window shot.
 Every screenshot is looked at by a person/agent before a round is called clean.
+*As built (integration):* every view in all six themes of `themes.json` and at zoom 1 and 1.5
+(`<view>-<theme>[-z1.5].png`), grey / deuteranopia / protanopia captures of `flock-34`,
+`flock-64-dense`, `ribbon-64-1440` and `rail-64` in graphite and paper
+(`<view>-<theme>-<grey|deuteranopia|protanopia>.png`), and whole windows at both sizes in four
+layout states (`window-<w>x<h>[-folded|-hidden|-files]-<theme>.png`). A window's game blocks run
+as copies of the View sharing ONE mock herdr window (one handover slot, as in herdr), each sized
+by its root's `on_size_change`. `svg()` masks are inlined as `data:` URIs (a `file://` page cannot
+fetch a `file://` CSS mask: masks are CORS requests). Sheets: `contact-sheet.png` (graphite +
+paper), `contact-sheet-zoom.png`, `contact-sheet-vision.png`, `contact-sheet-<theme>.png`.
+`--preview` writes `preview.png` at 1600×1000 (the 1440×900 window at 10/9) and
+`art/layout-preview.png` at 216×124 (DESIGN §1, §13.3). Options: `--themes`, `--zooms`,
+`--no-vision`, `--only`, `--no-windows`, `--no-sheet`.
 
 ### A11. Pacing simulator (tools/sim/pacing.mjs)
 
@@ -285,13 +297,14 @@ active minutes, clicks per minute split across central object / nodes / pickups,
 (cheapest-payback-first), agent schedule (n agents, working hours, tasks per hour, needs-you
 events, sub-agents), sleep gaps (offline cap 8 h). Simulated in fixed steps through the real
 `engine.advance` / `engine.apply` so it measures the shipped numbers. Reports milestone times;
-`test/pacing.test.mjs` parses the milestone table in `docs/BALANCE.md` and asserts each target
+`test/pacing/*.test.mjs` parse the milestone table in `docs/BALANCE.md` and assert each target
 within its tolerance, plus the invariants listed there.
 
 ### A12. Tests (node:test)
 
-`npm test` = `node --import ./tools/node/register.mjs --test --test-concurrency=1 "test/*.test.mjs" "test/tooling/*.test.mjs"`
-(globs: Node 22's `--test` does not take a directory); `npm run test:frozen` runs the same suites with
+`npm test` = `node --import ./tools/node/register.mjs --test --test-concurrency=1 "test/*.test.mjs" "test/!(qjs)/*.test.mjs"`
+(globs: Node 22's `--test` does not take a directory; every suite folder but `test/qjs`, which
+`npm run test:qjs` runs without the Node hooks); `npm run test:frozen` runs the same suites with
 `tools/node/frozen.mjs` first (frozen prototypes as in herdr; the Playwright suites skip there). Suites: engine (determinism,
 formulas vs DESIGN tables, idempotent apply, merge, offline cap, prestige), text clipping (emoji
 corpus incl. ZWJ, flags, keycaps, skin tones, tags), save codec (damaged inputs:
@@ -602,12 +615,20 @@ banner lists refunds from these).
 **Merge-safety decisions (A5), measured by `test/engine/merge.test.mjs`** (two writers within
 0.75 % of one writer over 3 h for 12 seeds):
 * Every roll is a *keyed* draw: mulberry32 seeded by `fnv1a32n(key) ^ seed`, with keys such as
-  `env:<helperId>:<turn>`, `fig:<hits>`, `slot:<seq>:<j>`, `crane:<seq>`, so merged lineages roll
-  the same envelope types, figures and spawns whatever the order. `state.rng` stays in the save
-  (`next()` is still exported) but the engine's rules no longer step it.
+  `env:<helperId>:<turn>`, `fig:<hits>`, `slot:<seq>:<j>`, `crane:<cranesSeen>` (outcome),
+  `crane-gap:<cranesSeen>:<activeMs>`, `boat:<activeMs>`, so merged lineages roll the same
+  envelope types, figures and spawns whatever the order. Crane and boat rolls are not keyed by
+  `seq` (which counts every spawn, including unclicked pieces whose number calm mode's longer
+  lives changes), so calm mode rolls the same cranes (BALANCE inv. 12). `state.rng` stays in the
+  save (`next()` is still exported) but the engine's rules no longer step it.
 * Spawn clocks belong to the window being played (`presence.handBy`). Other writers advancing
   the shared clock leave the mat alone; the owner's actions merged in late first run the spawn
-  clocks up to their own time (`spawn.syncedTo`). A background window's `observe` does not
+  clocks up to their own time (`spawn.syncedTo`). On a hand-over merged in late (the first click
+  of a new owner, older than `syncedTo`, while the old owner's lineage was idle: no hand input in
+  the 30 s before it), `syncedTo` moves back to that click, so the new owner's spawn clocks restart
+  where its own lineage started them and its merged node clicks find their chains (without this,
+  every session start of a two-window game lost up to one save interval of spawns and clicks:
+  P1 two-window days were 1.5–4 % short). A background window's `observe` does not
   overwrite the presence flags of a window with a hand input in the last 30 s.
 * The stored rhythm `r` is not reset by ticks (a late hit must keep its streak); read it through
   `rhythmAt(state, E, now)`. A stale observation (older than the helper's `lastSeen`, or than
@@ -802,3 +823,149 @@ tick to the vm's new `x` (the §17 R2 fallback), not one long transition, becaus
 cannot tell its first frame. Flags missing from a vm default as follows: crane `bob` true, sheet
 `hintBob` = `firstRunHint` (both off in calm). Each module exports its grapheme limits
 (`MAT_CLIP`, `BANNER_CLIP`, `AWAY_CLIP`, `RAIL_CLIP`, `RIBBON_CLIP`, `PANEL_CLIP`).
+
+**As built (tabs builder).** One handler is added to the table: `resetGame(cx)` (Settings
+"Reset game…" confirm card, after `confirm("reset")` armed): a glue store call that keeps the old
+save as `save.damaged-<n>.json` with reason `"reset"` and starts a fresh state. `toggleGroup(key,
+cx)` must store `ui.folded[key] = !isFolded(vm, ui, key)` (`ui/flock.js` export), not a blind
+flip, because some keys start folded without a stored value: Elsewhere, Album, the legend (unless
+`vm.helpers.legend`), every `owned:<segment>`, and a group the vm marks `folded` (Resting above
+12). `ui.scrollTo` unfolds its group. Shop reads the Works count from `vm.shop.buyCount` (else
+`ui.buyCount`, else 1) and calls `buy(id, count)` with it for workshop rows and with 1 for tier
+sub-rows and upgrades. The two-step confirms (wish, restore, reset) are armed when `ui.now −
+ui.armedAt ≥ 1500` (`ui/string.js` `isArmed`, `ARM_MS`); without both numbers they stay disarmed,
+so the glue must re-render with a fresh `ui.now` (its 1 s data tick does). Exports besides the
+renderers: `ui/flock.js` `isFolded allTiles selectedTile flockHeadline tileLook tileElement TILE
+VIRTUAL_ABOVE VLIST FLOCK_CLIP`; `ui/shop.js` `activeSegment buyCount rowIconPath SEGMENTS
+BUY_COUNTS SILHOUETTES SHOP_CLIP`; `ui/string.js` `isArmed wishConfirming strandShares
+stringLines STRAND ARM_MS CLEARS KEEPS STRING_CLIP`; `ui/settings.js` `CHOICES SETTINGS_CLIP`.
+Ids: tiles `cw-flock-tile-<helperId>` (badge `-badge-`, envelope marker `-env-`, rest bar
+`-rest-`), group headers `cw-flock-grp-<key>`, virtual lists `cw-flock-vl-<key>`, shop rows
+`cw-shop-row-<id>` / buttons `cw-shop-buy-<id>` / silhouettes `cw-shop-unknown-<id>`, settings
+controls `cw-set-<dotted key with - for .>`. Not drawn yet: the §3.5 wish moment (strands rise
+and fade), because the vm carries no "just wished" flag; a later vm field can drive it.
+
+### B12. Simulator as built (simulator builder's additions; A11/B8 still hold)
+
+`tools/sim/pacing.mjs` exports `runProfile(profileId, seed, opts)` (B8; opts `idleStep` 1–60 s,
+`stopAt` `"wish"|"wish2"` (P1 defaults to `wish2` and makes the first wish at once), `days`,
+`wish`, `windows`, `buys`, `keepState`, `trace`, `onStep`), `runAll(ids, seeds, { workers })`
+(worker threads), `evaluate(runs)` (every BALANCE row → `{ rows, pass }`), `report`, `bestBuy`,
+`playerBuys`, `Player`, `agentObservation(profileId, sec)`, `cadence`, `median`, `parseSeeds`,
+`SHARE_BUCKETS`, `T0`. `tools/sim/profiles.mjs` holds the P1–P12 parameters as code and
+`parseBalance()` (§3 profile list, §3.1 activeFrac, §4, §5 incl. extras and monotonicity, §6.1–6.3,
+§7 numbers, §8 knob values); a BALANCE cell it cannot read throws.
+* **Time.** Play-clock p (s) maps to wall `T0 + d·24 h + (p − 8 h·d)` on day d; nights are a
+  16 h wall jump the engine credits as an away segment. Steps: 1 s during sessions (hand hits on
+  their exact ms), `idleStep` (default 10 s) outside them, and every agent/fledgling change on its
+  second. Results do not depend on the idle step (`test/pacing/step.test.mjs`: 1 s vs 10 s within
+  1 %; only tick-driven automations move by a few seconds).
+* **Agents.** Agent i = 1…n (addr `a<i−1>`, fledgling `k<i−1>`), offset `(997·i) mod 3600` s;
+  `turn` = 1000 + 3 per hour cycle + finished blocks. Observations are sent only on change.
+* **Player draws** (crane catch 80 %, chain success 95 % and the tear point) are keyed by the
+  crane ordinal and the active clock at a chain's first sighting, not by item ids, so P12 (calm)
+  and two-window runs make the same choices.
+* **Shares.** `helpers` includes `overflow` (a helper's overflow is helper income).
+* **Two windows (inv. 11).** `windows: [{ w, agents, sessions }]` runs writers on one save text
+  with the A4/A5 merge every 15 s (offset 7 s); `buys: run.purchases` replays a one-writer run's
+  purchases (at every step; an unaffordable one waits; one refused on merge is re-queued). The
+  test compares each day's lifetime, workshops, away, tasks and units with that one-writer run.
+
+### B13. Glue as built (glue builder's additions; A4–A6 and B7 still hold)
+
+`mods/creaseworks/main.js` + `glue/{clock,live,store,observe,commands,notify,session,views}.js`;
+tests `test/glue/*.test.mjs` (mock herdr, virtual clock; also run by `npm run test:frozen`).
+
+**main.js.** `export default class Creaseworks extends View` with `init/render/close`. It imports
+`gpui-kit`, `glue/session.js` and the `ui/` renderers (plus `ui/palette.js` for `S`/`hues` and
+`ui/flock.js isFolded`, which it hands to the session); only `glue/*` imports `herdr`. `render`
+returns `div#root` (`size_full`, `on_size_change` → `Session.onSize`) around `renderRibbon` (role
+`"ribbon"`) or `renderPanel` (which draws the rail below 140 px); while the save loads it draws a
+one-line placeholder.
+
+**Session (B7).** `new Session(role = null, { isFolded })`: a null role is read from
+`props().role` in `init`. Extra members: `ctx()` (the B11 ctx minus `S`/`hues`: `T` = `theme()`,
+`dark`/`zoom` from `settings()`, `calm`, `width`, `height`, `save`, `handlers`, and for the ribbon
+`panelShown`, `narrowHint`), `uiForRender()` (the copy's `ui` with `ui.now` set), `loading()`,
+`changed(cx)` (builds the vm in the tick / handler, then `cx.notify()`, so render only reads the
+cache), `dispatch(action, cx)`, `openHelper(idOrGroup, cx)`. `ui` also carries `buyCount` (the
+Works toggle; `handlers.setting("buyCount", v)`). Handlers add `resetGame` (B11 tabs builder).
+The vm cache key is `state.rev | slot.rev | width | tab | buyCount | notice kind@at@retry |
+clock bucket (1 s, 5 s calm) | short | flash`; `short` = panel height < 640.
+
+**Slot (A6) fields beyond the A6 list** (all plain data): `home` (a slot from another app home is
+never adopted), `rev` (glue change counter), `paths` (`save bak location dir shared`),
+`loading` (load generation), `readOnly` (newer save), `save` (`status baseOk gen writing savedAt
+dirtyAt urgentAt writtenRev confirmed errors retryAt damaged[] problemSince`), `notices {load,
+write}` (`notice` is the one on show: error > conflict > newer > fresh > recovered > merged),
+`flash {text, until}` (3 s messages: "Nobody needs you", "That agent has gone", Settings tool
+results; shown as the ribbon `pill` and a footer notice), `obs {sig, presence}`, `live` / `panes`
+(null-prototype maps from the latest `terminals()` / `agents()` read), `widths {panel,
+panelHeight, ribbon, lastPanel}`, `layout` (`layoutInfo(layout())`), `presence {visible, active,
+panelShown}`, `request` (a ribbon/rail `select` / `showGroup` for the panel copy's `ui`),
+`notify {claim, rescued}`, `narrow {filesEpoch, filesWas, dismissed}`, `cycle` (▲/✓ cycling).
+Copy ids are `"<role>:<random>"`; a new `init` takes over older copies of its role (their timers
+died with their generation), so the ticker passes on at once after a hot reload. A ticker is
+stale after `max(5 s, 2.5 × its tick interval)` (a hidden window beats every 5 s).
+
+**Store (A4).** `load` reads `location.json` first (a damaged pointer falls back to the local
+save, with a notice). Damaged copies: the first free `n` of 1..5; when all exist the files shift
+down (2→1 … 5→4) and the new one is 5, so 1 is always the oldest. An unreadable `save.json`
+(> 1 MiB, not a file) is an `error` notice with back-off. A merge shows `merged` only when
+another writer's `applied` grew (a hot reload's own late write is not "another window");
+refused purchases are named in it. `checkSave`, `restoreBackup`, `resetGame` (old file kept as
+`save.damaged-<n>.json`, listed as "(restore)"/"(reset)") and `sharePath(path)` (validated:
+absolute, `.json`, absent or a Creaseworks save; writes only `location.json`; this window's
+pending actions are replayed onto the shared save; `""` stops sharing) are exported.
+`ctx.save` = `saveInfo(slot, now)`.
+
+**Notifications (§11.2).** A notification is claimed first: the ticker dispatches `notified`,
+saves at once, and calls `notify()` only when that save is confirmed and the merged counter for
+the day is still ≤ 3, so two windows racing for the last slot send one. The `save` event (a save
+error / fresh notice lasting 5 min, once per episode) is sent on the local counter. "Quiet" = the
+panel copy is alive, not hidden and not folded, and `window()?.active`.
+
+**Commands (§2.6).** The ribbon copy acts unless `layout()` reports `cw-ribbon` hidden; the panel
+acts only when it does (or, with an unreadable `layout()`, when no ribbon copy is alive).
+`layout()` is read tolerantly (a tree of `{id, hidden, size, children}`; a node missing from a
+known tree counts as hidden). `fold`: hidden panel → `layout.show` + `layout.resize` to the last
+width; rail (< 140) → last width; else remember the width (slot + `localStorage`
+`creaseworks.panelWidth`, try/catch) and resize to 64. Group keys `"needs"` / `"finished"` pick
+the longest-waiting / oldest tile (fledglings drawn as pips are skipped) and cycle on repeats
+within 30 s.
+
+**views.js (A10).** Every entry is a real game: `scenario` is a getter (agents, terminals, a
+fixed-seed save, its own app home `/shots/<name>/herdr-app`, `patchDate: true` so the glue clock
+reads the virtual clock; reading it also forgets a slot this view's previous run left in the
+rig's process) and `setup` plays it into shape through the session (clicks, buys, turn deltas,
+wishes, another writer's observation, `failNextWrite` / `raceNextWrite` / `externalWrite` for the
+banners, a wall-clock step back for `clock`). Where luck or hours decide a state, setup moves the
+one engine field that decides it (spawn clock due, a storm's end time, banked folds) and lets the
+engine do the rest. Ribbon views are `ribbon-<n>-<1100|1440>`; `flock-12` (block `cw-panel`) and
+`ribbon-window` (block `cw-ribbon`) fill the whole-window shots; `windowScenario` gives the
+chrome the same 12 agents.
+
+### B14. Integration as built (integration round; A2–A12 and B1–B13 still hold)
+
+* **Tests.** `npm test` runs every folder under `test/` except `test/qjs` (glob
+  `test/!(qjs)/*.test.mjs`), and `npm run test:frozen` the same set under frozen prototypes (the
+  QuickJS and Playwright suites skip there). `test/qjs/creaseworks.test.mjs` loads the REAL mod in
+  the harness with 0, 4, 34 and 64 agents (panel, rail, ribbon): module graph / constructor /
+  init < 500 ms, every render < 50 ms (p50 and max reported), every timer tick < 500 ms, clicks
+  through `fire()`, hot reload mid-play and mid-write (both outcomes), VM restart from disk, and
+  hostile addresses (`__proto__`, `constructor`, `toString`, …) under frozen prototypes.
+* **Engine index** also exports `formatEta`, `formatInt`, `graphemeCount` and `cleanTitle`.
+* **Render hot path.** `ui/color.js` memoises `contrast`, `over` and `statusColor` in bounded
+  module-level tables (filled lazily at call time, never at import: A2 rule 2 holds). The mock
+  gpui recorder (`tools/mock/gpui-core.js`) takes fast paths with the same outcome for numeric
+  lengths and for colour strings that already parsed, and no longer allocates rest arguments per
+  style call, so harness render timings measure the mod rather than the recorder.
+* **Footer save line** (`store.saveInfo`): a `conflict` notice reads "Merging another window's
+  save…" and a `fresh` one "Started fresh · saved …", so the problem glyph never sits next to a
+  bare "Saved".
+* **Narrow window with Files open (§2.3).** herdr applies a node's `min` as a CSS min at render,
+  so `main`'s `"min": 360` keeps the terminals at 360 px and, at 1100 px with Files open, the
+  panel overflows the work row and is clipped (only its left ~70 px show) until the player takes
+  the ribbon's "fold to a rail?" hint; folded, everything fits (360 + 368 + 64 + gaps = 824 ≤ 832).
+  §2.3's `mainEst = 112` assumed `main` could shrink below its min. Left as designed (a judged
+  must-fix keeps `min: 360`); `window-1100x700-files-*.png` shows it.

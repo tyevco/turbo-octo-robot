@@ -27,7 +27,10 @@ export function dayKey(d) {
 
 // ---------------------------------------------------------------------------
 // Deterministic draws for the player's own choices (crane catch, chain tears),
-// keyed so they do not depend on step size or call order.
+// keyed by the crane's ordinal and by the active clock at a chain's first
+// sighting, so they depend neither on step size, call order, the lineage of
+// a merged save, nor on how many other items spawned (item ids count every
+// spawn, including unclicked ones that calm mode's longer lives change).
 
 function mulberry(a) {
   a = (a + 0x6d2b79f5) >>> 0;
@@ -113,6 +116,13 @@ function observation(m, agents, s, withKids = true) {
   return list;
 }
 
+/** The Observation list (B5) of every agent and fledgling of a profile at play-clock second `sec`. */
+export function agentObservation(profileId, sec) {
+  const prof = typeof profileId === "string" ? PROFILES[profileId] : profileId;
+  const m = agentModel(prof);
+  return observation(m, m.offsets.map((_, i) => i), sec, true);
+}
+
 const obsKey = (list) => list.map((o) => `${o.status[0]}${o.turn}`).join(",");
 
 // ---------------------------------------------------------------------------
@@ -179,9 +189,9 @@ export function playerBuys(state, prof, t, act, mark) {
 }
 
 /**
- * The player's choices (BALANCE §3), shared by every window of one world and
- * by combinedReplay. Draws are keyed by item ids, so they do not depend on
- * step size or call order.
+ * The player's choices (BALANCE §3), shared by every window of one world.
+ * Draws are keyed (see `draw`), so they do not depend on step size, call
+ * order or the lineage of a merged save.
  */
 export class Player {
   constructor(prof, seed) {
@@ -217,7 +227,7 @@ export class Player {
     if (prof.ream && sp.ream) act({ t, type: "click", target: "ream", id: sp.ream.id });
     if (sp.crane && !this.craneSeen.has(sp.crane.id)) {
       this.craneSeen.add(sp.crane.id);
-      if (draw(this.seed, `catch:${sp.crane.id}`) < prof.craneCatch) act({ t, type: "click", target: "crane", id: sp.crane.id });
+      if (draw(this.seed, `catch:${sp.cranesSeen}`) < prof.craneCatch) act({ t, type: "click", target: "crane", id: sp.crane.id });
     }
     if (prof.scraps && sp.scraps.length) {
       act({ t, type: "click", target: "scrap", id: sp.scraps[0].id });
@@ -228,8 +238,9 @@ export class Player {
       let plan = this.chainPlan.get(c.id);
       if (!plan) {
         // 95 % of chains succeed; a failure is one out-of-order hit at a random point
-        const ok = draw(this.seed, `chain:${c.id}`) < prof.chainSuccess || c.k < 2;
-        plan = { ok, at: ok ? -1 : Math.floor(draw(this.seed, `tear:${c.id}`) * (c.k - 1)) };
+        const at = Math.round(sp.activeMs);
+        const ok = draw(this.seed, `chain:${at}`) < prof.chainSuccess || c.k < 2;
+        plan = { ok, at: ok ? -1 : Math.floor(draw(this.seed, `tear:${at}`) * (c.k - 1)) };
         this.chainPlan.set(c.id, plan);
       }
       const i = !plan.ok && c.next === plan.at ? c.k - 1 : c.next;
@@ -265,7 +276,6 @@ class Win {
     const action = { w: this.w, s: ++this.seq, ...a };
     const ev = engine.apply(this.state, action);
     if (this.sim.multi) this.pending.push(action);
-    if (this.sim.keepLog && !this.sim.inPlayer) this.sim.log.push({ k: this.k, a: action });
     for (const e of ev) if (e.kind === "ignored") this.sim.ignored[`${a.type}:${e.reason}`] = (this.sim.ignored[`${a.type}:${e.reason}`] || 0) + 1;
     this.sim.onEvents(this, ev, a.t, false);
     return ev;
@@ -273,7 +283,6 @@ class Win {
 
   advance(wall) {
     const ev = engine.advance(this.state, wall, this.w);
-    if (this.sim.keepLog && this.k === 0) this.sim.log.push({ k: 0, tick: wall });
     this.sim.onEvents(this, ev, wall, true);
     return ev;
   }
@@ -285,8 +294,13 @@ class Win {
  * Run one profile with one seed. opts:
  *   idleStep (s, default 10, ≤ 60), stopAt ("wish" | "wish2"; default "wish2" for P1 else "wish"),
  *   maxHours (play-clock cap, default 60), days (run exactly this many days, no stop),
- *   windows: [{ w, agents: [i…], sessions: (k) => bool }] (two windows share one save, A4/A5).
- * Returns { milestones, active, shares, dayShares, sessionRatios, purchases, nights, finalState, … }.
+ *   wish (make the first wish as soon as it is available; default: stopAt === "wish2"),
+ *   windows: [{ w, agents: [i…], sessions: (k) => bool }] (two windows share one save through
+ *     the A4/A5 protocol, each saving every 15 s; agent indices are 0-based),
+ *   buys: an earlier run's `purchases`, replayed instead of the buy policy (BALANCE inv. 11),
+ *   keepState (false drops finalState), trace(p, event, state), onStep(p, windows, disk).
+ * Returns { milestones, active, shares, dayShares, sessionRatios, purchases, nights, dayEnd,
+ * units, finalState, … }; milestone values are play-clock seconds.
  */
 export function runProfile(profileId, seed, opts = {}) {
   const prof = typeof profileId === "string" ? PROFILES[profileId] : profileId;
@@ -301,7 +315,6 @@ export function runProfile(profileId, seed, opts = {}) {
 
   const sim = {
     multi: Array.isArray(opts.windows) && opts.windows.length > 1,
-    keepLog: opts.log === true || (Array.isArray(opts.windows) && opts.windows.length > 1),
     p: 0, // play-clock ms of the operation in progress
     milestones: Object.create(null),
     active: Object.create(null),
@@ -315,8 +328,6 @@ export function runProfile(profileId, seed, opts = {}) {
     wishEvent: null,
     sessionSec: 0, // cumulative in-session seconds (BALANCE §1 active time)
     ignored: Object.create(null),
-    inPlayer: false,
-    log: [], // every action of every window (two-window mode), for combinedReplay
     onEvents: null,
   };
   const disk = { text: null };
@@ -346,6 +357,7 @@ export function runProfile(profileId, seed, opts = {}) {
     if (win !== primary || sim.multi) return;
     const s = win.state;
     const p = sim.p / 1000;
+    if (opts.trace) for (const e of ev) opts.trace(p, e, s);
     for (const e of ev) {
       if (e.kind === "buy") {
         hit(`buy:${e.item}`, p);
@@ -385,20 +397,31 @@ export function runProfile(profileId, seed, opts = {}) {
     last = { p, run: s.runFolds, life: s.lifetime, wishCount: s.wishCount };
   };
 
-  // -- the player's actions (logged as moments; combinedReplay re-runs the player at them)
+  // -- the player's actions
   const player = new Player(prof, seed);
-  const asPlayer = (win, mark, fn) => {
-    if (sim.keepLog) sim.log.push({ k: win.k, ...mark });
-    sim.inPlayer = true;
-    try { fn((a) => win.act(a)); } finally { sim.inPlayer = false; }
-  };
+  // opts.buys: a purchase script ({ item, p } of an earlier run's player purchases, in order)
+  // replayed instead of the policy, at every step (not only in sessions, so a purchase
+  // the merged save can afford a moment later does not wait 40 min for the next session);
+  // one not yet affordable waits, in order, and one refused when its window's actions are
+  // merged into the save goes back to the head.
+  const script = opts.buys ? opts.buys.filter((x) => x.by === "player").map((x) => ({ item: x.item, p: x.p * 1000 })) : null;
   const buyPolicy = (win, t) => {
-    if (sim.keepLog) sim.log.push({ k: win.k, policy: t });
-    player.buys(win.state, t, (a) => win.act(a), (id, payback) => markBuy(win, id, payback));
+    if (!script) {
+      player.buys(win.state, t, (a) => win.act(a), (id, payback) => markBuy(win, id, payback));
+      return;
+    }
+    while (script.length && script[0].p <= sim.p) {
+      const x = script[0];
+      const info = engine.itemInfo(win.state, x.item, 1);
+      if (info.have) { script.shift(); continue; }
+      if (!info.ok) break;
+      script.shift();
+      markBuy(win, x.item, null);
+      win.act({ t, type: "buy", item: x.item, count: 1, script: x });
+    }
   };
-  // envelope opens are clicks on a given helper's envelope: logged (and replayed) as they are
   const sessionStart = (win, t) => player.sessionStart(win.state, t, (a) => win.act(a));
-  const handHit = (win, t) => asPlayer(win, { hit: t }, (act) => player.hit(win.state, t, act));
+  const handHit = (win, t) => player.hit(win.state, t, (a) => win.act(a));
   const markBuy = (win, item, payback) => {
     if (win !== primary || sim.multi) return;
     sim.purchases.push({ item, p: sim.p / 1000, active: sim.sessionSec, by: "player", payback, run: win.state.wishCount });
@@ -419,12 +442,15 @@ export function runProfile(profileId, seed, opts = {}) {
     if (disk.text !== win.base) {
       const back = engine.parseSave(disk.text);
       if (!back.ok) throw new Error(`save damaged: ${back.reason}`);
+      const refused = [];
       for (const a of win.pending) {
         for (const e of engine.apply(back.state, a)) {
           if (e.kind !== "ignored") continue;
           sim.ignored[`merge:${e.reason}`] = (sim.ignored[`merge:${e.reason}`] || 0) + 1;
+          if (a.script && (e.reason === "afford" || e.reason === "locked")) refused.push(a.script);
         }
       }
+      if (script) script.unshift(...refused);
       engine.advance(back.state, wall, win.w);
       win.state = back.state;
       text = engine.serialize(win.state);
@@ -450,6 +476,7 @@ export function runProfile(profileId, seed, opts = {}) {
 
   let done = false;
   let session = null; // { k, start, end, nextHit, hitN, win, src0, Rp0 }
+  let lastWin = primary; // the window of the latest session
   const liveTotal = (s) => {
     let x = 0;
     for (const k in s.stats.bySource) if (k !== "away") x += s.stats.bySource[k];
@@ -501,13 +528,18 @@ export function runProfile(profileId, seed, opts = {}) {
         const ss = sessions[si++];
         const win = wins.find((w) => w.sessionFilter(ss.k)) || null;
         if (win) {
+          lastWin = win;
           const s = win.state;
           session = { ...ss, nextHit: ss.start, hitN: 0, win, src0: liveTotal(s), Rp0: engine.rates(s, win.w).Rp };
           sessionStart(win, wallOf(t));
         }
       }
-      // 3. buying (every second of a session; P2 every 5 min of open time)
-      if (prof.buyEvery) {
+      // 3. buying (every second of a session; P2 every 5 min of open time; a purchase
+      //    script at every step, in the window of the latest session)
+      if (script) {
+        // (not at the day's close: its play-clock is also the next day's open)
+        if (t < dayEnd) buyPolicy(session ? session.win : lastWin, wallOf(t));
+      } else if (prof.buyEvery) {
         if (t >= nextBuy) {
           for (const win of wins) buyPolicy(win, wallOf(t));
           nextBuy += prof.buyEvery * 1000;
@@ -539,6 +571,7 @@ export function runProfile(profileId, seed, opts = {}) {
       sim.p = tn;
       if (session) sim.sessionSec += (tn - t) / 1000;
       for (const win of wins) win.advance(wallOf(tn));
+      if (opts.onStep) opts.onStep(tn / 1000, wins, disk);
       if (sim.multi) {
         for (const win of wins) {
           if (dayP + win.saveAt <= tn) {
@@ -561,59 +594,6 @@ export function runProfile(profileId, seed, opts = {}) {
 
   const finalState = sim.multi ? engine.parseSave(disk.text).state : primary.state;
   return summarize(prof, seed, sim, finalState, opts);
-}
-
-/**
- * One writer with the combined input of a run (BALANCE inv. 11): every input
- * of every window, in the order the simulated world made them, under one
- * writer id: each observation joined with the other windows' latest lists;
- * the same data ticks, envelope opens and purchases (a purchase the one
- * writer cannot make yet waits, in order, until it can); and the player's
- * hand hits re-run at the same moments on this writer's own state, because
- * what a hit lands on (which node, which scrap) is decided on the live mat.
- * Replaying a one-window run reproduces it exactly. Returns { dayEnd, state }.
- */
-export function combinedReplay(result, prof = PROFILES[result.profile]) {
-  const s = engine.newGame({ seed: result.seed, now: T0, day: dayKey(0) });
-  const lists = [];
-  const out = [];
-  let seq = 0;
-  let d = 0;
-  const closeOf = (day) => T0 + day * DAY_MS + prof.openHours * HOUR * 1000;
-  const act = (a) => engine.apply(s, { ...a, w: "w1", s: ++seq });
-  const player = new Player(prof, result.seed);
-  const waiting = [];
-  const retry = (t) => {
-    while (waiting.length) {
-      const info = engine.itemInfo(s, waiting[0].item, waiting[0].count);
-      if (!info || info.have || (info.kind !== "workshop" && s.bought[waiting[0].item] === true)) { waiting.shift(); continue; }
-      if (!info.ok) return;
-      act({ ...waiting.shift(), t });
-    }
-  };
-  if (prof.calm) act({ t: T0, type: "setting", key: "calm", value: true });
-  for (const x of result.log) {
-    if (x.tick !== undefined) {
-      engine.advance(s, x.tick, "w1");
-      if (x.tick === closeOf(d)) {
-        out.push({ day: d, lifetime: s.lifetime, bySource: { ...s.stats.bySource }, clock: s.clock });
-        d++;
-      }
-    } else if (x.policy !== undefined) {
-      retry(x.policy);
-    } else if (x.hit !== undefined) {
-      player.hit(s, x.hit, act);
-    } else if (x.a && x.a.type === "buy") {
-      if (waiting.length) waiting.push(x.a);
-      else if (act(x.a).some((e) => e.kind === "ignored" && (e.reason === "afford" || e.reason === "locked"))) waiting.push(x.a);
-    } else if (x.a && x.a.type === "observe") {
-      lists[x.k] = x.a.helpers;
-      act({ ...x.a, helpers: lists.flatMap((l) => l || []) });
-    } else if (x.a && x.a.type !== "setting") {
-      act(x.a);
-    }
-  }
-  return { dayEnd: out, state: s, waiting: waiting.length };
 }
 
 const sumKeys = (src, keys) => keys.reduce((a, k) => a + (src[k] || 0), 0);
@@ -665,8 +645,9 @@ function summarize(prof, seed, sim, finalState, opts) {
     nights: sim.nights,
     dayEnd: sim.dayEnd,
     ignored: { ...sim.ignored },
-    log: sim.keepLog ? sim.log : null,
     m15,
+    // BALANCE inv. 9: envelope units created = opened + converted + waiting
+    units: { ...finalState.stats.units, waiting: Object.values(finalState.envelopes).reduce((a, e) => a + e.units, 0) },
     finalState: opts.keepState === false ? null : finalState,
   };
 }
@@ -826,6 +807,19 @@ export function evaluate(runs, bal = parseBalance()) {
     add({ section: "§7", id: "inv13", what: `first wish gives exactly ${I.firstWishGain} Wishes and G = 1.5`, unit: "text",
       note: `gains ${[...new Set(gains)].join(",")}; G ${[...new Set(Gs)].join(",")}`, pass: gains.every((g) => g === I.firstWishGain) && Gs.every((g) => g === 1.5) });
   }
+  {
+    let worst = 0;
+    let where = "—";
+    for (const id in runs) {
+      for (const r of runs[id]) {
+        const u = r.units;
+        const d = Math.abs(u.created - (u.opened + u.converted + u.waiting));
+        if (d > worst) { worst = d; where = `${id} seed ${r.seed}`; }
+      }
+    }
+    add({ section: "§7", id: "inv9", what: "no envelope is lost: units created = opened + converted + waiting (all runs)", unit: "text",
+      note: worst < 1e-9 ? "exact in every run" : `off by ${worst} (${where})`, pass: worst < 1e-9 });
+  }
   return { rows, pass: rows.every((r) => r.pass || r.provisional), medians };
 }
 
@@ -889,7 +883,7 @@ export function report(runs, ev) {
 // ---------------------------------------------------------------------------
 // CLI
 
-function parseSeeds(s) {
+export function parseSeeds(s) {
   const out = [];
   for (const part of String(s).split(",")) {
     const m = /^(\d+)(?:-(\d+))?$/.exec(part.trim());

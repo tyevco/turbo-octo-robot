@@ -169,6 +169,7 @@ export function parseBalance(md = readFileSync(BALANCE_PATH, "utf8")) {
   // §3 profile table: names must match the profiles above.
   const other = table(section(md, "Other profiles")).rows.map((r) => r[0].split(" ")[0]);
   const profilesListed = ["P1", ...other];
+  const p1ActiveFrac = num(/\(P1: (\d+(?:\.\d+)?)\)/, section(md, "3.1"), "§3.1 P1 activeFrac");
 
   // §4 milestones
   const milestones = table(section(md, "4. Milestones")).rows.map((r) => {
@@ -246,7 +247,14 @@ export function parseBalance(md = readFileSync(BALANCE_PATH, "utf8")) {
     firstWishGain: num(/First wish gives exactly (\d+) Wishes/, s7, "inv. 13"),
     deadWallHours: num(/payback \(at the moment of\s+purchase, by §3\.1's estimate\) above (\d+) h/, s7, "inv. 14"),
   };
-  return { profilesListed, milestones, firstWish, monotonic, shares, dayShares, sessions, invariants };
+  // §8 calibration knobs: every number in the "Current value" cell, in order
+  const knobs = table(section(md, "8. Calibration knobs")).rows.map((r) => ({
+    order: Number(r[0]),
+    knob: r[1],
+    text: r[2],
+    values: [...r[2].replace(/·[A-Za-z]+/g, "").matchAll(/\d+(?:\.\d+)?(?:e\d+)?/g)].map((m) => Number(m[0])),
+  }));
+  return { profilesListed, p1ActiveFrac, milestones, firstWish, monotonic, shares, dayShares, sessions, invariants, knobs };
 }
 
 /**

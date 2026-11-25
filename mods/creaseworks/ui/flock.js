@@ -16,15 +16,15 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, v_virtual_list } from "gpui-base";
 import { clip, crowd } from "../engine/index.js";
-import { statusColor } from "./color.js";
-import { ASSETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
+import { statusColor, contrast, hex6, isHex } from "./color.js";
+import { ASSETS, FACETS, pipPath, speciesSprite, statusGlyphPath, spritePath, sprite } from "./art.js";
 import { HUE_NAMES, hueOf, pickHues } from "./palette.js";
 import { button, glyph, hoverOn, iconButton, sectionHeader, text } from "./widgets.js";
 import { isCalm } from "./mat.js";
 
 /** Grapheme limits for every string this module draws (tested). */
 export const FLOCK_CLIP = Object.freeze({
-  name: 8, rowName: 16, longName: 20, title: 60, where: 32, line: 60, rest: 48, head: 48, count: 5, tooltip: 140, album: 12,
+  name: 8, group: 20, rowName: 16, longName: 20, title: 60, where: 32, line: 60, rest: 48, head: 48, count: 5, tooltip: 140, album: 12,
 });
 
 /** Tile geometry (DESIGN §3.3). */
@@ -85,6 +85,7 @@ export function isFolded(vm, ui, key) {
   const f = ui && ui.folded;
   if (f && typeof f === "object" && Object.hasOwn(f, key)) return Boolean(f[key]);
   if (typeof key === "string" && key.startsWith("owned:")) return true;
+  if (key === "legend") return !(vm && vm.helpers && vm.helpers.legend === true);
   if (Object.hasOwn(FOLDED_BY_DEFAULT, key)) return FOLDED_BY_DEFAULT[key];
   const groups = vm && vm.helpers && Array.isArray(vm.helpers.groups) ? vm.helpers.groups : [];
   const g = groups.find((x) => x && x.key === key);
@@ -141,11 +142,15 @@ export function tileLook(ctx) {
   const onPopover = Object.create(null);
   for (const st of STATUS_ORDER) onPopover[st] = statusColor(T, st, "popover");
   return {
+    chromeHover: hoverOn(T, T.chrome),
+    blockedOnChrome: statusColor(T, "blocked", "chrome"),
     T,
     S,
     hues: hues(ctx),
     hover: hoverOn(T, T.raised),
     blocked: statusColor(T, "blocked", "raised"),
+    // The envelope marker's cream disc vanishes on a light tile: give it a real edge there.
+    envRing: isHex(S.sheet) && isHex(T.raised) && contrast(S.sheet, hex6(T.raised)) < 1.5 ? T.muted : T.border,
     onPopover,
     select: handler(ctx, "select"),
     open: handler(ctx, "open"),
@@ -198,43 +203,45 @@ export function tileElement(tile, opts, ctx) {
 
   // Content (glyph, name, pips, rest bar) at the tile's opacity; the badge and
   // the envelope marker stay opaque so the status shape always reads.
+  // Each content child takes the tile's opacity (one call each instead of a
+  // wrapper element: 64 tiles are rendered every frame).
   const opacity = Math.max(0.3, Math.min(1, num(tile.opacity, 1)));
-  const content = opacity < 1 ? div().absolute().inset_0().opacity(opacity) : el;
-  content.child(
-    speciesSprite(speciesOf(tile.species), g.glyph, hue, { surface: T.raised })
-      .absolute()
-      .top(opts.dense ? 4 : 6)
-      .left((g.w - g.glyph) / 2 - 1),
-  );
+  const fade = opacity < 1 ? (x) => x.opacity(opacity) : (x) => x;
+  const sp = speciesOf(tile.species);
+  const figure = FACETS === "alpha" ? svg(spritePath("folk", sp)).size(g.glyph).text_color(hue) : speciesSprite(sp, g.glyph, hue, { surface: T.raised });
+  el.child(fade(figure.absolute().top(opts.dense ? 4 : 6).left((g.w - g.glyph) / 2 - 1)));
   if (!opts.dense) {
-    content.child(
-      text(clip(str(tile.name), FLOCK_CLIP.name), { size: 11, color: T.foreground, truncate: true }, T)
-        .absolute()
-        .top(41)
-        .left(3)
-        .right(3)
-        .text_center()
-        .line_height("120%"),
+    el.child(
+      fade(
+        text(clip(str(tile.name), FLOCK_CLIP.name), { size: 11, color: T.foreground, truncate: true }, T)
+          .absolute()
+          .top(40)
+          .left(3)
+          .right(3)
+          .text_center()
+          .line_height("120%"),
+      ),
     );
   }
   const pips = Array.isArray(tile.pips) ? tile.pips : [];
-  if (pips.length) content.child(pipsRow(pips, g, hue, look));
+  if (pips.length) el.child(fade(pipsRow(pips, g, hue, look)));
   if (status === "idle" && typeof tile.rest === "number") {
     const k = Math.max(0, Math.min(1, tile.rest));
-    content.child(
-      div()
-        .id(`cw-flock-rest-${id}`)
-        .absolute()
-        .bottom(1)
-        .left(Math.round((g.w - g.rest) / 2))
-        .h(2)
-        .w(Math.round(g.rest * k * 10) / 10)
-        .rounded(1)
-        .bg(T.muted)
-        .transition("width", opts.calm ? 150 : 600),
+    el.child(
+      fade(
+        div()
+          .id(`cw-flock-rest-${id}`)
+          .absolute()
+          .bottom(1)
+          .left(Math.round((g.w - g.rest) / 2))
+          .h(2)
+          .w(Math.round(g.rest * k * 10) / 10)
+          .rounded(1)
+          .bg(T.muted)
+          .transition("width", opts.calm ? 150 : 600),
+      ),
     );
   }
-  if (content !== el) el.child(content);
 
   // Status badge at the top right (−4, −4): a T.popover disc, 1 px T.border
   // ring, the status glyph guarded for T.popover (widgets.glyph, inlined).
@@ -258,7 +265,9 @@ export function tileElement(tile, opts, ctx) {
 
   // Envelope marker at the bottom right: its own target (stops propagation).
   if (tile.envelope === true && !opts.elsewhere) {
-    const off = opts.dense ? -4 : -6;
+    // The marker's centre sits near the corner (it pokes 2 px out, like the
+    // badge at the top) so it never covers the name.
+    const off = opts.dense ? -4 : -9;
     el.child(
       h_flex()
         .id(`cw-flock-env-${id}`)
@@ -282,7 +291,7 @@ export function tileElement(tile, opts, ctx) {
             .justify_center()
             .bg(look.S.sheet)
             .border(1)
-            .border_color(T.border)
+            .border_color(look.envRing || T.border)
             .child(svg(spritePath("status", "envelope")).w(g.envGlyph).h(g.envGlyph).text_color(look.S.ink)),
         ),
     );
@@ -292,7 +301,7 @@ export function tileElement(tile, opts, ctx) {
 
 function tileGrid(tiles, opts, ctx, key) {
   const g = opts.dense ? TILE.dense : TILE.normal;
-  const grid = div().id(`cw-flock-grid-${key}`).w_full().flex().flex_row().flex_wrap().gap(g.gap).py(4).pr(4);
+  const grid = div().id(`cw-flock-grid-${key}`).w_full().flex().flex_row().flex_wrap().gap(g.gap).py(4);
   const one = { ...opts, selected: false };
   for (const t of tiles) {
     if (!t || typeof t.helperId !== "string") continue;
@@ -303,17 +312,17 @@ function tileGrid(tiles, opts, ctx, key) {
 }
 
 /** A 28 px row for the virtual list: no handlers, no ids, no loops (rows are rebuilt every frame). */
-function listRow(t, ctx, selectedId) {
-  const T = ctx.T;
+function listRow(t, look, selectedId) {
+  const T = look.T;
   const status = statusOf(t.status);
-  const hue = hueOf(hues(ctx), t.hue);
+  const hue = hueOf(look.hues, t.hue);
   const row = h_flex()
     .h(VLIST.row)
     .w_full()
     .px(6)
     .gap(8)
     .rounded(6)
-    .bg(t.helperId === selectedId ? hoverOn(T, T.raised) : T.chrome)
+    .bg(t.helperId === selectedId ? look.chromeHover : T.chrome)
     .child(
       h_flex()
         .w(18)
@@ -324,20 +333,20 @@ function listRow(t, ctx, selectedId) {
         .bg(T.popover)
         .border(1)
         .border_color(T.border)
-        .child(svg(statusGlyphPath(status)).w(12).h(12).text_color(statusColor(T, status, "popover"))),
+        .child(svg(statusGlyphPath(status)).w(12).h(12).text_color(look.onPopover[status])),
     )
     .child(div().opacity(Math.max(0.3, Math.min(1, num(t.opacity, 1)))).child(speciesSprite(speciesOf(t.species), 16, hue, { surface: T.chrome })))
     .child(text(clip(str(t.name), FLOCK_CLIP.rowName), { size: 11, weight: 600, color: T.foreground, truncate: true }, T).flex_1())
     .child(text(clip(str(t.statusWord), FLOCK_CLIP.rowName), { size: 11, color: T.muted }, T));
-  if (status === "blocked") row.border(1).border_dashed().border_color(statusColor(T, "blocked", "chrome"));
+  if (status === "blocked" || t.dashed === true) row.border(1).border_dashed().border_color(look.blockedOnChrome);
   if (t.envelope === true) row.child(sprite(spritePath("status", "envelope"), 11, T.muted));
   return row;
 }
 
 /** The v_virtual_list for one big group (§5.5 item 8). */
-function virtualGroup(key, tiles, ctx, selectedId) {
+function virtualGroup(key, tiles, look, selectedId) {
   const list = tiles.filter((t) => t && typeof t.helperId === "string");
-  const select = handler(ctx, "select");
+  const select = look.select;
   const rows = Math.min(list.length, VLIST.rows);
   return v_virtual_list(
     `cw-flock-vl-${key}`,
@@ -347,7 +356,7 @@ function virtualGroup(key, tiles, ctx, selectedId) {
     (range) => {
       const out = [];
       const end = Math.min(range && typeof range.end === "number" ? range.end : list.length, list.length);
-      for (let i = Math.max(0, (range && range.start) || 0); i < end; i++) out.push(listRow(list[i], ctx, selectedId));
+      for (let i = Math.max(0, (range && range.start) || 0); i < end; i++) out.push(listRow(list[i], look, selectedId));
       return out;
     },
   )
@@ -426,7 +435,8 @@ function legendRows(T, S) {
         .gap(8)
         .child(h_flex().w(16).flex_none().justify_center().child(mark))
         .child(text(row.shape, { size: 11, color: T.muted }, T).w(64).flex_none())
-        .child(text(row.text, { size: 11, color: T.foreground, truncate: true }, T).flex_1()),
+        // wraps (fixed copy, at most two lines at 240 px) instead of cutting the meaning off
+        .child(text(row.text, { size: 11, color: T.foreground }, T).whitespace_normal().flex_1().min_w(0)),
     );
   }
   return box;
@@ -522,7 +532,7 @@ export function renderFlock(vm, ui, ctx) {
     return root;
   }
 
-  const legendOpen = h.legend === true || !isFolded(vm, ui, "legend");
+  const legendOpen = !isFolded(vm, ui, "legend");
   root.child(
     h_flex()
       .id("cw-flock-head")
@@ -545,14 +555,14 @@ export function renderFlock(vm, ui, ctx) {
     const folded = key !== "all" && isFolded(vm, ui, key);
     if (key !== "all") {
       section.child(
-        sectionHeader(`cw-flock-grp-${key}`, key, str(g.title) || key, clip(String(num(g.count, tiles.length)), FLOCK_CLIP.count), {
+        sectionHeader(`cw-flock-grp-${key}`, key, clip(str(g.title) || key, FLOCK_CLIP.group), clip(String(num(g.count, tiles.length)), FLOCK_CLIP.count), {
           folded,
           onToggle: (cx) => toggleGroup(key, cx),
         }, T),
       );
     }
     if (!folded) {
-      section.child(tiles.length > VIRTUAL_ABOVE ? virtualGroup(key, tiles, ctx, selectedId) : tileGrid(tiles, tileOpts, ctx, key));
+      section.child(tiles.length > VIRTUAL_ABOVE ? virtualGroup(key, tiles, tileOpts.look, selectedId) : tileGrid(tiles, tileOpts, ctx, key));
     }
     root.child(section);
   }
@@ -569,7 +579,7 @@ export function renderFlock(vm, ui, ctx) {
     if (!folded) {
       section.child(
         elsewhere.length > VIRTUAL_ABOVE
-          ? virtualGroup("elsewhere", elsewhere, ctx, selectedId)
+          ? virtualGroup("elsewhere", elsewhere, tileOpts.look, selectedId)
           : tileGrid(elsewhere, { ...tileOpts, elsewhere: true }, ctx, "elsewhere"),
       );
     }
