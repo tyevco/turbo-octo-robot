@@ -119,8 +119,19 @@ files); read with `readTextFile` (≤ 1 MiB, null if absent). Save text stays < 
 (asserted by a test with 500 historical helpers).
 
 Format: one JSON object `{ "format": "<mod>-save", "version": N, "check": "<hash>", "state": {...} }`.
-`check` is a 32-bit FNV-1a hex of the canonical `state` JSON; a mismatch, a parse error, an unknown
-`format`, a newer `version` than the code knows, or a failed validation = **damaged**.
+`check` (format 3, `engine/save-codec.js` `saveCheck(state)`) is a 32-bit FNV-1a hex over the
+state JSON with `helpers` replaced by a marker, a newline, and the FNV-1a digests of the helpers
+map cut into chunks of about 64 (a chunk ends after an id whose last two hex digits are a multiple
+of 64). A writer caches each chunk's digest by its text (plain data under the registry symbol
+`creaseworks/save-digests`, non-enumerable, replaced across hot reloads), so a save cycle hashes
+only what changed. Formats 1–2 (FNV-1a of the whole state text) still load. A mismatch, a parse
+error, an unknown `format` or a failed validation = **damaged**; a higher format or state
+`version` than the code knows = **newer** (read-only; from format 3 on it is tested before the
+check, DESIGN §12.1). Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
+by `engine/index.js`) yields after the JSON parse and after every 1,500 helpers, and the store's
+`parseIn` drives it with a task yield between steps for any save of 64 KiB or more
+(`STEP_PARSE_CHARS`) on the load, merge, overwrite, check, restore and share paths (a two-year
+save: about 31 steps, the slowest about 60 ms in the wasm QuickJS harness).
 
 Load order: `save.json` → if damaged, keep it aside as `save.damaged-<n>.json`, try `save.bak.json`
 → if damaged too, keep aside, start new. Every non-clean outcome sets a visible save notice
@@ -667,7 +678,11 @@ mat, no loops). The glue's vm cache must key on `rev`, `width`, `tab`, `buyCount
 `working blocked done idle` (as the fixtures do); group keys are `needs finished working resting`.
 Tiles are pane helpers; a fledgling is a status word in its parent's `pips` (all of them; the UI
 draws 4 and `+n`), and one whose parent is not present gets its own tile (`kind: "kid"`).
-Counts, chips, marks and pips count tiles only, so a blocked fledgling never lifts its parent.
+Counts, chips, marks and pips include waiting fledglings (r2-17): a blocked fledgling lifts the
+counts chip ▲, the rail, the mat chips and the ribbon tally, and `header.kidsWaiting` counts them.
+`helpers.needsGroup` names the group a "needs" request should scroll to: `"needs"` while Needs you
+holds a tile, `"all"` in workspace order, else the group holding the longest-waiting fledgling's
+parent (or `"elsewhere"`), null when nobody waits.
 
 **Order.** Needs you: longest waiting first (`blockedAt`) in the Flock and the mat chips; every
 other group, and every group in the ribbon and rail, in join order. Workspace order sorts by
@@ -752,7 +767,7 @@ renderers default it:
   armedAt: ms | null,  now: ms | null,      // confirm arming (1.5 s); renderers compare, never read a clock
   details: bool,                            // banner "Details ▸" expanded
   folded: { [groupKey]: bool },             // Flock group folds (null-prototype)
-  scrollTo: groupKey | null,                // Flock: counts chip ● / ◗ asked for this group
+  scrollTo: groupKey | null,                // Flock: counts chip ● / ◗ asked for this group (cleared once consumed)
   pops: [{ id, label, x, y, risen }]        // floating numbers (≤ 5, mat px), owned by the glue
 }
 ```
@@ -771,7 +786,7 @@ renderers default it:
   panelShown,   // ribbon only: panel copy visible and unfolded (hides the ribbon mini Sheet)
   save,         // optional, from the slot: { state: "saved"|"saving"|"problem", text: "Saved 12 s ago",
                 //   path, lastGood, backup, damaged: [names] } (footer glyph, banner Details, Settings)
-  narrowHint,   // ribbon only, optional: true shows "Narrow window: fold Creaseworks to a rail?" (§2.3)
+  narrowHint,   // ribbon only, optional: true shows "Terminals are narrow: fold Creaseworks?" (§2.3)
   handlers }    // below; every one is optional to the caller of a renderer (tests pass stubs)
 ```
 
@@ -893,9 +908,10 @@ tests `test/glue/*.test.mjs` (mock herdr, virtual clock; also run by `npm run te
 
 **main.js.** `export default class Creaseworks extends View` with `init/render/close`. It imports
 `gpui-kit`, `glue/session.js` and the `ui/` renderers (plus `ui/palette.js` for `S`/`hues` and
-`ui/flock.js isFolded`, which it hands to the session); only `glue/*` imports `herdr`. `render`
+`ui/flock.js` `isFolded`, `sectionIndex` and a `newFlockScroll()` ScrollHandle, which it hands to the
+session, B16); only `glue/*` imports `herdr`. `render`
 returns `div#root` (`size_full`, `on_size_change` → `Session.onSize`) around `renderRibbon` (role
-`"ribbon"`) or `renderPanel` (which draws the rail below 140 px); while the save loads it draws a
+`"ribbon"`) or `renderPanel` (which draws the rail when folded or under 200 px); while the save loads it draws a
 one-line placeholder.
 
 **Session (B7).** `new Session(role = null, { isFolded })`: a null role is read from
@@ -964,8 +980,9 @@ rail, `{weight: 0.001}` (`RAIL_WEIGHT`), held at cw-panel's `min: 64`. Fold and 
 `layoutInfo` also reports `mainWeight`, `filesWeight`, `filesMin`, `filesMax`; its `filesPx` is the
 Files column's px, else 368 (`FILES_PX_FALLBACK`), and `filesEstimate(info, Wp)` gives a weight
 Files column's real width from the panel's measured width (B15). Group keys `"needs"` / `"finished"` pick
-the longest-waiting / oldest tile (fledglings drawn as pips are skipped) and cycle on repeats
-within 30 s.
+the longest-waiting / oldest tile and cycle on repeats within 30 s; a `"needs"` scroll resolves
+through `vm.helpers.needsGroup` (so a waiting fledgling scrolls to its parent's group). Fold,
+show and select follow the B16 panel-state rules.
 
 **views.js (A10).** Every entry is a real game: `scenario` is a getter (agents, terminals, a
 fixed-seed save, its own app home `/shots/<name>/herdr-app`, `patchDate: true` so the glue clock
@@ -1081,10 +1098,12 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   to `PANEL_WEIGHT`). A dragged-open rail is two weights, so `keepWeight` remembers it. A panel
   left `{px}` by an older state file becomes a weight at its next fold or unfold; until then a
   drag keeps it px.
-* **The narrow hint.** It is offered only while the panel is unfolded (measured ≥ 140 design px)
-  and `mainEst < 600`; in those states folding always widens the terminals (`test/layout` "folding
-  gives the terminals room"). Where the panel is already at its 64 px min (zoom 1.5 with Files
-  open) it is drawn as the rail, so no hint is offered and folding changes nothing.
+* **The narrow hint.** It is offered only while the panel is unfolded (B16 `panelState` "full" or
+  "tight", measured wider than 72 px) and either `mainEst < 600` or the panel is tight (under 200
+  px, drawn as a rail in its whole column, r2-14); in those states folding always widens the
+  terminals (`test/layout` "folding gives the terminals room"). It reads "Terminals are narrow:
+  fold Creaseworks?". Where the panel is already at its 64 px min (zoom 1.5 with Files open) no
+  hint is offered: folding changes nothing.
   `session.js` still computes `mainEst` with `layoutInfo().filesPx`, which for the weight Files
   column is the 368 fallback; the real Files width is 280 at 1100 px (so `mainEst` is about 88 px
   low there; the hint shows either way, real main is 373) and 367 at 1440. `filesEstimate(info,
@@ -1105,5 +1124,69 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   368 px", `filesPx`), §2.4 (which windows give which state by default; past zoom 1.5 Files, not
   the panel, is what gets clipped), §2.5's layout block (with `cw-panel` between `main` and `panel`,
   r2-15; §2.1's diagram should put the game left of Files too) and
-  §2.6's "`layout.resize` to 64 or to the last unfolded width, default 320". `test/layout` "is
-  exactly the layout in DESIGN §2.5" fails until §2.5 shows `layouts/Creaseworks.json` as built.
+  §2.6's "`layout.resize` to 64 or to the last unfolded width, default 320". §2.5 now shows
+  `layouts/Creaseworks.json` as built (`test/layout` "is exactly the layout in DESIGN §2.5").
+* **Dragging the game | Files divider (r2-15 side effect).** herdr's `drag_to` clamps only the
+  LEFT child's min and max. With Files now right of the game, dragging that divider right takes
+  weight from Files below its 280 px min, which herdr then holds at 280 by shrinking `main`
+  (1440×900 with Files open, a 250 px drag: the game 217 → 392, `main` 556 → 467). `main` never
+  goes below its 80 min, and the stored weights mean the game is wider (524 instead of 405) once
+  Files closes; Fold and Unfold reset the game's weight. RECIPE's Watch out names it.
+
+### B16. Verification round 2 as built (A4–A6, B13–B15 still hold)
+
+* **Panel states** (`glue/commands.js` `panelState`): **folded** when the layout's panel weight is
+  at most `FOLDED_SHARE` (0.01) of main's, or (no weight) its px ≤ 64, or the panel measures at
+  most `RAIL_LOOK` (72 px; a drag stores 0.025–0.07 with no min, so a dragged rail is still
+  "folded"), except right after this copy's own resize, before the new width is measured
+  (`slot.layout.resized`); **tight** when unfolded and under `FULL_BELOW` (200: drawn as a rail
+  in its column); else **full**. `ctx.folded` comes from this, never from a width threshold.
+* **Remembered weight.** `keepWeight` and `fold()` remember the panel's share of main's weight
+  (and `lastPanel`) only when the panel measures ≥ 200 px, so a drag-made tight panel never
+  becomes the weight to restore. `canGrow()`: the share is under `lastWeight − 0.001`, or the
+  panel is px-sized. `show()` (ribbon chips and pills, rail pips, `select`, `showGroup`) on a
+  folded or tight panel that can grow unfolds to `lastWeight` (else 0.39) and returns
+  `"unfolded"`; one already at its weight flashes `TIGHT_TEXT` ("Too narrow: drag the panel's
+  edge or widen the window") or, with Files open, `TIGHT_FILES_TEXT`, and resizes nothing. A
+  fold on a folded panel already at its weight (a tiny window) flashes the same text.
+* **Rail feedback** (`ui/rail.js`): `railFlash(text, width)` shows the whole flash at ≥ 120 px,
+  below that the words before the colon ("Too narrow"; `TIGHT_PREFIX`); while such a flash shows
+  the chevron gets a 1 px `T.accent` ring. The chevron tooltip names folding to give the
+  terminals room, dragging the edge and widening the window.
+* **Flock scroll** (r2-19): `main.js` builds every copy's Session with `{ isFolded, sectionIndex,
+  scroll: newFlockScroll() }` (B13); a ribbon copy releases its handle at init
+  (`releaseScroll()`, also on close). The panel's `#cw-content` holds `flockParts` and tracks
+  `ctx.scroll`; `ui.scrollTo` is consumed (`consumeScroll`) and always cleared, and a `"needs"`
+  request scrolls to `vm.helpers.needsGroup`. ctx gains `folded` and `scroll`.
+* **Pops** (r2-20, `session.js addPop`): at most 5 alive (`POP_CAP`); a pop past its transition
+  (`POP_DONE_MS`, 716) is dropped, one still rising never is; while 5 are alive a click's amount
+  is carried into the next pop that fits (the carry is dropped after 1 s without clicks). The
+  rise is a 16 ms timer; the prune is one `after(≤ 800)`, due when the oldest pop finishes.
+* **Save claims** (`glue/store.js`). Each claim records its purpose in `save.writingFor`
+  (`cycle`, `resolve`, `check`, `reset`, `restore`, `share`). A claim whose copy has been missing
+  from `slot.copies` for `ORPHAN_MS` (15 s; herdr cancels every task of a closed copy, `owner:
+  null` ones too, and the mock does the same) or that made no progress for `WRITE_STALL_MS` is
+  released by `releaseAbandoned(slot, t)` (called from `due()` and from `session.close` before the
+  final write). A plain claim (`cycle`, `resolve`) is released quietly (a stall flashes "A save
+  step stalled; saving again.") and the save is made again at once; a Settings tool's claim gets
+  the lasting notice that the tool may not have taken effect. `cycle()` yields before it claims
+  (and again after a share settle or recovery write), so no claim is held across that first hop.
+  `settleShare` reads the new file's backup first, then switches paths, base, backup,
+  `ownApplied` and clears `sharing` in one step.
+* **Pending log.** Given up past `PENDING_MAX` (20,000) actions or `LOG_HELPERS_MAX` (64,000)
+  helper entries held by roster observations (`slot.logHelpers`, kept by `confirmLog` /
+  `clearLog`), so a persistent save failure cannot reach QuickJS's 256 MiB limit.
+* **Load.** Every load marks the game dirty, so it is saved within the 2 s debounce: on a VM
+  restart the old VM's `close()` write may land just after the new VM's read, and that first
+  save's compare-and-swap merges it back in. The writer ids this window's VMs used are kept in
+  herdr's shared map under `creaseworks.writers` (`WRITERS_KEY`, last 8; shared.json is per herdr
+  home and herdr runs one process per home), so that write is not "another window" (r2-09). A
+  `location.json` pointing at a missing shared file loads this window's own save with a notice and
+  creates nothing at that path (r2-07); joined to another load notice it uses the short form
+  "Shared save not found; using this window's own." so the whole notice fits the banner's 140
+  graphemes (`NOTICE_MAX`, `goneJoined`). Shared paths may be Unix, drive-letter or UNC paths
+  (`isAbsolutePath`, r2-10). Damaged copies are renumbered on a shift, reason suffixes kept (r2-11).
+* **Album memo** (`engine/view.js`), like the helper index and the digest cache: registry symbols
+  (`creaseworks/album-memo`, `creaseworks/album-count`), non-enumerable, each entry tagged with the
+  module generation (a memo from another generation is rebuilt), and the first set drops an older
+  build's per-generation symbols, so a hot reload never leaves a memo behind on the state.

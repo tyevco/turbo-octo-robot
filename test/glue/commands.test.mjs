@@ -520,6 +520,9 @@ test("r2-12: a rail touched by a drag (herdr keeps 0.025-0.07, no min) measuring
   await w.advance(1000);
   await w.handler(panel, "fold");
   assert.deepEqual(resizes(), [DEFAULT_PANEL_WEIGHT], "the first chevron press unfolds (no invisible fold to 0.001)");
+  // A second press before the new width is measured folds again (it reads the new weight, not the old 64).
+  await w.handler(panel, "fold");
+  assert.deepEqual(resizes(), [DEFAULT_PANEL_WEIGHT, RAIL_WEIGHT]);
   assert.equal(w.ctl.runErrors().length, 0);
 });
 

@@ -254,6 +254,7 @@ function keepWeight(slot, px) {
 /** Records the panel copy's measured width; an unfolded one (and its weight) is remembered. */
 export function notePanelWidth(slot, px) {
   slot.widths.panel = px;
+  if (slot.layout && slot.layout.resized === true) slot.layout = { ...slot.layout, resized: false };
   if (px >= RAIL_BELOW && px !== slot.widths.lastPanel) {
     slot.widths.lastPanel = px;
     rememberWidth(px);
@@ -297,7 +298,8 @@ export function panelState(slot, info) {
   if (share !== null) folded = share <= FOLDED_SHARE;
   else if (typeof L.panelPx === "number" && Number.isFinite(L.panelPx)) folded = L.panelPx <= RAIL_PX;
   else folded = typeof w === "number" && w < RAIL_BELOW;
-  if (folded || (typeof w === "number" && w <= RAIL_LOOK)) return "folded";
+  // (Not right after this copy's own resize, before the new width is measured.)
+  if (folded || (typeof w === "number" && w <= RAIL_LOOK && L.resized !== true)) return "folded";
   return typeof w === "number" && w < FULL_BELOW ? "tight" : "full";
 }
 
@@ -317,10 +319,14 @@ export function tightText(L) {
   return L && L.filesShown ? TIGHT_FILES_TEXT : TIGHT_TEXT;
 }
 
-/** After a resize this copy ran: the slot's layout says so at once (the next tick reads it again). */
+/**
+ * After a resize this copy ran: the slot's layout says so at once (the next
+ * tick reads it again), marked `resized` until the panel's new width is
+ * measured, so a second press before then reads the new weight, not the old width.
+ */
 function noteResize(slot, L, args, shown) {
   if (!L || typeof L !== "object") return;
-  slot.layout = { ...L, panelWeight: args.weight, panelPx: null, panelHidden: shown ? false : L.panelHidden };
+  slot.layout = { ...L, panelWeight: args.weight, panelPx: null, panelHidden: shown ? false : L.panelHidden, resized: true };
 }
 
 /** Unfolds (or shows and unfolds) the panel; true when herdr took the resize. */

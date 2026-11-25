@@ -849,3 +849,25 @@ test("r1-03: opts.album false (the Album folded) builds no rows; albumCount alwa
   assert.equal(v(s, t).helpers.album.length, 100);
   assert.equal(engine.view(s, t, { role: "ribbon", width: 832 }).helpers.albumCount, 100);
 });
+
+// Integration r2-01 follow-up: the Album memo rides on the live state, which
+// the slot hands to the next code generation (B9). Registry symbols, tagged
+// per generation: a reload's view replaces the memo, never leaves the old one.
+test("r2-01: the Album memo is one non-enumerable entry per key across code generations; an older build's orphan is dropped", async () => {
+  const gen2 = await import("../../mods/creaseworks/engine/view.js?generation-2");
+  assert.notEqual(gen2.view, engine.view, "a second module instance");
+  const { s, t } = withAlbum(100);
+  s[Symbol("creaseworks/album-memo")] = { idx: null, count: 0 }; // an older build's per-generation symbol
+  s[Symbol("creaseworks/album-count")] = { idx: null, n: 0 };
+  const o = { role: "panel", width: 320, writer: "wA" };
+  const a = engine.view(s, t + 1000, o).helpers.album;
+  const b = gen2.view(s, t + 1000, o).helpers.album;
+  assert.deepEqual(b, a);
+  assert.notEqual(b, a, "another generation's memo is rebuilt, never trusted");
+  assert.deepEqual(engine.view(s, t + 2000, o).helpers.album, v(engine.cloneState(s), t + 2000).helpers.album);
+  const keys = Object.getOwnPropertySymbols(s).map((k) => Symbol.keyFor(k));
+  assert.ok(keys.every((k) => typeof k === "string"), "no per-generation symbols left");
+  assert.equal(keys.filter((k) => k === "creaseworks/album-memo").length, 1);
+  assert.ok(keys.filter((k) => k === "creaseworks/album-count").length <= 1);
+  for (const k of Object.getOwnPropertySymbols(s)) assert.equal(Object.getOwnPropertyDescriptor(s, k).enumerable, false);
+});

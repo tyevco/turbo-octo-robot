@@ -5,7 +5,7 @@
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { win, SAVE, BAK, DIR, damaged, saveText, freshState, parsed, engine } from "./_util.mjs";
+import { win, SAVE, BAK, DIR, HOME, DEFAULT_NOW, damaged, saveText, freshState, parsed, engine } from "./_util.mjs";
 import * as store from "../../mods/creaseworks/glue/store.js";
 
 let w;
@@ -744,4 +744,57 @@ test("r2-09: a VM restart's late final write is this window's own: merged back a
   assert.equal(parsed(w.ctl).state.stats.hits, 6);
   assert.equal(w.slot.state.stats.hits, 6, "back within the 2 s debounce, not the 15 s cadence");
   assert.equal(merged, false, "the previous VM is not 'another window'");
+});
+
+// Integration r2-01/r2-03: a large save is parsed across task steps
+// (engine parseSaveSteps) on the load and merge paths, never in one step.
+test("a save of 64 KiB or more loads in steps (a task yield between parse steps); a reload during them stops the load", async () => {
+  const eu = await import("../engine/_util.mjs");
+  const { newSlot } = await import("../../mods/creaseworks/glue/live.js");
+  const s = eu.seeded(77, DEFAULT_NOW - 3600000);
+  const me = eu.writer(s, "wBig");
+  let t = DEFAULT_NOW - 3500000;
+  for (let b = 0; b < 8; b++) {
+    me.act(eu.observeAction((t += 60000), Array.from({ length: 400 }, (_, i) => eu.agent(5000 + b * 400 + i, "working", 0))));
+    me.act(eu.observeAction((t += 1000), []));
+  }
+  const text = engine.serialize(s);
+  assert.ok(text.length >= store.STEP_PARSE_CHARS, `a big save (${text.length} chars)`);
+  w = win({ files: { [SAVE]: text } });
+  const view = await w.copy("panel");
+  await w.flush();
+  assert.equal(engine.serialize(w.slot.state).length > 0, true);
+  const run = async (stopAfter) => {
+    const slot = newSlot(HOME, null);
+    slot.loading = 1;
+    let sleeps = 0;
+    const env = {
+      now: () => DEFAULT_NOW,
+      seed: () => 1,
+      sleep: async () => {
+        sleeps++;
+        if (sleeps === stopAfter) slot.loading = 2; // a reload superseded this load
+      },
+      gen: 1,
+    };
+    // in a host call, as the session's task runs it (the mock checks)
+    const { p: pr } = await w.ctl.dispatch("event", view, () => ({ p: store.load(slot, env) }));
+    let ok;
+    let done = false;
+    pr.then((v) => {
+      ok = v;
+      done = true;
+    });
+    for (let i = 0; i < 100 && !done; i++) await w.flush();
+    assert.ok(done, "the load settled");
+    return { ok, slot, sleeps };
+  };
+  const a = await run(0);
+  assert.equal(a.ok, true);
+  assert.ok(a.sleeps >= 4, `yielded between parse steps (${a.sleeps})`);
+  assert.equal(engine.serialize(a.slot.state), text, "the stepped parse gives the same game");
+  assert.equal(a.slot.notice, null);
+  const b = await run(2);
+  assert.equal(b.ok, false, "a superseded load stops at its next step");
+  assert.equal(b.slot.state, null);
 });

@@ -16,7 +16,7 @@
 // generation's init releases such a claim (adopt) instead of waiting forever.
 
 import { readTextFile, writeTextFile, shared, setShared } from "herdr";
-import { serialize, parseSave, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
+import { serialize, parseSave, parseSaveSteps, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
 import { localDay, localTime } from "./clock.js";
 import { touch, markDirty, dueAt, codeGeneration, confirmLog, clearLog, flash, DEBOUNCE_MS } from "./live.js";
 
@@ -166,6 +166,27 @@ const pause = (env) => (env && typeof env.sleep === "function" ? env.sleep(0) : 
 /** Records progress on the save claim (WRITE_STALL_MS counts from the last one). */
 function progress(slot, env) {
   if (slot.save.writing !== null && env && typeof env.now === "function") slot.save.writingAt = env.now();
+}
+
+/** Saves shorter than this parse in one go (well under 100 ms); longer ones in steps. */
+export const STEP_PARSE_CHARS = 64 * 1024;
+
+/**
+ * parseSave(text) across task steps (engine parseSaveSteps, DESIGN R13): a
+ * two-year save takes most of a 500 ms step to parse in one go, so the load
+ * and every merge yield between its steps (≈ 60 ms each at most). Returns
+ * parseSave's result, or null when `stale()` turns true during a yield.
+ */
+async function parseIn(slot, text, env, stale) {
+  if (typeof text !== "string" || text.length < STEP_PARSE_CHARS) return parseSave(text);
+  const it = parseSaveSteps(text);
+  for (;;) {
+    const r = it.next();
+    if (r.done) return r.value;
+    await pause(env);
+    if (stale()) return null;
+    progress(slot, env);
+  }
 }
 
 /**
@@ -516,8 +537,10 @@ export async function load(slot, opts) {
     // cadence until the player moves the file away (the banner says so).
     const rec = await readOrError(recoveryPath(P));
     if (stale()) return false;
-    const r = rec.text !== null ? parseSave(rec.text) : null;
-    const b = bak.text !== null ? parseSave(bak.text) : null;
+    const r = rec.text !== null ? await parseIn(slot, rec.text, opts, stale) : null;
+    if (stale()) return false;
+    const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
+    if (stale()) return false;
     if (b) slot.bakState = b.ok ? "ok" : "damaged";
     // The newer of the two: a recovery file left from an earlier episode must
     // not roll back the normally rotated backup (nothing retires it).
@@ -534,7 +557,8 @@ export async function load(slot, opts) {
     slot.baseText = null;
     S.baseOk = false;
   } else {
-    const m = main.text !== null ? parseSave(main.text) : null;
+    const m = main.text !== null ? await parseIn(slot, main.text, opts, stale) : null;
+    if (stale()) return false;
     if (m && m.ok) {
       state = m.state;
       slot.baseText = main.text;
@@ -554,7 +578,8 @@ export async function load(slot, opts) {
       }
       slot.baseText = main.text;
       S.baseOk = false;
-      const b = bak.text !== null ? parseSave(bak.text) : null;
+      const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
+      if (stale()) return false;
       if (b) slot.bakState = b.ok ? "ok" : "damaged";
       if (b && b.ok) {
         state = b.state;
@@ -719,7 +744,8 @@ async function mergeFromDisk(slot, env, stale) {
   // of its own.
   await pause(env);
   if (stale()) return { stop: true };
-  const parsed = parseSave(r.text);
+  const parsed = await parseIn(slot, r.text, env, stale);
+  if (parsed === null || stale()) return { stop: true };
   if (parsed.ok) {
     await pause(env);
     if (stale()) return { stop: true };
@@ -795,7 +821,8 @@ async function overwriteBase(slot, env, stale) {
   if (r.error !== null) return { ok: false, error: r.error };
   const t = env.now();
   if (r.text !== null) {
-    const parsed = parseSave(r.text);
+    const parsed = await parseIn(slot, r.text, env, stale);
+    if (parsed === null || stale()) return { stop: true };
     if (!parsed.ok && parsed.reason === "newer") {
       slot.readOnly = true;
       S.status = "readonly";
@@ -1202,7 +1229,8 @@ export async function checkSave(slot, env) {
       retryNow(slot, t);
       return "missing";
     }
-    const parsed = parseSave(r.text);
+    const parsed = await parseIn(slot, r.text, env, stale);
+    if (parsed === null || stale()) return "stale";
     if (parsed.ok || parsed.reason === "newer") {
       if (r.text !== slot.baseText) retryNow(slot, t); // another writer's change: merge it now
       return parsed.ok ? "ok" : "newer";
@@ -1267,9 +1295,11 @@ async function replaceGame(slot, env, make, reason) {
 
 /** "Restore backup…" (two-step in Settings): the current save is kept as a damaged copy. */
 export function restoreBackup(slot, env) {
-  return replaceGame(slot, env, async () => {
+  return replaceGame(slot, env, async (stale) => {
     const r = await readOrError(slot.paths.bak);
-    const parsed = r.text !== null ? parseSave(r.text) : null;
+    if (stale()) return null;
+    const parsed = r.text !== null ? await parseIn(slot, r.text, env, stale) : null;
+    if (stale()) return null;
     if (!parsed || !parsed.ok) {
       env.flash("The backup can't be read; nothing changed.");
       return null;
@@ -1318,7 +1348,8 @@ export async function sharePath(slot, env, path) {
       env.flash(`Can't read that file: ${r.error}`);
       return "unreadable";
     }
-    const parsed = r.text !== null ? parseSave(r.text) : null;
+    const parsed = r.text !== null ? await parseIn(slot, r.text, env, stale) : null;
+    if (stale()) return "stale";
     if (parsed && !parsed.ok) {
       env.flash(parsed.reason === "newer" ? "That save is from a newer Creaseworks." : "That file is not a Creaseworks save.");
       return "notsave";

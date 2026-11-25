@@ -501,8 +501,35 @@ function detail(state, t, h, status, title, where, nKids) {
 // (helpers.js): JSON skips it, so it never reaches the save, and it dies with
 // its state. Per-record memory stays as before (the wasm QuickJS harness
 // fails to free a runtime near 6,000 Album records; test/qjs R13 note).
-const ALBUM = Symbol("creaseworks/album-memo"); // state → rows entry
-const ALBUM_N = Symbol("creaseworks/album-count"); // state → { idx, n }
+// Registry symbols (Symbol.for), non-enumerable, so a hot reload's new module
+// replaces the memo instead of leaving the old one on the state under an
+// orphaned symbol (the slot carries the same state across reloads, B9); each
+// entry is tagged with this module generation's GEN, and one from another
+// generation is rebuilt, never trusted.
+const ALBUM = Symbol.for("creaseworks/album-memo"); // state → rows entry
+const ALBUM_N = Symbol.for("creaseworks/album-count"); // state → { gen, idx, n }
+const GEN = Object.freeze(Object.create(null));
+
+/** This generation's memo under `key`, or null. */
+function memoGet(state, key) {
+  const v = Object.hasOwn(state, key) ? state[key] : null;
+  return v && v.gen === GEN ? v : null;
+}
+
+/** Sets the memo under `key`; the first set drops an older build's per-generation Album symbols. */
+function memoSet(state, key, v) {
+  if (Object.hasOwn(state, key)) {
+    state[key] = v;
+    return;
+  }
+  for (const k of Object.getOwnPropertySymbols(state)) {
+    if (Symbol.keyFor(k) === undefined && (k.description === ALBUM.description || k.description === ALBUM_N.description)) {
+      const d = Object.getOwnPropertyDescriptor(state, k);
+      if (d && d.configurable) delete state[k];
+    }
+  }
+  Object.defineProperty(state, key, { value: v, writable: true, configurable: true, enumerable: false });
+}
 
 let f64 = null; // [Float64Array(1), Uint32Array view], made on first use (A2 rule 2)
 
@@ -534,25 +561,25 @@ function albumScan(state) {
 
 /** The roster's Album: its gone pane helpers (sorted, most recently left first, when rows are first built). */
 function albumEntry(state, idx) {
-  const prev = state[ALBUM];
+  const prev = memoGet(state, ALBUM);
   if (prev && prev.idx === idx) return prev;
   const scan = albumScan(state);
   let c;
   if (prev && prev.count === scan.gone.length && prev.a === scan.a && prev.b === scan.b) {
     c = prev;
   } else {
-    c = { idx: null, a: scan.a, b: scan.b, gone: scan.gone, sorted: false, count: scan.gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
+    c = { gen: GEN, idx: null, a: scan.a, b: scan.b, gone: scan.gone, sorted: false, count: scan.gone.length, style: null, items: null, lo: -Infinity, hi: -Infinity, out: null };
   }
   c.idx = idx;
-  state[ALBUM] = c;
+  memoSet(state, ALBUM, c);
   return c;
 }
 
 /** How many records the Album holds (no rows, no fingerprint: every view asks). */
 function albumCount(state, idx) {
-  const rows = state[ALBUM];
+  const rows = memoGet(state, ALBUM);
   if (rows && rows.idx === idx) return rows.count;
-  const memo = state[ALBUM_N];
+  const memo = memoGet(state, ALBUM_N);
   if (memo && memo.idx === idx) return memo.n;
   let n = 0;
   const hs = state.helpers;
@@ -560,7 +587,7 @@ function albumCount(state, idx) {
     const h = hs[id];
     if (h.gone && h.kind === "pane") n++;
   }
-  state[ALBUM_N] = { idx, n };
+  memoSet(state, ALBUM_N, { gen: GEN, idx, n });
   return n;
 }
 

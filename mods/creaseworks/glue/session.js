@@ -365,6 +365,8 @@ export class Session {
     const t = clockNow();
     advance(slot.state, t, slot.writerId);
     markDirty(slot, t, true);
+    // A stalled claim, or one orphaned by a copy closed 15 s ago, no longer blocks the final write.
+    store.releaseAbandoned(slot, t);
     if (slot.save.writing !== null) return null; // the write under way lands; the next load merges
     return store.cycle(slot, { now: clockNow, sleep: sleeper(_cx), owner: this.copyId });
   }

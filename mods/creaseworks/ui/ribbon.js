@@ -181,7 +181,7 @@ function buttonBound(label) {
 }
 
 const MIDDLE_GAP = 4;
-const HINT_TEXT = "Narrow window: fold Creaseworks to a rail?";
+const HINT_TEXT = "Terminals are narrow: fold Creaseworks?";
 const DENSE = Object.freeze({ A: 0, B: 1, C: 2 });
 
 /** A tally's label: the count, clipped to `RIBBON_CLIP.n` graphemes (never px-truncated). */

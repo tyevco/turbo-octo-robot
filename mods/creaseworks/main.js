@@ -1,19 +1,20 @@
 // Creaseworks: the View herdr loads for every copy (ARCHITECTURE A1, A3, B7,
 // B11). Thin: glue/session.js does the work; ui/* draws. props().role routes
 // the copy: "ribbon" draws the 30 px ribbon, anything else the panel (which
-// is the 64 px rail below 140 px wide). Only glue/* imports "herdr".
+// is the 64 px rail when folded). Every copy gets a Flock ScrollHandle; a
+// ribbon copy releases its own at init. Only glue/* imports "herdr".
 
 import { View, div } from "gpui-kit";
 import { Session } from "./glue/session.js";
 import { renderPanel } from "./ui/panel.js";
 import { renderRibbon } from "./ui/ribbon.js";
-import { isFolded } from "./ui/flock.js";
+import { isFolded, sectionIndex, newFlockScroll } from "./ui/flock.js";
 import { pickScene, pickHues } from "./ui/palette.js";
 
 export default class Creaseworks extends View {
   init(_props, cx) {
     // The session reads props().role (never init's argument, A2 rule 10).
-    this.session = new Session(null, { isFolded });
+    this.session = new Session(null, { isFolded, sectionIndex, scroll: newFlockScroll() });
     this.session.init(cx);
   }
 

@@ -181,8 +181,9 @@ filesPx    = its px size if layout() gives it; for the shipped {weight} Files co
              commands.js filesEstimate(info, Wp) = Wp × filesWeight / panelWeight, held to 280 … 900
 ```
 
-* If the panel is expanded and `mainEst < 600`, the ribbon shows a one-time hint chip (11 px,
-  `T.popover`, 1 px `T.border`): "Narrow window: fold Creaseworks to a rail?" with **[Fold]**
+* If the panel is expanded (wider than 72 px) and `mainEst < 600`, or it is tight (under 200: drawn
+  as a rail in its whole column), the ribbon shows a one-time hint chip (11 px,
+  `T.popover`, 1 px `T.border`): "Terminals are narrow: fold Creaseworks?" with **[Fold]**
   (runs the fold command) and **[Not now]**. It appears at most once per Files-panel opening and
   once per day otherwise (`ui.narrowHintDay` in the save). The game never resizes on its own.
 * With the Files panel open at 1100 px wide the panel is 146 px (Narrow) and the terminals 373 px,
@@ -206,7 +207,18 @@ filesPx    = its px size if layout() gives it; for the shipped {weight} Files co
 Which state a window gets by default (shipped weights, ARCHITECTURE B15): 1100×700 **Narrow**
 (226; 146 with Files open), 1440×900 **Standard** (322; Narrow 217 with Files open), 1920×1080
 **Wide** (456), 2560×1440 **Wide** (636; no maximum: a capped weight node would leave an empty
-strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the rail).
+strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the rail); past zoom
+1.5 Files, not the panel, is what herdr clips (§2.5).
+
+**Folded, tight or full** (ARCHITECTURE B16) comes from the layout, not from `Wp` alone: the panel
+is **folded** when its weight is at most 0.01 of main's or it measures 72 px or less (a dragged
+rail), **tight** when unfolded but under 200 (drawn as the rail in its column, with a fold button),
+else **full**. Its weight is remembered only while it measures 200 px or more. Anything that asks
+for the full panel (a ribbon mark, tally, save chip or Welcome pill, a rail pip, `select`, the
+counts chip) unfolds a folded or tight panel to the remembered weight; when it already has that
+weight and the window still leaves it too little room it flashes "Too narrow: drag the panel's
+edge or widen the window" ("Too narrow: close Files, drag the panel's edge or widen the window"
+while Files is open) and resizes nothing.
 
 ### 2.5 The layout file (complete)
 
@@ -237,13 +249,13 @@ strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the 
           "gap": 8, "radius": 10, "background": "background", "lone": true,
           "border": {"width": 1, "color": "border"}, "focus": {"width": 1, "color": "accent"},
           "header": {"content": {"mod": "pane"}, "height": 30, "position": "top", "reveal": "always"}}}},
+        {"id": "cw-panel", "type": "block", "size": {"weight": 0.39}, "min": 64,
+         "radius": 10, "border": {"width": 1, "color": "border"}, "background": "chrome",
+         "content": {"mod": "creaseworks", "props": {"role": "panel"}}},
         {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 280, "max": 900,
          "children": [{"id": "panel-body", "type": "stack", "active": "files", "children": [
            {"id": "files", "type": "block", "content": {"mod": "files"}},
-           {"id": "changes", "type": "block", "content": {"mod": "changes"}}]}]},
-        {"id": "cw-panel", "type": "block", "size": {"weight": 0.39}, "min": 64,
-         "radius": 10, "border": {"width": 1, "color": "border"}, "background": "chrome",
-         "content": {"mod": "creaseworks", "props": {"role": "panel"}}}]},
+           {"id": "changes", "type": "block", "content": {"mod": "changes"}}]}]}]},
       {"id": "cw-ribbon", "type": "block", "size": {"px": 30}, "background": "chrome",
        "content": {"mod": "creaseworks", "props": {"role": "ribbon"}}},
       {"id": "status", "type": "block", "size": {"px": 28}, "content": {"mod": "workspace-status"}}]}
@@ -251,7 +263,8 @@ strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the 
 }
 ```
 
-`cw-panel` is the last child of `work-body`, never under `panel-body` (the tabs mod hides that,
+`cw-panel` sits between `main` and the Files `panel` in `work-body`, so herdr's clipping row
+cuts Files first, never the game (r2-15); it is never under `panel-body` (the tabs mod hides that,
 share §9). `mods/creaseworks/mod.json`:
 
 ```json
@@ -633,7 +646,10 @@ Top to bottom, all centred, 8 px gaps:
    (at H = 584 about 108 pips fit). Click: needs-you/finished pips open the pane; others unfold
    the panel with that tile selected.
 7. Gilded crane icon 24 (only while one is live; clickable, counts as catching it).
-8. Unfold chevron 24 (`creaseworks.fold`).
+8. Unfold chevron 24 (`creaseworks.fold`); a tight (unfolded) rail shows a fold button there
+   instead. A flash shows in full at 120 px and wider; a narrower rail shows its short form (the
+   words before the colon, "Too narrow") at any width, and while a "Too narrow" flash shows the
+   chevron is ringed in `T.accent`.
 
 ### 3.10 Ribbon (30 px × work width)
 
@@ -1337,7 +1353,7 @@ digests to the first save. The cache lives on the state as plain data under a re
 it rather than adding one per code generation.
 **Parsing in steps.** `parseSaveSteps(text)` is `parseSave` as a generator that yields after the
 JSON parse and after every `STEP_HELPERS` (1,500) helpers it checks, unpacks or validates; the
-glue drives it with a task yield between steps for a load and for a CAS merge (§12.2), so no step
+glue (`store.js` `parseIn`) drives it with a task yield between steps for a load, a CAS merge (§12.2) and every Settings save tool, for any save of 64 KiB or more, so no step
 grows with the save (two years, 585 KiB: 31 steps, the slowest ≈ 60 ms in the wasm harness, against
 ≈ 390 ms for the whole parse in one step).
 **Builds before format 3** (development builds only; none was released) verify the whole-text check
@@ -1546,7 +1562,7 @@ bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
 | Envelope landing | newest tray envelope `.loop("top", {from: 0, to: −2·z, period: 1600})` | 10 s after it lands, mat shown | none |
 | First-run hint | `.loop("top", {0 → 4·z, 900})` | until the 3rd fold | static |
 | Sheet fold | frame swap on each click (data) + `.active(s => s.opacity(0.88))` | — | same |
-| Floating "+N" | click handler records `{id, x, y}`; the element renders at `top y`, `opacity 1` with `.transition("top", 700)` and `.transition("opacity", 700)`; **one `cx.timer.after(16)` per burst** flips all new pops to `top y − 28`, `opacity 0`; **one `after(800)`** removes them. ≤ 5 alive | — | off |
+| Floating "+N" | click handler records `{id, x, y}`; the element renders at `top y`, `opacity 1` with `.transition("top", 700)` and `.transition("opacity", 700)`; **one `cx.timer.after(16)` per burst** flips all new pops to `top y − 28`, `opacity 0`; **one `after(≤ 800)`, due when the oldest pop finishes,** removes the risen ones (a pop still rising is never cut; while 5 are alive a click's amount is carried into the next pop that fits). ≤ 5 alive | — | off |
 | Streak meter, rest bars, string fill, switch knob, crease fade, node expiry | `.transition(width/height/left/opacity, 150/600/600/120/600/2000)` on absolute px | — | ≤ 150 ms or snap |
 | Boost countdown | one `.transition("width", {duration: remainingMs, easing: "linear"})` per boost | — | same (a bar, not motion) |
 
@@ -1565,7 +1581,7 @@ All loop px are multiplied by `settings().zoom` by us (gpui §9).
   flicker).
 
 **Timers and tasks.** Per copy: one data timer (`every`), one `nextCommand` loop, at most one
-pop burst pair (`after(16)`, `after(800)`), at most one save write in flight (ticker only). That
+pop burst pair (`after(16)`, `after(≤ 800)`), at most one save write in flight (ticker only). That
 is ≤ 5 outstanding host tasks per copy and ≤ 10 for the game, far below the VM-wide 1,024
 (qjs §3). No combo or fuse timers: rhythm decays lazily from timestamps.
 
@@ -1700,7 +1716,7 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 3 (packed entries since 2; the chunked check of §12.1 since 3, review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 31 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load and merge must drive it with a task yield between steps (`glue/store.js`), after which no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
+| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left (≈ 40 B packed; §5.1), never dropped. Count-based, so deterministic and free of a size measurement. Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 3 (packed entries since 2; the chunked check of §12.1 since 3, review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 347 KiB (slowest save-cycle step ≈ 90–125 ms, the load step ≈ 230 ms); two years ≈ 585 KiB (save-cycle step ≈ 135–190 ms, load step ≈ 380–480 ms), budget 500 ms. Residual: at ≈ 40 B per compacted helper, 512 KiB is reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000 (≈ 3.5 years at 20 a day). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB (≈ 2.8 years at 20 a day), before the write limit. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 31 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load, merge, overwrite, check, restore and share paths drive it with a task yield between steps for any save of 64 KiB or more (`glue/store.js` `parseIn`), so no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. It reproduces with the engine's save code replaced by plain mock writes of 450,000-character strings, and it depends on the wasm heap's history (a 280-day save passes in a fresh instance, fails after other tests), so its cause is in that runtime build or the harness, not found yet. herdr runs a different build (quickjs-jit) that cannot be checked here; if it shared the fault, it would show when a window closes or a hot reload frees the VM. `npm run test:qjs` keeps a strict 120-day run (188 KiB), and a year run and a two-year run whose teardowns are todo tests |
 | R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
 | R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |
