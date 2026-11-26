@@ -706,7 +706,7 @@ const CJK = "codex · 支払い照合サービスをリファクタリングし�
 const bytesOf = (text) => Buffer.byteLength(text, "utf8");
 const presentOf = (st) => Object.values(st.helpers).filter((h) => !h.gone);
 const loadedGroup = (h) => ({ working: "working", blocked: "needs", done: "finished", idle: "resting" })[h.status];
-const tierOf = (v) => (!Array.isArray(v) ? "whole" : v[0] === 2 ? "slim" : v[0] === 1 ? (v.length > 3 ? "full" : "lean") : "album");
+const tierOf = (v) => (!Array.isArray(v) ? "whole" : v[0] === 3 ? "stub" : v[0] === 2 ? "slim" : v[0] === 1 ? (v.length > 3 ? "full" : "lean") : "album");
 
 /** `agents` pane agents with `kids` sub-agents each, long CJK titles, through a few turns (an envelope each). */
 function bigRoster(agents, kids, { w = "w-7f3a9c2e41", seed = 31, base = 0, t0 = T0 } = {}) {
@@ -766,7 +766,6 @@ test("format 5: a present helper packs to exactly the record it loads as, in eve
   for (const id of Object.keys(s.envelopes)) assert.deepEqual({ ...back.state.envelopes[id] }, { ...s.envelopes[id] });
   assert.equal(engine.serialize(back.state), text);
   // records that are not exactly an engine record are kept whole
-  assert.equal(engine.saveFloorBytes(s), 0, "below 4,000 present helpers no floor is needed");
   const odd = engine.cloneState(s);
   const [a, b, c] = presentOf(odd);
   a.extra = 1;
@@ -802,9 +801,6 @@ test("format 5: 4,000 present helpers (1,000 agents with 3 sub-agents each, long
   assert.ok(bytes <= K.saveBudget, `${bytes} bytes over the budget`);
   assert.ok(saveBytes(s) >= bytes, `estimate ${saveBytes(s)} below ${bytes}`);
   assert.ok(saveBytes(s) <= K.saveBudget);
-  // store.js refuses a hopeless roster by this lower bound before serialising it
-  const floor = engine.saveFloorBytes(s);
-  assert.ok(floor > 0.4 * bytes && floor <= bytes, `floor ${floor} of ${bytes}`);
   const written = JSON.parse(text).state.helpers;
   const tiers = present.map((h) => tierOf(written[h.id]));
   assert.equal(tiers.filter((x) => x === "whole").length, 0, "every present helper packs");
@@ -832,8 +828,6 @@ test("format 5: past the budget the least recently active present helpers are wr
   assert.equal(presentOf(s).length, 5200, "every agent present");
   assert.ok(bytes <= K.saveBudget, `${bytes} bytes`);
   assert.ok(saveBytes(s) >= bytes && saveBytes(s) <= K.saveBudget);
-  const floor = engine.saveFloorBytes(s);
-  assert.ok(floor > 0.6 * bytes && floor <= bytes, `floor ${floor} of ${bytes}`);
   const doc = JSON.parse(text).state.helpers;
   const slimIds = Object.keys(doc).filter((id) => tierOf(doc[id]) === "slim");
   assert.ok(slimIds.length > 0 && slimIds.length < 2000, `${slimIds.length} slim`);

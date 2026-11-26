@@ -208,7 +208,9 @@ export const K = f({
   // Per-record estimates (UTF-8 bytes as written): a present helper written
   // whole (one that cannot be packed) without its strings (which are counted
   // exactly); the numbers, commas and brackets of a lean / slim packed present
-  // helper (what prune makes room for; the save plan counts them exactly);
+  // helper (what prune makes room for, on the high side so a roster's game
+  // state comes before the Album's compact records; the save plan counts them
+  // exactly);
   // a full Album record or archive entry, a packed entry (+ fledgling totals,
   // + a name of its own), an envelope written whole (packed ones and an away
   // pot's task snapshot are counted exactly), and everything else outside

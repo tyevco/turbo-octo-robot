@@ -2040,12 +2040,14 @@ test("r6-18: a racing first write on Windows is merged, not shown as a save erro
 });
 
 // r6-16: the engine holds the save under K.saveBudget by archiving Album
-// records and (format 5) by writing the least recently active present helpers
-// slim, but a roster whose slim records alone pass herdr's 1 MiB limit (about
-// 8,500 helpers present at once, DESIGN R13; 1,300 before format 5) cannot
-// shrink. The store measures the text before writing, as a last resort: such
-// a write is never sent, the reason is said in words, and it is retried until
-// the roster is small enough again.
+// records and (format 5) by packing the present helpers in smaller tiers as
+// the roster grows, down to leaving the last stubs out, so no roster passes
+// herdr's 1 MiB limit (DESIGN R13; about 1,300 present helpers did before
+// format 5). What the engine writes whole is not bounded: a record it cannot
+// pack (a hand-edited save's, here one with a field of its own). The store
+// measures the text before writing, as a last resort: such a write is never
+// sent, the reason is said in words, and it is retried until the state is
+// small enough again.
 test("r6-16: oversize measures UTF-8 bytes exactly around herdr's 1 MiB limit", () => {
   assert.equal(store.FILE_LIMIT, 1024 * 1024);
   const L = store.FILE_LIMIT;
@@ -2096,21 +2098,61 @@ test("R13 (format 5): 4,000 agents present at once save under the budget, every 
   assert.equal(Object.values(p.state.helpers).filter((h) => !h.gone).length, 4000, "every agent is a saved helper");
 });
 
-/** Pane agents enough that even their slim records pass 1 MiB (format 5, R13). */
-const OVER_MIB = 14000;
+/** Agents whose present records, written whole, pass 1 MiB with their titles (about 900 B each). */
+const OVER_MIB = 2000;
 
-test("r6-16: a recovery write over 1 MiB is never sent, and its message is shown whole", async () => {
+/** `n` working agents with long CJK titles, as herdr lists them. */
+function manyAgents(n) {
   const agents = [];
   const terminals = [];
-  for (let i = 1; i <= OVER_MIB; i++) {
+  for (let i = 1; i <= n; i++) {
     agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `agent ${i} 支払い照合サービスのテスト ${"漢".repeat(20)}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
     terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: 1000 + i * 997 });
   }
-  w = win({ files: { [SAVE]: HUGE }, agents, terminals });
+  return { agents, terminals };
+}
+
+/**
+ * Gives every present record of `state` a field of its own, as a hand-edited
+ * save would hold them (new records in a new map, as a load makes them):
+ * none can be packed (R13), so each is written whole.
+ */
+function unpackable(state) {
+  let n = 0;
+  const hs = Object.create(null);
+  for (const [id, h] of Object.entries(state.helpers)) {
+    if (h.gone) hs[id] = h;
+    else {
+      hs[id] = { ...h, stats: { ...h.stats }, note: "kept by hand" };
+      n++;
+    }
+  }
+  state.helpers = hs;
+  return n; // (the next observation makes the save dirty)
+}
+
+test("r6-16: the engine bounds any roster: 14,000 agents present at once save under the budget (format 5, R13)", async () => {
+  w = win(manyAgents(14000));
+  await w.copy("panel");
+  await w.advance(3000);
+  const text = w.ctl.readFile(SAVE);
+  assert.ok(text, "written");
+  assert.ok(Buffer.byteLength(text, "utf8") <= engine.CONTENT.K.saveBudget, `${Buffer.byteLength(text, "utf8")} bytes`);
+  assert.equal(w.slot.save.status, "ok");
+  assert.equal(w.slot.notices.write, null);
+  const p = parsed(w.ctl);
+  assert.equal(Object.values(p.state.helpers).filter((h) => !h.gone).length, 14000, "every agent is a saved helper");
+});
+
+test("r6-16: a recovery write over 1 MiB is never sent, and its message is shown whole", async () => {
+  w = win({ files: { [SAVE]: HUGE }, ...manyAgents(OVER_MIB) });
   const v = await w.copy("panel");
   await w.advance(3000);
-  assert.equal(w.ctl.readFile(RECOVERY), null, "nothing written");
-  assert.deepEqual(w.ctl.writes.filter((x) => x.path === RECOVERY), [], "the recovery write was not sent to herdr");
+  assert.ok(w.ctl.readFile(RECOVERY), "packed, the roster saves to the recovery file");
+  assert.ok(unpackable(w.slot.state) >= OVER_MIB);
+  const sent = w.ctl.writes.filter((x) => x.path === RECOVERY).length;
+  await w.advance(6 * 60000);
+  assert.equal(w.ctl.writes.filter((x) => x.path === RECOVERY).length, sent, "the recovery write was not sent to herdr");
   const m = w.slot.notices.write.message;
   assert.match(m, /^recovery file is \d+ KiB, over 1 MiB: too many helpers$/);
   const banner = v.session.vm().notices.find((x) => x.save);
@@ -2130,8 +2172,13 @@ test("r6-16: a save over 1 MiB is never sent, is said in words, and saves again 
   w = win(many(OVER_MIB));
   const v = await w.copy("panel");
   await w.advance(3000);
-  assert.equal(w.ctl.readFile(SAVE), null, "nothing written");
-  assert.equal(w.ctl.counts.writeTextFile ?? 0, 0, "the write was not sent to herdr");
+  assert.ok(parsed(w.ctl).ok, "packed, the roster saves");
+  const first = w.ctl.readFile(SAVE);
+  assert.ok(unpackable(w.slot.state) >= OVER_MIB);
+  const sent = w.ctl.writes.filter((x) => x.path === SAVE).length;
+  await w.advance(6 * 60000);
+  assert.equal(w.ctl.readFile(SAVE), first, "nothing written since");
+  assert.equal(w.ctl.writes.filter((x) => x.path === SAVE).length, sent, "the write was not sent to herdr");
   assert.equal(w.slot.save.status, "error");
   assert.match(w.slot.notices.write.message, /^save is \d+ KiB, over herdr's 1 MiB cap: too many helpers$/);
   const banner = v.session.vm().notices.find((x) => x.save);

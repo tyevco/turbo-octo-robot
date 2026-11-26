@@ -16,7 +16,7 @@
 // generation's init releases such a claim (adopt) instead of waiting forever.
 
 import { readTextFile, writeTextFile, shared, setShared } from "herdr";
-import { serialize, saveFloorBytes, parseSave, parseSaveSteps, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
+import { serialize, serializeSteps, parseSave, parseSaveSteps, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
 import { localDay, localTime } from "./clock.js";
 import { touch, markDirty, dueAt, codeGeneration, confirmLog, clearLog, flash, DEBOUNCE_MS } from "./live.js";
 
@@ -94,20 +94,18 @@ export const FILE_LIMIT = 1024 * 1024;
  * The exact UTF-8 size of `text` in bytes when it is over FILE_LIMIT, else 0
  * (r6-16). The engine holds the save under K.saveBudget by archiving Album
  * records (helpers.js albumKeepFor) and, from save format 5, by packing the
- * present helpers and writing the least recently active of them slim
- * (helpers.js presentPlan), so every roster up to well past 4,000 present
- * helpers saves. This is the last resort for a roster whose slim records
- * alone pass 1 MiB (about 8,500 helpers present at once, DESIGN R13): the
- * write is not sent, and fail() says why in words, retrying as the roster
- * changes. It only stops a write herdr would refuse anyway (mod_files.rs
- * write: "Text file exceeds 1 MiB"); it does not make the save smaller. A
- * roster that large is refused before it is serialised (saveFloorBytes, a
- * lower bound of the save's size: past 8,500 present helpers the
- * serialisation alone is most of a task step). Most saves are decided by
- * their length alone (one to three bytes a UTF-16 unit); the rest count their
- * non-ASCII units with two regex replaces (no script loop over the text: about
- * 900 KiB of save in one task step), also when the length alone is over the
- * limit, so the KiB said is the real size of a non-ASCII save.
+ * present helpers in smaller tiers as the roster grows (helpers.js
+ * presentPlan: past the budget even the last stubs are left out), so no
+ * roster makes a save too big. This is the last resort for what the engine
+ * writes whole and does not bound (records it cannot pack: a hand-edited or
+ * legacy save's odd records, DESIGN R13): the write is not sent, and fail()
+ * says why in words, retrying as the state changes. It only stops a write
+ * herdr would refuse anyway (mod_files.rs write: "Text file exceeds 1 MiB");
+ * it does not make the save smaller. Most saves are decided by their length
+ * alone (one to three bytes a UTF-16 unit); the rest count their non-ASCII
+ * units with two regex replaces (no script loop over the text: about 900 KiB
+ * of save in one task step), also when the length alone is over the limit, so
+ * the KiB said is the real size of a non-ASCII save.
  */
 export function oversize(text) {
   const n = text.length;
@@ -231,6 +229,45 @@ function progress(slot, env) {
   if (slot.save.writing !== null) slot.save.writingAt = env.now();
   // The load's own progress (session.js watches for a load that stopped: r3-01).
   if (slot.loading && env.gen === slot.loading) slot.loadAt = env.now();
+}
+
+/** States with fewer helpers than this (present and in the Album) are serialised in one go (well under 150 ms); larger ones in steps. */
+export const STEP_SAVE_HELPERS = 3000;
+
+/**
+ * serialize(slot.state) across task steps (engine serializeSteps, R13): one
+ * serialisation of a large roster passes herdr's 500 ms budget (12,500
+ * present helpers ≈ 750 ms in the wasm harness), so every save path spreads
+ * it with a task yield between steps (≈ 50–150 ms each). The text is the state
+ * as it was at the first step, so the log position, writer progress and rev
+ * the write confirms are read then too: actions applied during the yields are
+ * not in the text and stay pending. Returns { text, upto, epoch, own, rev },
+ * or null when `stale()` turns true or the game was replaced during a yield.
+ * A cx that can no longer sleep (a close callback's, after it returned)
+ * finishes the rest in its step.
+ */
+async function serializeIn(slot, env, stale) {
+  const state = slot.state;
+  const at = { text: null, upto: slot.seq, epoch: slot.logEpoch || 0, own: ownApplied(state, slot.writerId), rev: state.rev };
+  let n = 0;
+  if (env && typeof env.sleep === "function") for (const id in state.helpers) if (++n >= STEP_SAVE_HELPERS) break;
+  if (n < STEP_SAVE_HELPERS) {
+    at.text = serialize(state);
+    return at;
+  }
+  const it = serializeSteps(state);
+  let r = it.next();
+  let sleeps = true;
+  while (!r.done) {
+    if (sleeps) {
+      sleeps = await yieldStep(env);
+      if (stale() || slot.state !== state) return null;
+      progress(slot, env);
+    }
+    r = it.next();
+  }
+  at.text = r.value;
+  return at;
 }
 
 /** Saves shorter than this parse in one go (well under 100 ms); longer ones in steps. */
@@ -1226,7 +1263,13 @@ async function mergeRecovery(slot, env, stale, text, back = false) {
     if (kept) {
       if (!S.damaged.some((d) => d === kept || String(d).startsWith(`${kept} (`))) S.damaged.push(kept);
     } else {
-      kept = await keepAsideListed(slot, P, typeof S.recoveryText === "string" ? S.recoveryText : serialize(slot.state), `this window's ${rec}`);
+      let mine = S.recoveryText;
+      if (typeof mine !== "string") {
+        const ser = await serializeIn(slot, env, stale);
+        if (ser === null) return null;
+        mine = ser.text;
+      }
+      kept = await keepAsideListed(slot, P, mine, `this window's ${rec}`);
       if (stale()) return null;
     }
   } else if (had < (S.ownApplied || 0)) {
@@ -1427,16 +1470,9 @@ async function recoveryWrite(slot, env, stale) {
       if (stale()) return null;
       progress(slot, env);
     }
-    const rev = slot.state.rev;
-    const upto = slot.seq;
-    const epoch = slot.logEpoch || 0;
-    const own = ownApplied(slot.state, slot.writerId);
-    const floor = saveFloorBytes(slot.state);
-    if (floor > FILE_LIMIT) {
-      fail(slot, oversizeText(floor, true), env.now()); // cannot fit: not even serialised (R13)
-      return false;
-    }
-    const text = serialize(slot.state);
+    const ser = await serializeIn(slot, env, stale);
+    if (ser === null) return null;
+    const { text, upto, epoch, own, rev } = ser;
     const big = oversize(text);
     if (big) {
       fail(slot, oversizeText(big, true), env.now()); // never sent (r6-16); ≤ 60 graphemes, the file named in the text
@@ -1736,28 +1772,18 @@ export async function cycle(slot, env) {
       if (!S.bakUnreadable && !S.bakHeld && S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
         if (!(await rotateBackup(slot, env, stale, t))) return false; // superseded
         // The serialisation in a task step of its own, not with the backup
-        // write's resumption (R13: a 4,000-helper save's serialisation is most
-        // of a step). A close callback's cx cannot sleep once it has returned:
-        // its final write then goes on in this step.
+        // write's resumption (R13: even a step of a large save's
+        // serialisation is a share of one). A close callback's cx cannot
+        // sleep once it has returned: its final write then goes on in this step.
         if (sleeps && (await yieldStep(env))) {
           if (stale()) return false;
           progress(slot, env);
         }
       }
-      // 1. + 3. serialise and write
-      const rev = slot.state.rev;
-      const floor = saveFloorBytes(slot.state);
-      if (floor > FILE_LIMIT) {
-        // So many helpers present that even their slim records pass herdr's
-        // limit (R13): said at once, without the serialisation, which at that
-        // size alone would take most of a 500 ms task step.
-        fail(slot, oversizeText(floor), env.now());
-        return false;
-      }
-      const text = serialize(slot.state);
-      const upto = slot.seq;
-      const epoch = slot.logEpoch || 0;
-      const own = ownApplied(slot.state, slot.writerId);
+      // 1. + 3. serialise (in steps for a large state, R13) and write
+      const ser = await serializeIn(slot, env, stale);
+      if (ser === null) return false;
+      const { text, upto, epoch, own, rev } = ser;
       const big = oversize(text);
       if (big) {
         // Over herdr's file limit (r6-16): never sent; said in words, retried with back-off.
@@ -2039,7 +2065,9 @@ async function replaceGame(slot, env, make, reason) {
     if (r.error !== null) {
       await pause(env); // the serialisation in a task step of its own
       if (stale()) return "stale";
-      old = { text: serialize(slot.state), error: null };
+      const ser = await serializeIn(slot, env, stale);
+      if (ser === null || stale()) return "stale";
+      old = { text: ser.text, error: null };
     }
     if (old.text !== null) {
       kept = await keepAsideListed(slot, slot.paths, old.text, reason);

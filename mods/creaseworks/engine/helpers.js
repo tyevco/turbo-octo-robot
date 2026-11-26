@@ -293,6 +293,7 @@ function toAlbum(h, t) {
   if (typeof h.addr === "string" && h.addr !== "") h.key = albumKey(h.addr, Number(h.created) || 0);
   for (const k of Object.keys(LIVE_FIELDS)) delete h[k];
   delete h.slim;
+  delete h.stub;
   for (const k of Object.keys(KEPT_FIELDS)) if (!isFiniteNum(h[k])) delete h[k];
   // the fledgling budget's field before kidUnitAt (r3-24), kept as kidUnitAt's start
   if (isFiniteNum(h.kidFinishAt) && !isFiniteNum(h.kidUnitAt)) h.kidUnitAt = h.kidFinishAt;
@@ -638,6 +639,11 @@ export function observe(state, ctx, action, t, ev) {
       seen[id] = true;
       let h = hs[id];
       const status = cleanStatus(o.status);
+      if (h && h.stub === true && !h.gone) {
+        // a stub (R13, format 5) keeps neither: this sighting gives them back
+        h.addr = String(o.addr);
+        h.created = Number(o.created) || 0;
+      }
       if (!h) {
         h = newRecord(o, id, t, w, names());
         hs[id] = h;
@@ -669,7 +675,9 @@ export function observe(state, ctx, action, t, ev) {
         transition(h, status, t, E);
       }
       resolveParent(h, o, list, ids, byAddr, byAddrPresent);
-      if (h.slim === true) delete h.slim; // seen again: written whole again when there is room (presentPlan)
+      // seen again: written whole again when there is room (presentPlan)
+      if (h.slim === true) delete h.slim;
+      if (h.stub === true) delete h.stub;
       h.lastSeen = t;
       h.seenBy = w;
       h.group = GROUP_OF[h.status];
@@ -751,8 +759,10 @@ function claimId(hs, claim, list, o, i, present) {
       if (same(j)) return id; // the same terminal twice
     } else {
       const h = hs[id];
-      // a gone record is free unless its key says it was another terminal (r3-18)
-      if (!h || (h.gone ? albumMatch(h, addr, created) : h.addr === addr && h.created === created)) {
+      // a gone record is free unless its key says it was another terminal
+      // (r3-18); a stub (R13) kept no address: it is the record of the
+      // terminal its plain id is the hash of (only a plain id is written as one)
+      if (!h || (h.gone ? albumMatch(h, addr, created) : (h.addr === addr && h.created === created) || (k === 1 && h.stub === true))) {
         claim[id] = i;
         return id;
       }
@@ -896,11 +906,12 @@ function archiveOldest(state, compacts, keep) {
 // bytes and, when the compact records would push it past K.saveBudget, keeps
 // fewer of them one by one (the oldest go to archive entries, still counted
 // and shown). The estimate is cheap (no stringify): a present helper counts
-// its lean packed form (format 5, below: its strings exactly, its numbers by
-// K.saveBytesLean), every other record by its shape (content.js saveBytes*),
-// so it is deterministic and the same in every window. A roster whose lean
-// forms alone pass the budget leaves no compact record, and presentPlan then
-// writes its least recently active helpers slim, so any roster saves.
+// an upper bound of its lean packed form (format 5, below: its strings
+// exactly, each number by the widest text its value can take until the next
+// observation, numMax / growMax), every other record by its shape (content.js
+// saveBytes*), so it is deterministic and the same in every window. A roster
+// whose lean forms alone pass the budget leaves no compact record; past that
+// presentPlan writes the present helpers in smaller tiers, so any roster saves.
 
 const PLAIN = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
 
@@ -961,18 +972,73 @@ function compactBytes(h) {
 }
 
 /**
- * Estimated saved bytes of present helper `h` in its lean packed form, or its
- * slim form when it is slim (what prune makes room for: the place strings
- * fill whatever room is left, presentPlan). Its strings are counted exactly,
- * its numbers by K.saveBytesLean / K.saveBytesSlim (no number is formatted:
- * this runs for every present helper at every observation).
+ * The widest text finite number `x` can be written as (≥ String(x).length;
+ * exact for an integer below 1e15): a fraction has at most 17 significant
+ * digits, so at most 18 characters from 1 up, 19 to 24 below 1 (its leading
+ * zeros, or an exponent below 1e-6), 23 from 1e16 up (an exponent from 1e21);
+ * one more for a minus sign. No number is formatted (prune runs this for
+ * every number of every present helper at every observation).
  */
-function leanBytes(h) {
-  const nm = h.name;
-  const own = typeof nm === "string" && nm.indexOf(" ") >= 0 ? jsonBytes(nm) : 1;
-  // (its writer is written as an index among the writersSeen keys: counted in the constant)
-  return (h.slim === true ? K.saveBytesSlim : K.saveBytesLean) + jsonBytes(h.addr) + own +
-    (typeof h.parent === "string" ? jsonBytes(h.parent) : 1);
+export function numMax(x) {
+  const neg = x < 0 ? 1 : 0;
+  const a = neg ? -x : x;
+  if (a < 1e15 && Number.isInteger(a)) return numBytes(a) + neg;
+  if (a >= 1e16) return 23 + neg;
+  if (a >= 1) return 18 + neg;
+  return (a >= 0.1 ? 19 : a >= 0.01 ? 20 : a >= 1e-3 ? 21 : a >= 1e-4 ? 22 : a >= 1e-5 ? 23 : 24) + neg;
+}
+
+/**
+ * numMax for a value the engine changes between observations (folds and run
+ * as the flock earns, rest as an idle helper rests, the envelope meter): the
+ * widest text of any fraction of its size class (a fraction below 1 can take
+ * up to 24 characters, any from 1 up to 1e16 18), so the estimate prune makes
+ * at an observation still bounds the save written before the next one.
+ */
+function growMax(x) {
+  const neg = x < 0 ? 1 : 0;
+  const a = neg ? -x : x;
+  return (a >= 1e16 ? 23 : a >= 1 ? 18 : 24) + neg;
+}
+
+/** The widest text of time `x` written as its offset from `L` ("null" for null). */
+const offMax = (x, L) => (x === null || x === undefined ? 4 : isFiniteNum(x) ? numMax(x - L) : 24);
+
+/**
+ * An upper bound of the UTF-8 bytes present helper `h` takes in the save (its
+ * `"<id>":` key and comma included) in its lean packed form, or in its slim
+ * or stub form when it is slim or a stub (what prune makes room for before the
+ * Album's compact records: the place strings fill whatever room is left,
+ * presentPlan), or whole when its shape says it cannot be packed. Its strings
+ * are counted exactly, its numbers by numMax / growMax. `writers`: writer id
+ * → its index among the writersSeen keys that stay.
+ */
+function presentMax(h, writers) {
+  const s = h.stats;
+  const L = h.lastSeen;
+  const flag = h.slim === true || h.stub === true;
+  if (!s || typeof s !== "object" || !isFiniteNum(L) || !isFiniteNum(s.tasks) || !isFiniteNum(s.folds) || !isFiniteNum(s.run) || !isFiniteNum(h.rest) || !isFiniteNum(h.warm) || typeof h.id !== "string" || !HEX8.test(h.id) || !knownShape(h, h, flag)) return presentBytes(h);
+  const n0 = parseInt(h.id, 16) >>> 0;
+  const nm = h.name === NAMES[((n0 >>> 8) % 16) * 12 + ((n0 >>> 12) % 12)] ? 1 : jsonBytes(h.name);
+  const kp = typeof h.parent === "string" ? jsonBytes(h.parent) : 1;
+  const sb = h.seenBy;
+  const w = sb === null ? 4 : writers[sb] !== undefined ? numBytes(writers[sb]) : jsonBytes(sb);
+  const turn = isFiniteNum(h.lastTurn) ? numMax(h.lastTurn) : 24;
+  // "<id>": and a comma
+  if (h.stub === true) return 12 + 13 + nm + kp + w + numMax(L) + turn + (h.status === "blocked" ? 1 + offMax(h.blockedAt, L) : 0); // [3,nm,kp,st,w,L,turn(,ba)]
+  // folds and run grow while it works (a fledgling, or another window's
+  // helper at the unseen rate, may earn whatever its status), rest while it
+  // idles or has finished; the rest changes only at observations
+  const earns = h.status === "working" || h.kind === "kid" || h.group === "elsewhere";
+  const fm = earns ? growMax : numMax;
+  let n = 12 + 28 + jsonBytes(h.addr) + nm + kp + w + numMax(L) + turn + offMax(h.created, L) + offMax(h.joined, L) + numMax(h.env) +
+    numMax(s.tasks) + fm(s.folds) + fm(s.run) + numMax(s.envelopes) + numMax(s.checkIns);
+  if (s.kidsPast !== undefined || s.kidsFolds !== undefined) n += 2 + numMax(s.kidsPast) + numMax(s.kidsFolds);
+  if (h.slim === true) return n + (h.blockedAt === null ? 0 : 1 + offMax(h.blockedAt, L)); // [2,S(,ba)]
+  // [1,S,X]: X = [rest,warm,warmUntil',thanksUntil',lastFinishAt',unitAt',kidUnitAt',blockedAt']
+  const rests = (h.status === "idle" || h.status === "done") && h.rest < 1;
+  return n + 1 + 10 + (rests ? growMax(h.rest) : numMax(h.rest)) + numMax(h.warm) + (h.warmUntil === 0 ? 4 : offMax(h.warmUntil, L)) +
+    (h.thanksUntil === 0 ? 4 : offMax(h.thanksUntil, L)) + offMax(h.lastFinishAt, L) + offMax(h.unitAt, L) + offMax(h.kidUnitAt, L) + offMax(h.blockedAt, L);
 }
 
 /** Estimated saved bytes of helper record `h` written whole, or as a compact Album entry. */
@@ -1018,75 +1084,101 @@ export function saveBytes(state) {
 // is about 560 bytes of keys and numbers plus its strings, so about 1,300
 // agents present at once passed herdr's 1 MiB write limit and no save could be
 // written. The codec now writes each present helper as an array
-// (`packPresent`), in one of three tiers:
+// (`packPresent`), in one of four tiers:
 //
 //   full  [1, S, X, P]
 //   lean  [1, S, X]     (no place strings: every observation sets them again;
 //                        also how a helper with none is written)
 //   slim  [2, S]        identity, its window's last sight of it and its totals
+//         [2, S, ba']   (and its wait's start, when it has one)
+//   stub  [3, name, kp, st, seenBy, lastSeen, lastTurn]   identity only
+//         [3, …, ba']   (and its wait's start, when it waits)
 //
 //   S = [addr, name, kp, st, seenBy, lastSeen, lastTurn, created', joined', env, stats]
 //   X = [rest, warm, warmUntil', thanksUntil', lastFinishAt', unitAt', kidUnitAt', blockedAt']
 //   P = [title, pane, paneName, space, tab]
 //
 // name: 0 for the base name of its id; kp: 0 a pane helper, 1 a fledgling with
-// no parent, else the parent's id; st: the status index (working, blocked,
-// done, idle); seenBy: the index of its writer among the writersSeen keys (its
-// id when that writer is not there); t' = t − lastSeen (warmUntil and
-// thanksUntil 0, and the nullable times' null, are written as null); stats
-// [tasks, folds, run, envelopes, checkIns(, kidsPast, kidsFolds)], run null
-// when it equals folds (the first run). species, hue, missingSince and gone
-// follow from these; group, a cache nothing reads (groupFor derives it), is not
-// written and loads as the status's group (an Elsewhere helper's is set again
-// at its next observation), so a helper's text is the same in every window and
-// a merge does not re-hash every chunk. Every number is written as it is, so a
-// record loads exactly as it was but for what its tier drops. The three tiers
-// share S's text (and lean / full X's), so a record is stringified once in
-// parts and each tier's text and size follow from those.
+// no parent, else the parent's id; st: the status index (STATUSES: working,
+// blocked, done, idle; the order is part of the format); seenBy: the index of
+// its writer among the writersSeen keys (its id when that writer is not
+// there); t' = t − lastSeen (warmUntil and thanksUntil 0, and the nullable
+// times' null, are written as null); stats [tasks, folds, run, envelopes,
+// checkIns(, kidsPast, kidsFolds)], run null when it equals folds (the first
+// run). species, hue, missingSince and gone follow from these; group, a cache
+// nothing reads (groupFor derives it), is not written and loads as the
+// status's group (an Elsewhere helper's is set again at its next
+// observation), so a helper's text is the same in every window and a merge
+// does not re-hash every chunk. Every number is written as it is, so a record
+// loads exactly as it was but for what its tier drops. The tiers share S's
+// text (and lean / full X's), so a record is stringified once in parts and
+// each tier's text and size follow from those.
 //
 // The tiers are chosen by `presentPlan` under K.saveBudget. When every present
-// helper fits whole, all are written full. Otherwise every one's slim form is
-// reserved first, then, most recently active first (lastSeen, then working
-// before waiting, finished and idle, then the latest of joined / last finish /
-// wait, then id), a first pass gives every helper that still fits its lean
-// form and a second the lean ones that still fit their place strings: game
-// state before place strings, and the least recently active present helpers
-// keep only identity and totals. So every agent is a saved helper, up to about
-// 8,500 present at once (where the slim records alone pass herdr's 1 MiB write
-// limit and store.js refuses the write and says so). A slim
+// helper fits whole, all are written full. Otherwise every one's stub is
+// reserved first (a helper whose id is salted, R6, is never a stub: its slim
+// form, which keeps its address, is reserved instead), and then, in the order
+// below, a first pass gives every helper that still fits its slim form, a
+// second its lean form, a third its place strings: totals before game state,
+// game state before place strings. The order is the same in every window:
+// live helpers (seen by their window within K.staleMs of the state's clock)
+// before unseen ones, unseen ones most recently seen first, helpers holding an
+// envelope first, then by id (a fixed spread: no window's roster and no
+// status is favoured). So every agent is a saved helper up to about 22,000
+// present at once, well past the roster an observation can reconcile inside
+// herdr's 500 ms budget (≈ 32 µs a helper in the wasm harness). Past that the
+// last stubs in the order are left out (never a save refused for its roster:
+// a helper left out joins again as a new helper when it is seen). A slim
 // record loads with `slim: true` (its budgets empty at lastSeen, no warmth,
-// thanks or rest) and is written slim until an observation sees it again, so a
-// reload or a merge, which replays onto the loaded save, writes the same
-// text: a record whose dropped fields are gone writes the same whatever tier
-// it gets, the slim ones leave the order, and the others keep their order and
-// costs, so each pass upgrades the same records again.
+// thanks or rest), a stub with `stub: true` (no totals, its address and
+// created_ms set again by the observation that sees it), and each is written
+// so until an observation sees it again, so a reload or a merge, which
+// replays onto the loaded save, writes the same text: a record whose dropped
+// fields are gone writes the same whatever tier it gets, the order uses only
+// what every tier keeps, and each pass gives the same records the same room.
 
-const TIER_SLIM = 1;
-const TIER_LEAN = 2;
-const TIER_FULL = 3;
+const TIER_DROP = 0;
+const TIER_STUB = 1;
+const TIER_SLIM = 2;
+const TIER_LEAN = 3;
+const TIER_FULL = 4;
 const STAT_N = 5;
 const S_N = 11;
 const X_N = 8;
-const RECORD_KEYS = 31; // newRecord's fields (slim: one more)
+const RECORD_KEYS = 31; // newRecord's fields (slim or stub: one more)
 
 const isStrOrNull = (v) => v === null || typeof v === "string";
 const timeOrNull = (v) => v === null || isFiniteNum(v);
 
 // Records already checked to hold only the fields of a present record (keyed
-// by the record object: a pure cache, dropped with the record; the engine adds
-// no other field to a record it made, so a record is checked once, not at
-// every save: Object.keys of each record and its stats was a fifth of a
-// 4,000-helper save plan in the wasm harness).
+// by the live record object: a pure cache, dropped with the record; the
+// engine adds no other field to a record it made, so a record is checked
+// once, not at every save: Object.keys of each record and its stats was a
+// fifth of a 4,000-helper save plan in the wasm harness).
 let shapeOk = null;
 
-/** True when `h` (and its stats) hold no field a present record does not have. */
-function knownShape(h, slim) {
+/** True when `h` (and its stats) hold no field a present record does not have; `key` is the live record `h` copies (the cache key). */
+function knownShape(key, h, flagged) {
   if (shapeOk === null) shapeOk = new WeakSet();
-  if (shapeOk.has(h)) return true;
+  if (shapeOk.has(key)) return true;
   const s = h.stats;
-  if (Object.keys(h).length !== RECORD_KEYS + (slim ? 1 : 0)) return false;
+  if (Object.keys(h).length !== RECORD_KEYS + (flagged ? 1 : 0)) return false;
   if (Object.keys(s).length !== (s.kidsPast !== undefined || s.kidsFolds !== undefined ? STAT_N + 2 : STAT_N)) return false;
-  shapeOk.add(h);
+  shapeOk.add(key);
+  return true;
+}
+
+// Present records whose id is the plain hash of their address and created_ms
+// (keyed by the live record: a present record's id, address and created_ms
+// never change). Only those may be written as stubs: a stub keeps neither,
+// and the observation that sees it again finds it by that hash (claimId).
+let plainOk = null;
+
+function plainId(key, h) {
+  if (plainOk === null) plainOk = new WeakSet();
+  if (plainOk.has(key)) return true;
+  if (helperId(h.addr, h.created) !== h.id) return false;
+  plainOk.add(key);
   return true;
 }
 
@@ -1100,29 +1192,32 @@ function dt(x, L) {
 
 // The texts of one present helper's packed parts (presentParts writes them
 // here: one scratch object, no allocation per helper).
-const PARTS = { sT: "", xT: "", pT: null };
+const PARTS = { sT: "", xT: "", pT: null, bT: "", uT: "" };
 const J = JSON.stringify;
 const tOrNull = (d) => (d === null ? "null" : d);
 
 /**
- * The JSON texts of present helper `h`'s packed parts S, X and P (P null when
- * it has no place strings) into PARTS, or false when `h` is not exactly what
+ * The JSON texts of present helper `h`'s packed parts into PARTS: S, X and P
+ * (P null when it has no place strings), the slim form's wait suffix (bT,
+ * "" without one) and its stub (uT); or false when `h` is not exactly what
  * unpackPresent gives back (a record of an older build or a hand-edited save:
  * written whole). `writers`: writer id → its index among the writersSeen keys
- * (optional). Runs for every present helper at every save, so its checks are
- * inline and the texts are built directly (a number's text is the same in a
- * template as in JSON: every one here is finite), about twice as fast in the
- * wasm harness as building arrays and stringifying them.
+ * (optional). `key`: the live record `h` is a copy of (the caches' key; `h`
+ * itself by default). Runs for every present helper at every save, so its
+ * checks are inline and the texts are built directly (a number's text is the
+ * same in a template as in JSON: every one here is finite), about twice as
+ * fast in the wasm harness as building arrays and stringifying them.
  */
-function presentParts(h, writers) {
+function presentParts(h, writers, key = h) {
   if (!h || h.gone !== false || h.missingSince !== null) return false;
   const id = h.id;
   if (typeof id !== "string" || id.length !== 8 || !HEX8.test(id)) return false;
   const s = h.stats;
   if (!s || typeof s !== "object") return false;
   const slim = h.slim === true;
-  if (!slim && h.slim !== undefined) return false;
-  if (!knownShape(h, slim)) return false;
+  const stub = h.stub === true;
+  if ((!slim && h.slim !== undefined) || (!stub && h.stub !== undefined) || (slim && stub)) return false;
+  if (!knownShape(key, h, slim || stub)) return false;
   const addr = h.addr;
   const name = h.name;
   const seenBy = h.seenBy;
@@ -1177,44 +1272,64 @@ function presentParts(h, writers) {
   }
   const w = seenBy === null ? "null" : writers !== undefined && writers[seenBy] !== undefined ? writers[seenBy] : J(seenBy);
   const base = NAMES[((n >>> 8) % 16) * 12 + ((n >>> 12) % 12)];
+  const nm = name === base ? "0" : J(name);
   // the first run's folds are its helper's folds: run is written as null then
-  PARTS.sT = `[${J(addr)},${name === base ? "0" : J(name)},${kp},${st},${w},${L},${lastTurn},${c},${j},${env},[${tasks},${folds},${run === folds ? "null" : run},${envs},${checkIns}${kids}]]`;
+  PARTS.sT = `[${J(addr)},${nm},${kp},${st},${w},${L},${lastTurn},${c},${j},${env},[${tasks},${folds},${run === folds ? "null" : run},${envs},${checkIns}${kids}]]`;
   PARTS.xT = `[${rest},${warm},${tOrNull(wu)},${tOrNull(tu)},${tOrNull(lf)},${tOrNull(ua)},${tOrNull(ka)},${tOrNull(ba)}]`;
-  PARTS.pT = title !== null || pane !== null || paneName !== null || space !== null || tab !== null ? placeText(h, title, pane, paneName, space, tab) : null;
+  PARTS.pT = title !== null || pane !== null || paneName !== null || space !== null || tab !== null ? placeText(key, title, pane, paneName, space, tab) : null;
+  PARTS.bT = ba === null ? "" : `,${ba}`;
+  PARTS.uT = `[3,${nm},${kp},${st},${w},${L},${lastTurn}${st === 1 && ba !== null ? `,${ba}` : ""}]`;
   return true;
 }
 
 // The place text of a record, kept while its five strings stay the same (keyed
-// by the record object: a pure cache; a helper's place rarely changes, and
-// stringifying five strings was a sixth of the parts' cost).
+// by the live record object: a pure cache; a helper's place rarely changes,
+// and stringifying five strings was a sixth of the parts' cost).
 let placeTexts = null;
 
-function placeText(h, title, pane, paneName, space, tab) {
+function placeText(key, title, pane, paneName, space, tab) {
   if (placeTexts === null) placeTexts = new WeakMap();
-  const c = placeTexts.get(h);
+  const c = placeTexts.get(key);
   if (c !== undefined && c.title === title && c.pane === pane && c.paneName === paneName && c.space === space && c.tab === tab) return c.text;
   const text = `[${J(title)},${J(pane)},${J(paneName)},${J(space)},${J(tab)}]`;
-  placeTexts.set(h, { title, pane, paneName, space, tab, text });
+  placeTexts.set(key, { title, pane, paneName, space, tab, text });
   return text;
 }
 
 /**
- * The full-tier packed form of present helper `h` ([1, S, X] or [1, S, X, P]),
- * or null when it cannot be packed (presentParts). `writers` as there.
+ * The packed form of present helper `h` at its largest tier ([1, S, X] or
+ * [1, S, X, P]; [2, S(, ba')] when it is slim, its stub when it is one), or
+ * null when it cannot be packed (presentParts). `writers` as there.
  */
 export function packPresent(h, writers) {
   if (!presentParts(h, writers)) return null;
+  if (h.stub === true) return JSON.parse(PARTS.uT);
+  if (h.slim === true) return JSON.parse(`[2,${PARTS.sT}${PARTS.bT}]`);
   const a = [1, JSON.parse(PARTS.sT), JSON.parse(PARTS.xT)];
   if (PARTS.pT !== null) a.push(JSON.parse(PARTS.pT));
   return a;
 }
 
+/** The given tier's packed form of present helper `h` (stub, slim, lean or full; the tests' view of presentPlan's texts), or null. */
+export function packPresentAs(h, tier, writers) {
+  if (!presentParts(h, writers)) return null;
+  const t = { stub: TIER_STUB, slim: TIER_SLIM, lean: TIER_LEAN, full: TIER_FULL }[tier];
+  return t === undefined ? null : JSON.parse(tierText(t, PARTS.sT, PARTS.xT, PARTS.pT, PARTS.bT, PARTS.uT));
+}
+
+function tierText(tier, sT, xT, pT, bT, uT) {
+  if (tier === TIER_STUB) return uT;
+  if (tier === TIER_SLIM) return `[2,${sT}${bT}]`;
+  return tier === TIER_LEAN || pT === null ? `[1,${sT},${xT}]` : `[1,${sT},${xT},${pT}]`;
+}
+
 /**
- * A present record of a save before format 5 (the migrate path, R13): the
+ * A present record of a save before format 5, or one a code generation
+ * before this one handed over by a hot reload (the migrate path, R13): the
  * fields this build's present records hold are filled in (a budget's older
  * field moved to its own, as toAlbum does; an id's salt and an Album key
- * dropped, they follow from the address), so it packs like a new one. Records
- * of a format-5 file are never changed (the round trip stays exact).
+ * dropped, they follow from the address), so it packs like a new one. A
+ * record of this build is never changed (the round trip stays exact).
  */
 export function normalizePresent(h) {
   if (!h || typeof h !== "object" || Array.isArray(h) || h.gone !== false) return;
@@ -1230,32 +1345,34 @@ export function normalizePresent(h) {
   if (h.group !== "elsewhere" && Object.hasOwn(GROUP_OF, h.status)) h.group = GROUP_OF[h.status];
 }
 
-const nullTime = (v, L) => (v === null ? null : L + v);
+/** L + d, or undefined when that is not finite (a damaged offset: 1e308 + 1e308). */
+const at = (L, d) => {
+  const x = L + d;
+  return x - x === 0 ? x : undefined;
+};
+const nullTime = (v, L) => (v === null ? null : at(L, v));
 
 /**
- * The in-memory record of a packed present entry (tag 1 or 2), or null when
- * the entry is malformed. `writers`: the save's writersSeen keys in order (a
- * seenBy written as a number is the index of its writer there).
+ * The in-memory record of a packed present entry (tag 1, 2 or 3), or null
+ * when the entry is malformed. `writers`: the save's writersSeen keys in
+ * order (a seenBy written as a number is the index of its writer there).
  */
 export function unpackPresent(id, a, writers) {
   if (typeof id !== "string" || id.length !== 8 || !HEX8.test(id) || !Array.isArray(a)) return null;
   const len = a.length;
   const tag = a[0];
-  if (tag === 2 ? len !== 2 : tag !== 1 || (len !== 3 && len !== 4)) return null;
+  if (tag === 3) return unpackStub(id, a, writers);
+  if (tag === 2 ? len !== 2 && len !== 3 : tag !== 1 || (len !== 3 && len !== 4)) return null;
   const S = a[1];
   if (!Array.isArray(S) || S.length !== S_N) return null;
   const addr = S[0];
   const nm = S[1];
   const kp = S[2];
   const st = S[3];
-  let seenBy = S[4];
+  const seenBy = seenByOf(S[4], writers);
   if (typeof addr !== "string" || (nm !== 0 && (typeof nm !== "string" || nm === ""))) return null;
   if (kp !== 0 && kp !== 1 && (typeof kp !== "string" || kp === "")) return null;
-  if (typeof seenBy === "number") {
-    if (!Number.isInteger(seenBy) || seenBy < 0 || !Array.isArray(writers) || seenBy >= writers.length) return null;
-    seenBy = writers[seenBy];
-  }
-  if (!Number.isInteger(st) || st < 0 || st > 3 || !isStrOrNull(seenBy)) return null;
+  if (!Number.isInteger(st) || st < 0 || st > 3 || seenBy === undefined) return null;
   for (let i = 5; i <= 9; i++) if (!isFiniteNum(S[i])) return null;
   const sa = S[10];
   if (!Array.isArray(sa) || (sa.length !== STAT_N && sa.length !== STAT_N + 2)) return null;
@@ -1282,8 +1399,8 @@ export function unpackPresent(id, a, writers) {
     for (let i = 2; i < X_N; i++) if (!timeOrNull(X[i])) return null;
     rest = X[0];
     warm = X[1];
-    wu = X[2] === null ? 0 : L + X[2];
-    tu = X[3] === null ? 0 : L + X[3];
+    wu = X[2] === null ? 0 : at(L, X[2]);
+    tu = X[3] === null ? 0 : at(L, X[3]);
     lf = nullTime(X[4], L);
     ua = nullTime(X[5], L);
     ka = nullTime(X[6], L);
@@ -1294,16 +1411,21 @@ export function unpackPresent(id, a, writers) {
       for (let i = 0; i < 5; i++) if (!isStrOrNull(place[i])) return null;
     }
   } else {
-    // slim: its budgets empty when it was last seen (nothing to draw at once), no warmth, thanks or rest
+    // slim: its budgets empty when it was last seen (nothing to draw at once),
+    // no warmth, thanks or rest; its wait's start kept (the view times it, and
+    // thanks follow from it, exactly as for the record it was)
     ua = L;
     ka = L;
-    ba = status === "blocked" ? L : null;
+    ba = len === 3 ? (isFiniteNum(a[2]) ? at(L, a[2]) : undefined) : null;
   }
+  const created = at(L, S[7]);
+  const joined = at(L, S[8]);
+  if (created === undefined || joined === undefined || wu === undefined || tu === undefined || lf === undefined || ua === undefined || ka === undefined || ba === undefined) return null;
   const h = parseInt(id, 16) >>> 0;
   const rec = {
-    id, addr, created: L + S[7], kind: kp === 0 ? "pane" : "kid", parent: typeof kp === "string" ? kp : null,
+    id, addr, created, kind: kp === 0 ? "pane" : "kid", parent: typeof kp === "string" ? kp : null,
     species: SPECIES[h % 12], hue: (h >>> 4) % 8, name: nm === 0 ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : nm,
-    joined: L + S[8], lastSeen: L, seenBy, status, lastTurn: S[6],
+    joined, lastSeen: L, seenBy, status, lastTurn: S[6],
     lastFinishAt: lf, unitAt: ua, kidUnitAt: ka, blockedAt: ba,
     rest, warm, warmUntil: wu, thanksUntil: tu, env: S[9], stats,
     missingSince: null, group: GROUP_OF[status], gone: false,
@@ -1312,6 +1434,46 @@ export function unpackPresent(id, a, writers) {
   };
   if (tag === 2) rec.slim = true;
   return rec;
+}
+
+/** A packed seenBy: null, a writer id, or its index among `writers`; undefined when malformed. */
+function seenByOf(v, writers) {
+  if (typeof v === "number") return Number.isInteger(v) && v >= 0 && Array.isArray(writers) && v < writers.length ? writers[v] : undefined;
+  return isStrOrNull(v) ? v : undefined;
+}
+
+/**
+ * A stub [3, name, kp, st, seenBy, lastSeen, lastTurn(, blockedAt')]: the
+ * record of a present helper with no totals and no address (set again, with
+ * its created_ms, by the observation that sees it: claimId finds it by its
+ * id), joined at its last sighting, its budgets empty then, no warmth, thanks
+ * or rest, waiting since its wait's start when it waits. Null when malformed.
+ */
+function unpackStub(id, a, writers) {
+  const len = a.length;
+  if (len !== 7 && len !== 8) return null;
+  const nm = a[1];
+  const kp = a[2];
+  const st = a[3];
+  const seenBy = seenByOf(a[4], writers);
+  const L = a[5];
+  if ((nm !== 0 && (typeof nm !== "string" || nm === "")) || (kp !== 0 && kp !== 1 && (typeof kp !== "string" || kp === ""))) return null;
+  if (!Number.isInteger(st) || st < 0 || st > 3 || seenBy === undefined || !isFiniteNum(L) || !isFiniteNum(a[6])) return null;
+  const status = STATUSES[st];
+  if (len === 8 && (status !== "blocked" || !isFiniteNum(a[7]))) return null;
+  const ba = len === 8 ? at(L, a[7]) : null;
+  if (ba === undefined) return null;
+  const h = parseInt(id, 16) >>> 0;
+  return {
+    id, addr: "", created: 0, kind: kp === 0 ? "pane" : "kid", parent: typeof kp === "string" ? kp : null,
+    species: SPECIES[h % 12], hue: (h >>> 4) % 8, name: nm === 0 ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : nm,
+    joined: L, lastSeen: L, seenBy, status, lastTurn: a[6],
+    lastFinishAt: null, unitAt: L, kidUnitAt: L, blockedAt: ba,
+    rest: 0, warm: 1, warmUntil: 0, thanksUntil: 0, env: 0,
+    stats: { tasks: 0, folds: 0, run: 0, envelopes: 0, checkIns: 0 },
+    missingSince: null, group: GROUP_OF[status], gone: false,
+    title: null, pane: null, paneName: null, space: null, tab: null, stub: true,
+  };
 }
 
 /** Characters of number `x` as JSON writes it (finite). */
@@ -1328,7 +1490,7 @@ export function numBytes(x) {
 
 const NON_ASCII = /[^\x00-\x7f]/;
 const ASCII_RUNS = /[\x00-\x7f]+/g;
-const NARROW_RUNS = /[\u0080-\u07ff\ud800-\udfff]+/g;
+const NARROW_RUNS = /[\u0080-߿\ud800-\udfff]+/g;
 
 /**
  * UTF-8 bytes of JSON text `t` (JSON.stringify output: control characters and
@@ -1341,36 +1503,6 @@ function textBytes(t) {
   if (!NON_ASCII.test(t)) return t.length;
   const wide = t.replace(ASCII_RUNS, "");
   return t.length + wide.length + wide.replace(NARROW_RUNS, "").length;
-}
-
-/** Present helpers below which saveFloorBytes is 0 (such a roster is serialised and measured whole, store.js oversize). */
-const FLOOR_FROM = 4000;
-
-/**
- * A lower bound of the UTF-8 size serialize gives `state` (R13): every
- * present helper at its slim form, the envelopes as packed, nothing else;
- * 0 below FLOOR_FROM present helpers. No text is built (about a fifth of a
- * save plan's cost), so store.js can refuse a roster whose save cannot fit
- * herdr's 1 MiB write limit before serialising it: past about 8,500 present
- * helpers a serialisation alone takes most of a 500 ms task step in the wasm
- * harness.
- */
-export function saveFloorBytes(state) {
-  const present = indexHelpers(state).present;
-  if (present.length < FLOOR_FROM) return 0;
-  let n = restBytes(state) - K.saveBytesRest;
-  for (let i = 0; i < present.length; i++) {
-    const h = present[i];
-    const s = h.stats;
-    const L = h.lastSeen;
-    if (!s || !fin(L)) continue;
-    // "<id>":[2,[addr,name,kp,st,seenBy,L,turn,created',joined',env,[tasks,folds,run,envelopes,checkIns]]],
-    n += 12 + 4 + 2 + 10 + 2 + 4 + jsonBytes(h.addr) + (typeof h.parent === "string" ? jsonBytes(h.parent) : 1) +
-      1 + 1 + 1 + numBytes(L) + (fin(h.lastTurn) ? numBytes(h.lastTurn) : 1) +
-      (fin(h.created) ? numBytes(h.created - L) : 1) + (fin(h.joined) ? numBytes(h.joined - L) : 1) + (fin(h.env) ? numBytes(h.env) : 1) +
-      (fin(s.tasks) ? numBytes(s.tasks) : 1) + (fin(s.folds) ? numBytes(s.folds) : 1) + 1 + 1 + 1;
-  }
-  return n;
 }
 
 // UTF-8 sizes of place arrays' texts, memoised (bounded, made at first use):
@@ -1391,28 +1523,65 @@ function placeBytes(t) {
   return n;
 }
 
+/** The writersSeen keys as writer id → index (how a seenBy is written). */
+function writerIndex(ws, keep) {
+  const writers = Object.create(null);
+  if (ws && typeof ws === "object") {
+    let i = 0;
+    for (const w of Object.keys(ws)) if (keep === undefined || keep(w)) writers[w] = i++;
+  }
+  return writers;
+}
+
 /**
  * The save plan of the present helpers (R13, format 5): for every present
  * helper that packs, the JSON text of its packed array at the tier it is
- * written in (`texts`, id → text: serialize writes it as it is), and the whole
- * save's estimated bytes (`bytes`: the present helpers exactly, from those
- * texts, everything else as prune counts it). Deterministic: the same state
- * gives the same plan in every window. Each record's three parts are written
- * once (the stringify the save needs anyway) and measured from their texts.
+ * written in (`texts`, id → text: serialize writes it as it is; "" for one
+ * left out), and the whole save's estimated bytes (`bytes`: the present
+ * helpers exactly, from those texts, everything else as prune counts it).
+ * Deterministic: the same state gives the same plan in every window. Each
+ * record's parts are written once (the stringify the save needs anyway) and
+ * measured from their texts.
  */
 export function presentPlan(state) {
+  const it = presentPlanSteps(state, null, Infinity);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+
+/** A present helper the save plan may write in several tiers. */
+function Cand(id, sT, xT, pT, bT, uT, sizes, lo, hi) {
+  this.id = id;
+  this.sT = sT;
+  this.xT = xT;
+  this.pT = pT;
+  this.bT = bT;
+  this.uT = uT;
+  this.sizes = sizes; // bytes at each tier (index = tier), "<id>": and its comma included
+  this.lo = lo; // the smallest tier it may take (stub, or slim for a salted id)
+  this.hi = hi; // the largest (full; slim when it is slim, stub when it is a stub)
+  this.k0 = 0;
+  this.k1 = 0;
+  this.k2 = 0;
+}
+
+/**
+ * presentPlan in steps (a generator that yields after every `per` present
+ * helpers measured, then returns the plan): serializeSteps drives it so a
+ * large roster's plan spreads over task steps. `refs`: id → the live record
+ * each of `state`'s helpers copies (the caches' keys; null when `state` is the
+ * live state itself).
+ */
+export function* presentPlanSteps(state, refs, per) {
   const hs = state.helpers;
   const texts = Object.create(null);
-  // a seenBy is written as the index of its writer among the writersSeen keys
-  const writers = Object.create(null);
-  if (state.writersSeen && typeof state.writersSeen === "object") {
-    const ws = Object.keys(state.writersSeen);
-    for (let i = 0; i < ws.length; i++) writers[ws[i]] = i;
-  }
+  const writers = writerIndex(state.writersSeen);
   let other = restBytes(state);
   const cand = [];
-  let entries = 0;
-  let whole = 0; // bytes of the present helpers' texts, each whole (a slim one slim)
+  let lo = 0; // bytes of the present helpers each at its smallest tier
+  let hi = 0; // and each at its largest
+  let left = per;
   for (const id in hs) {
     const h = hs[id];
     if (Array.isArray(h)) {
@@ -1423,83 +1592,88 @@ export function presentPlan(state) {
       other += recordBytes(h);
       continue;
     }
-    if (!presentParts(h, writers)) {
+    const key = refs === null ? h : refs[id];
+    if (!presentParts(h, writers, key)) {
       other += presentBytes(h); // written whole
       continue;
     }
-    entries += 12; // "<8 hex id>": and a comma
-    const sT = PARTS.sT;
-    if (h.slim === true) {
-      texts[id] = `[2,${sT}]`;
-      whole += textBytes(sT) + 4;
-      continue;
-    }
-    const xT = PARTS.xT;
-    const pT = PARTS.pT;
-    // UTF-8 bytes of each tier's text (X is all numbers: ASCII)
+    const { sT, pT, bT, uT } = PARTS;
+    const sizes = [0, 0, 0, 0, 0];
+    // UTF-8 bytes of each tier's text, "<8 hex id>": and a comma included (X is all numbers: ASCII)
     const sb = textBytes(sT);
-    const lb = sb + xT.length + 5; // [1,S,X]
-    const fb = pT === null ? lb : lb + 1 + placeBytes(pT); // [1,S,X,P]
-    whole += fb;
-    cand.push({ h, sT, xT, pT, sb: sb + 4, lb, fb, k0: 0, k1: 0, k2: 0 }); // slim: [2,S]
-  }
-  if (other + entries + whole <= K.saveBudget) {
-    // every helper whole (slim ones slim)
-    for (const c of cand) texts[c.h.id] = c.pT === null ? `[1,${c.sT},${c.xT}]` : `[1,${c.sT},${c.xT},${c.pT}]`;
-    return { texts, bytes: other + entries + whole };
-  }
-  // Past the budget: every helper's slim form is reserved first.
-  let bytes = other + entries + whole;
-  for (const c of cand) {
-    bytes -= c.fb - c.sb;
-    const h = c.h;
-    c.k0 = h.lastSeen;
-    c.k1 = STATUS_RANK[h.status];
-    c.k2 = lastActive(h);
-  }
-  let room = K.saveBudget - bytes;
-  cand.sort(byActivity);
-  // Game state before place strings: first every helper that fits goes lean,
-  // then the lean ones that still fit go full, most recently active first.
-  const tiers = new Array(cand.length);
-  for (let i = 0; i < cand.length; i++) {
-    const up = cand[i].lb - cand[i].sb;
-    tiers[i] = TIER_SLIM;
-    if (up <= room) {
-      tiers[i] = TIER_LEAN;
-      room -= up;
-      bytes += up;
+    sizes[TIER_STUB] = 12 + textBytes(uT);
+    sizes[TIER_SLIM] = 12 + sb + 4 + bT.length;
+    let top = TIER_FULL;
+    if (h.stub === true) top = TIER_STUB;
+    else if (h.slim === true) top = TIER_SLIM;
+    else {
+      sizes[TIER_LEAN] = 12 + sb + PARTS.xT.length + 5; // [1,S,X]
+      sizes[TIER_FULL] = pT === null ? sizes[TIER_LEAN] : sizes[TIER_LEAN] + 1 + placeBytes(pT); // [1,S,X,P]
+    }
+    const bottom = h.stub === true || plainId(key, h) ? TIER_STUB : TIER_SLIM;
+    lo += sizes[bottom];
+    hi += sizes[top];
+    cand.push(new Cand(id, sT, top >= TIER_LEAN ? PARTS.xT : null, pT, bT, uT, sizes, bottom, top));
+    if (--left <= 0) {
+      left = per;
+      yield;
     }
   }
-  for (let i = 0; i < cand.length; i++) {
-    if (tiers[i] !== TIER_LEAN) continue;
-    const up = cand[i].fb - cand[i].lb;
-    if (up <= room) {
-      tiers[i] = TIER_FULL;
-      room -= up;
-      bytes += up;
+  if (other + hi <= K.saveBudget) {
+    // every helper at its largest tier
+    for (const c of cand) texts[c.id] = tierText(c.hi, c.sT, c.xT, c.pT, c.bT, c.uT);
+    return { texts, bytes: other + hi };
+  }
+  // Past the budget: the order (live first, unseen ones most recently seen
+  // first, helpers holding an envelope first, then id), from what every
+  // tier keeps and the state's clock, so it is the same before and after a reload.
+  const clock = isFiniteNum(state.clock) ? state.clock : 0;
+  const none = Object.create(null);
+  const ws = state.writersSeen && typeof state.writersSeen === "object" ? state.writersSeen : none;
+  const envs = state.envelopes && typeof state.envelopes === "object" ? state.envelopes : none;
+  for (const c of cand) {
+    const h = hs[c.id];
+    const w = h.seenBy !== null ? ws[h.seenBy] : undefined;
+    const seen = isFiniteNum(w) && w > h.lastSeen ? w : h.lastSeen;
+    const live = clock - seen < K.staleMs;
+    c.k0 = live ? 0 : 1;
+    c.k1 = live ? 0 : -h.lastSeen;
+    c.k2 = Object.hasOwn(envs, c.id) ? 0 : 1;
+  }
+  cand.sort(byOrder);
+  yield;
+  const tiers = new Uint8Array(cand.length);
+  for (let i = 0; i < cand.length; i++) tiers[i] = cand[i].lo;
+  let bytes = other + lo;
+  // Even the smallest forms pass the budget (past about 22,000 present
+  // helpers): the last in the order are left out.
+  for (let i = cand.length - 1; i >= 0 && bytes > K.saveBudget; i--) {
+    bytes -= cand[i].sizes[tiers[i]];
+    tiers[i] = TIER_DROP;
+  }
+  // Then totals, game state and place strings, each for every helper that
+  // still fits, in order.
+  for (let tier = TIER_SLIM; tier <= TIER_FULL; tier++) {
+    for (let i = 0; i < cand.length; i++) {
+      const c = cand[i];
+      if (tiers[i] !== tier - 1 || c.hi < tier) continue;
+      const up = c.sizes[tier] - c.sizes[tier - 1];
+      if (bytes + up <= K.saveBudget) {
+        tiers[i] = tier;
+        bytes += up;
+      }
     }
   }
   for (let i = 0; i < cand.length; i++) {
     const c = cand[i];
-    texts[c.h.id] = tiers[i] === TIER_SLIM ? `[2,${c.sT}]` : tiers[i] === TIER_LEAN || c.pT === null ? `[1,${c.sT},${c.xT}]` : `[1,${c.sT},${c.xT},${c.pT}]`;
+    texts[c.id] = tiers[i] === TIER_DROP ? "" : tierText(tiers[i], c.sT, c.xT, c.pT, c.bT, c.uT);
   }
   return { texts, bytes };
 }
 
-const STATUS_RANK = { working: 0, blocked: 1, done: 2, idle: 3 };
-
-/** The latest of joined, last finish and wait start. */
-function lastActive(h) {
-  let x = h.joined;
-  if (h.lastFinishAt !== null && h.lastFinishAt > x) x = h.lastFinishAt;
-  if (h.blockedAt !== null && h.blockedAt > x) x = h.blockedAt;
-  return x;
-}
-
-/** Most recently active first (presentPlan; keys k0 lastSeen, k1 status rank, k2 lastActive, then id). */
-function byActivity(p, q) {
-  return q.k0 - p.k0 || p.k1 - q.k1 || q.k2 - p.k2 || (p.h.id < q.h.id ? -1 : p.h.id > q.h.id ? 1 : 0);
+/** The save plan's order (presentPlanSteps; keys k0 live, k1 −lastSeen when unseen, k2 an envelope, then id). */
+function byOrder(p, q) {
+  return p.k0 - q.k0 || p.k1 - q.k1 || p.k2 - q.k2 || (p.id < q.id ? -1 : p.id > q.id ? 1 : 0);
 }
 
 /**
@@ -1545,10 +1719,17 @@ export function prune(state, t, ctx, ev) {
   const compacts = [];
   let other = restBytes(state); // estimated bytes of everything but compact records (r5-07)
   let cbytes = 0; // and of the compact records
+  // (a seenBy is written as its writer's index among the writers that stay)
+  const ws = state.writersSeen;
+  const writers = writerIndex(ws, (w) => !(t - ws[w] > K.writerPruneMs));
   for (const id in hs) {
     const h = hs[id];
     if (!h.gone) {
-      other += leanBytes(h); // the place strings yield first (presentPlan), then the Album
+      // A present record of a code generation before this one, handed over
+      // by a hot reload (an id's salt, kidFinishAt), is brought to this
+      // build's shape here, as a load does (normalizePresent): packed from now on.
+      if (h.stats && typeof h.stats === "object" && !knownShape(h, h, h.slim === true || h.stub === true)) normalizePresent(h);
+      other += presentMax(h, writers); // the place strings yield first (presentPlan), then the Album
       continue;
     }
     if (h.kind === "kid") {

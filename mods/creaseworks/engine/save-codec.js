@@ -27,7 +27,7 @@
 import { SAVE_FORMAT, ENVELOPES } from "./content.js";
 import { fnv1a32 } from "./hash.js";
 import { VERSION, MAP_FIELDS, rebuildMaps, migrate, makeMap } from "./state.js";
-import { packAlbum, unpackAlbum, unpackPresent, presentPlan, normalizePresent } from "./helpers.js";
+import { packAlbum, unpackAlbum, unpackPresent, presentPlanSteps, normalizePresent } from "./helpers.js";
 
 /**
  * The file format version in the envelope. 2 = Album entries may be packed
@@ -73,9 +73,11 @@ const asIs = (v) => v;
 /** The value mapper of a live state (or a parsed file's, whose packed entries pass through): each compact Album record as its short array, anything else whole. */
 const packed = (h) => (h && h.compact === true && packAlbum(h)) || h;
 
-/** The texts of a live state's packed present helpers (presentPlan), or null. */
-const presentTexts = (state) => (isObj(state.helpers) ? presentPlan(state).texts : null);
+/** The texts of a state's packed present helpers (presentPlan), or null. */
+const presentTexts = (state) => (isObj(state.helpers) ? finish(presentPlanSteps(state, null, Infinity)).texts : null);
 
+// An envelope's type is written as its index in ENVELOPES (content.js): that
+// order is part of the file format (format 5), as STATUSES' is (helpers.js).
 const ENV_TYPES = ENVELOPES.map((d) => d.type);
 
 /** An envelope's packed form, or the envelope itself when it is not exactly an engine envelope (or already packed). */
@@ -92,7 +94,9 @@ function packEnvelope(e) {
 function unpackEnvelope(a) {
   if (a.length !== 4 || !Number.isInteger(a[0]) || a[0] < 0 || a[0] >= ENV_TYPES.length) return null;
   for (let i = 1; i < 4; i++) if (!isNum(a[i])) return null;
-  return { type: ENV_TYPES[a[0]], units: a[1], landedAt: a[2], lastAt: a[2] + a[3] };
+  const lastAt = a[2] + a[3];
+  if (!isNum(lastAt)) return null; // a damaged offset (1e308 + 1e308)
+  return { type: ENV_TYPES[a[0]], units: a[1], landedAt: a[2], lastAt };
 }
 
 /** The envelopes map as written (packed entries), or `envs` itself when nothing packs. */
@@ -108,13 +112,16 @@ function packEnvelopes(envs) {
  * every `per` helpers). `value` maps a helpers entry to what is written
  * (packAlbum for a live state, as-is for a parsed file); `pre` gives the JSON
  * text of entries already written (a live state's present helpers, id →
- * text, presentPlan) or is null; `memo` gives digests already known (Map
- * text → hex), `out` collects this call's ({ texts, digests }). `hash` false:
- * no check (null); `body` false: no body (null). A chunk's text is exactly
- * JSON.stringify of its entries as an object either way (in the helpers
- * map's own key order, which a chunk, a run of that order, keeps).
+ * text, presentPlan; "" for one the plan leaves out, which is not written)
+ * or is null; `memo` gives digests already known (Map text → hex), `out`
+ * collects this call's ({ texts, digests }). `hash` false: no check (null);
+ * `body` false: no body (null). `restText`: the text of the state outside
+ * its helpers (restOf), when it was taken earlier (serializeSteps' snapshot).
+ * A chunk's text is exactly JSON.stringify of its entries as an object
+ * either way (in the helpers map's own key order, which a chunk, a run of
+ * that order, keeps: a left-out entry is not in it, nor is its cut).
  */
-function* encodeSteps(state, value, pre, memo, out, hash, body, per) {
+function* encodeSteps(state, value, pre, memo, out, hash, body, per, restText = null) {
   const hs = state.helpers;
   if (!isObj(hs)) {
     const whole = JSON.stringify(state);
@@ -150,6 +157,7 @@ function* encodeSteps(state, value, pre, memo, out, hash, body, per) {
     const id = ids[i];
     if (pre !== null) {
       const t = pre[id];
+      if (t === "") continue; // left out (presentPlan: even the smallest forms pass the budget)
       // (a packed present helper's id is 8 hex digits: written as is)
       (parts || (parts = [])).push(t !== undefined ? `"${id}":${t}` : `${JSON.stringify(id)}:${JSON.stringify(value(hs[id]))}`);
     } else {
@@ -162,15 +170,20 @@ function* encodeSteps(state, value, pre, memo, out, hash, body, per) {
     }
   }
   if (cur || parts) close();
-  const copy = Object.create(null);
-  for (const k of Object.keys(state)) copy[k] = k === "helpers" ? MARK : k === "envelopes" && value !== asIs ? packEnvelopes(state[k]) : state[k];
-  const rest = JSON.stringify(copy);
+  const rest = restText !== null ? restText : restOf(state, value !== asIs);
   let text = null;
   if (body) {
     const at = rest.indexOf(HOLE);
     text = rest.slice(0, at) + `"helpers":{${inner.join(",")}}` + rest.slice(at + HOLE.length);
   }
   return { body: text, check: hash ? fnv1a32(`${rest}\n${digests}`) : null };
+}
+
+/** The JSON text of `state` with its helpers map replaced by a marker (envelopes packed for a live state). */
+export function restOf(state, live) {
+  const copy = Object.create(null);
+  for (const k of Object.keys(state)) copy[k] = k === "helpers" ? MARK : k === "envelopes" && live ? packEnvelopes(state[k]) : state[k];
+  return JSON.stringify(copy);
 }
 
 /** Run a step generator to its end at once. */
@@ -180,12 +193,16 @@ function finish(it) {
   return r.value;
 }
 
-/** The format 3 check of a state as written or parsed (packed Album entries as arrays, or compact records). */
+/**
+ * The format 3 check of the state text serialize writes for `state` (compact
+ * Album records and present helpers packed as presentPlan plans them; entries
+ * already packed, as a parsed file holds them, as they are). Tests only.
+ */
 export function saveCheck(state) {
   return finish(encodeSteps(state, packed, presentTexts(state), null, null, true, false, Infinity)).check;
 }
 
-/** Canonical JSON of a state (compact Album records packed). */
+/** The state text serialize writes for `state` (as saveCheck packs it). Tests only. */
 export function canonicalState(state) {
   return finish(encodeSteps(state, packed, presentTexts(state), null, null, false, true, Infinity)).body;
 }
@@ -221,10 +238,79 @@ function remember(state, out) {
 
 /** The full save file text for `state` (remembers its chunk digests on the state for the next call). */
 export function serialize(state) {
+  return finish(serializeSteps(state, Infinity));
+}
+
+/** Helpers handled per serializeSteps step (≈ 50–90 ms a step in the wasm QuickJS harness, R13). */
+export const SAVE_STEP_HELPERS = 1500;
+
+/**
+ * serialize(state) in steps (R13): a generator that yields after a snapshot
+ * of the state, after every `per` present helpers planned (presentPlanSteps)
+ * and every `per` helpers encoded and hashed, and returns the save text. The
+ * glue drives it across task steps (store.js serializeIn), so no save step
+ * grows with the roster: one serialisation of 12,500 present helpers takes
+ * about 750 ms in the wasm harness, past herdr's 500 ms budget. The state may
+ * change between steps (the glue applies actions as they come), so the first
+ * step copies what the later ones read: each helper record and its stats
+ * (about 4 µs a record), the envelopes, writers and away pot the plan reads,
+ * and the text of everything outside the helpers; the save is that instant's
+ * state exactly, as one serialize then would write it. `per` Infinity: no
+ * copy and no yield (serialize).
+ */
+export function* serializeSteps(state, per = SAVE_STEP_HELPERS) {
+  const memo = memoOf(state);
+  let src = state;
+  let refs = null;
+  let rest = null;
+  if (per !== Infinity && isObj(state.helpers)) {
+    const snap = snapshot(state);
+    src = snap.state;
+    refs = snap.refs;
+    rest = snap.rest;
+    yield;
+  }
   const out = { texts: [], digests: [] };
-  const { body, check } = finish(encodeSteps(state, packed, presentTexts(state), memoOf(state), out, true, true, Infinity));
+  const pre = isObj(src.helpers) ? (yield* presentPlanSteps(src, refs, per)).texts : null;
+  const { body, check } = yield* encodeSteps(src, packed, pre, memo, out, true, true, per, rest);
   remember(state, out);
   return `{"format":${JSON.stringify(SAVE_FORMAT)},"version":${SAVE_VERSION},"check":"${check}","state":${body}}`;
+}
+
+/** A copy of a helpers entry deep enough that changes to the live one do not reach it (records are flat but for `stats`). */
+function copyEntry(h) {
+  if (Array.isArray(h)) return h.slice();
+  if (!isObj(h)) return h;
+  const c = { ...h };
+  if (isObj(c.stats)) c.stats = { ...c.stats };
+  return c;
+}
+
+/** What serializeSteps' later steps read of `state`, as it is now (see there). */
+export function snapshot(state) {
+  const hs = state.helpers;
+  const copy = Object.create(null);
+  const refs = Object.create(null);
+  for (const id in hs) {
+    const h = hs[id];
+    copy[id] = copyEntry(h);
+    refs[id] = h;
+  }
+  const envs = state.envelopes;
+  let envCopy = envs;
+  if (isObj(envs)) {
+    envCopy = Object.create(null);
+    for (const k in envs) envCopy[k] = isObj(envs[k]) ? { ...envs[k] } : envs[k];
+  }
+  const pot = isObj(state.away) ? state.away.pot : null;
+  const st = {
+    helpers: copy,
+    envelopes: envCopy,
+    writersSeen: isObj(state.writersSeen) ? Object.assign(Object.create(null), state.writersSeen) : state.writersSeen,
+    clock: state.clock,
+    away: isObj(pot) && Array.isArray(pot.tasks0) ? { pot: { tasks0: pot.tasks0.map((x) => (Array.isArray(x) ? x.slice() : x)) } } : null,
+  };
+  return { state: st, refs, rest: restOf(state, true) };
 }
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -313,7 +399,7 @@ export function* parseSaveSteps(text) {
     const { check } = yield* encodeSteps(doc.state, asIs, null, null, out, true, false, STEP_HELPERS);
     if (check !== doc.check) return newer ? { ok: false, reason: "newer" } : { ok: false, reason: "check" };
   }
-  // Expand the packed Album entries, present helpers (tag 1 or 2, format 5)
+  // Expand the packed Album entries, present helpers (tag 1, 2 or 3, format 5)
   // and envelopes into null-prototype maps.
   const st = doc.state;
   let unpacked = true;
@@ -327,7 +413,7 @@ export function* parseSaveSteps(text) {
       const id = ids[i];
       const v = src[id];
       if (Array.isArray(v)) {
-        const h = v[0] === 1 || v[0] === 2 ? unpackPresent(id, v, writers) : unpackAlbum(id, v);
+        const h = v[0] === 1 || v[0] === 2 || v[0] === 3 ? unpackPresent(id, v, writers) : unpackAlbum(id, v);
         if (!h) {
           unpacked = false;
           break;
