@@ -1298,9 +1298,9 @@ bonus      : G = 1 + 0.05 · W on all folds; perks by Wishes held (§3.5)
 
 * Cube root: early cranes come quickly (fun), later ones slowly; waiting past the gate still pays
   but is never compulsory.
-* **Making a wish** first opens every Bundle on the tray at current value, then resets folds,
-  workshops, tiers, upgrades (except perk-kept), running boosts, rhythm, afterglow, spawns, the
-  shelf and the away pot. It keeps helpers (identity, stats, rest), the Album, Wishes, perks,
+* **Making a wish** first collects an uncollected away pot (r5-13; the confirm card says so) and
+  opens every Bundle on the tray at current value, then resets folds, workshops, tiers, upgrades
+  (except perk-kept), running boosts, rhythm, afterglow, spawns and the shelf. It keeps helpers (identity, stats, rest), the Album, Wishes, perks,
   **timed boost envelopes** (they carry into the next run), settings, switches, notification
   counters, lifetime totals and the garlands.
 * Perks (by Wishes held): 10 keep Crisp Corners and Mail Sorter; 25 start with 10 Paper Stacks and
@@ -1398,7 +1398,9 @@ calm profile reaches every milestone within 3 % of the typical profile, BALANCE.
 ### 11.2 Notifications (opt-in; at most 3 a day; never sound)
 
 * Master switch **off** by default. Events (each with its own checkbox, on when the master is on):
-  1. **"Your string is full"**: a wish became available (once per run).
+  1. **"A wish is ready"** (the switch's label): a wish became available (once per run). The
+     title is "Your string is full" when it is, and "A wish is ready" when the gate opens before
+     the String is full (W 10–36, r5-12).
   2. **"Envelopes are piling up"**: ≥ 12 unopened for 30 min (once per local day).
   3. **"Creaseworks can't save"**: a save `error` or `fresh` notice lasting 5 min (once per
      episode).
@@ -1449,11 +1451,29 @@ The mechanism is ARCHITECTURE A4–A6 exactly; this section is the player-facing
   newer, normally rotated backup. Two windows sharing the save both go there (review r4-03): a recovery file
   holding another window's progress is merged like a `save.json` conflict (its game taken in, this
   window's unsaved actions replayed onto it), never written over; when each holds progress the
-  other lacks, the other is kept aside, listed in Details and said in a notice.
+  other lacks, the other is kept aside, listed in Details and said in a notice. Windows in the
+  recovery file converge (r5-02): each takes in the other's game every round instead of keeping
+  it aside again, so the `save.damaged-<n>` slots do not rotate. A damaged recovery file found
+  during play is kept aside and said (r5-06). Purchases a merge refuses are refunded and the
+  refund is flashed (r5-05). While save.json stays unreadable its error notice outranks every
+  other, so the recovery notices (another window's game taken in or kept, this window's game
+  replaced, a damaged recovery file) are also flashed, and dropped once the game is back on
+  save.json; the kept copies stay named in Details.
+* **Going back to save.json** (r5-04). The window first takes in `save.recovery.json` when it
+  differs from its own last write, so the first window back writes a save.json that holds the
+  other window's latest recovery progress, and the second window merges that file instead of
+  keeping it aside. A save.json lacking this window's recovery progress, where that progress is
+  already kept aside, is merged too (another window kept this game aside and replaced it). A
+  recovery file left from an episode more than 30 days old adds nothing: its writers the engine
+  has pruned do not count as new progress, so it never rolls the game back.
 * **Reset and Restore** keep the current save aside (reason `reset` / `restore`) and the next
   write **replaces** the file rather than merging into it, so another window's save cannot undo
   them. That other window then finds fewer of its own actions in the file than it last wrote,
-  says "Another window replaced the save…" and names the kept copy in Details.
+  says "Another window replaced the save…" and names the kept copy in Details. While save.json is
+  unreadable, Reset and Restore keep the live game aside (not whatever the recovery file holds);
+  a Reset that has landed in the recovery file counts as landed when the game goes back to
+  save.json, and a file found at save.json while it has not landed is kept aside and said before
+  it is replaced.
 * **Pending action log** (A5): bounded (`PENDING_MAX`). Runs of roster observations that change
   only titles are coalesced; an observation that changes a turn counter, a status, the roster or
   presence is always kept, so a merge never loses a finished-task reward. Past the bound the log

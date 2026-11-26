@@ -1018,7 +1018,7 @@ Round-1 additions (DESIGN §12.1): an unreadable `save.json` writes `save.recove
 takes the newer of it and the backup by state clock); Reset/Restore set `save.overwrite`, so the
 next write replaces the file; the other window notices its own `applied` count dropped below
 `save.ownApplied` and names the kept copy. The pending log (`glue/live.js`) coalesces title-only
-roster observations past `COALESCE_AT` (512) and is given up past `PENDING_MAX` (20,000)
+roster observations past `COALESCE_AT` (512) actions or `COALESCE_HELPERS` logged helper entries (r5-09), and is given up past `PENDING_MAX` (20,000)
 (`save.logLost`: the next write keeps the other file aside); merges replay it in slices
 (`replayPending`, which finishes a given-up log before the new one). A save claim
 (`save.writingBy`/`writingGen`) is released on adoption only when it was made by an older code
@@ -1028,6 +1028,14 @@ in a `recovered` notice, since that tool may not have taken effect: r3-07), or
 after `WRITE_STALL_MS` (60 s) without progress; a second panel in the same generation never
 drops a live claim. Save timers are rebased when the wall clock moves back, and backup rotation
 failures get their own notice and back-off.
+Round-5 additions (DESIGN §12): `recoveryWrite` merges another window's recovery game every round
+(`mergeRecovery`; `save.recOwn` is `applied[writerId]` in this window's last recovery write, and
+`save.overwriteRec` marks a Reset/Restore that has landed in the recovery file, which counts as
+landed on the way back). On the way back to `save.json` it first takes in `save.recovery.json`
+(`back = true`). Writers the engine pruned (`writerPruneMs`) do not count as fresh progress in a
+stale recovery file. Recovery notices are flashed while the unreadable `error` notice is up
+(`recNotice`) and dropped on the way back (`dropRecNotice`). The recovery loop pauses between
+CAS attempts (`test/qjs/store-merge.test.mjs` times it for 365- and 600-day saves).
 
 **Notifications (§11.2).** A notification is claimed first: the ticker dispatches `notified`,
 saves at once, and calls `notify()` only when that save is confirmed and the merged counter for

@@ -41,7 +41,7 @@ export const CHOICES = Object.freeze({
 });
 
 const EVENTS = Object.freeze([
-  Object.freeze({ key: "full", label: "Your string is full" }),
+  Object.freeze({ key: "full", label: "A wish is ready" }),
   Object.freeze({ key: "pile", label: "Envelopes are piling up" }),
   Object.freeze({ key: "save", label: "Creaseworks can't save" }),
 ]);

@@ -523,4 +523,16 @@ describe("RECIPE.md is written from the built files", () => {
     // "Commands always have a receiver" is true inside the layout only.
     assert.ok(!/Commands need a shown copy\. The ribbon is always shown/.test(watch));
   });
+
+  // r5-19: herdr's ctrl-shift-l is a bare layout.switch, which takes the next
+  // name of a main-first, byte-ordered list; it never returns to "your own" layout.
+  test("README and RECIPE never say ctrl-shift-l switches back (r5-19)", () => {
+    for (const [f, s] of [["README.md", readme], ["RECIPE.md", recipe]]) {
+      assert.ok(!/ctrl-shift-l`?\s+(switches|goes|takes you)\s+back/.test(s), f);
+      for (const line of s.split("\n").filter((l) => l.includes("ctrl-shift-l")))
+        assert.match(line, /cycles/, `${f}: ${line}`);
+      assert.match(s, /layout\.switch \{name:"main"\}/, `${f} names the way back`);
+    }
+    assert.match(section("Done when"), /`layout\.switch \{name:"main"\}`[^\n]*goes back to it unchanged/);
+  });
 });

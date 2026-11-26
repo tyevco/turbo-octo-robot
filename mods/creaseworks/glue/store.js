@@ -1035,18 +1035,19 @@ async function overwriteBase(slot, env, stale) {
     if (!S.overwrite) {
       const kept = await keepAsideListed(slot, P, r.text);
       if (stale()) return { stop: true };
-      setNotice(slot, "load", {
-        kind: "recovered",
-        text: kept
-          ? `Another copy of the save changed while this window couldn't merge with it. It was kept aside as ${kept}; this window's game was saved.`
-          : "Another copy of the save changed while this window couldn't merge with it, and it could not be kept aside. This window's game was saved.",
-        at: t,
-      });
+      setNotice(slot, "load", { kind: "recovered", text: unmergedText(kept), at: t });
     }
   }
   slot.baseText = r.text;
   S.baseOk = false;
   return { ok: true };
+}
+
+/** The notice for a save.json kept aside before this window's game is written over it (overwriteBase, recoveryWrite). */
+export function unmergedText(kept) {
+  return kept
+    ? `Another copy of the save changed while this window couldn't merge with it. It was kept aside as ${kept}; this window's game was saved.`
+    : "Another copy of the save changed while this window couldn't merge with it, and it could not be kept aside. This window's game was saved.";
 }
 
 /**
@@ -1072,11 +1073,18 @@ async function overwriteBase(slot, env, stale) {
  *   write replaced and takes this one in, so nothing is kept aside twice.
  * A refused purchase in the replay is said as a refund (r5-05). A damaged
  * file is kept aside, listed and said (r5-06); one from a newer Creaseworks
- * makes this window read-only. Returns null when superseded (or read-only),
- * else { took }: true when the file's game was taken in, false when this
- * window's game is to be written over the file.
+ * makes this window read-only. Writers the file names that this game has
+ * pruned (last seen more than writerPruneMs before its clock: a file left
+ * from an old episode) count as nothing new. While the unreadable notice
+ * outranks these notices (all through the episode) they are flashed too
+ * (recNotice). `back`: save.json can be read again and this window is going
+ * back to it (recoveryWrite): the file's latest game is taken in first, so
+ * the save.json written next lacks none of it (r5-04); a damaged file is then
+ * left alone (nothing writes over it any more). Returns null when superseded
+ * (or read-only), else { took }: true when the file's game was taken in,
+ * false when this window's game is to be written over the file.
  */
-async function mergeRecovery(slot, env, stale, text) {
+async function mergeRecovery(slot, env, stale, text, back = false) {
   const S = slot.save;
   const P = slot.paths;
   const rec = baseName(recoveryPath(P));
@@ -1092,10 +1100,12 @@ async function mergeRecovery(slot, env, stale, text) {
       setNotice(slot, "load", { kind: "newer", at: env.now() });
       return null;
     }
+    // Going back to save.json: nothing writes over it any more, so it is left as it is.
+    if (back) return over;
     // Damaged: kept aside and said, never written over unseen (r5-06).
     const kept = await keepAsideListed(slot, P, text);
     if (stale()) return null;
-    setNotice(slot, "load", { kind: "recovered", text: recDamagedText(rec, kept), at: env.now() });
+    recNotice(slot, recDamagedText(rec, kept), env.now(), back);
     return over;
   }
   const live = parsed.state;
@@ -1104,6 +1114,7 @@ async function mergeRecovery(slot, env, stale, text) {
   let foreign = false; // ... from another window
   for (const k of Object.keys(live.applied)) {
     if (!(live.applied[k] > (Object.hasOwn(slot.state.applied, k) ? slot.state.applied[k] : 0))) continue;
+    if (pruned(slot.state, live, k)) continue;
     fresh = true;
     if (k !== slot.writerId && own.indexOf(k) < 0) foreign = true;
   }
@@ -1111,7 +1122,7 @@ async function mergeRecovery(slot, env, stale, text) {
   if (!fresh) return over;
   // Reset / Restore not yet in the file, or a log given up: replaced, never merged into
   // (a merge would bring the replaced game back); the other game is kept aside.
-  if (S.logLost || (S.overwrite && !S.overwriteRec)) return keepOther(slot, env, stale, text);
+  if (S.logLost || (S.overwrite && !S.overwriteRec)) return keepOther(slot, env, stale, text, back);
   const had = ownApplied(live, slot.writerId);
   let replaced = false;
   let kept = null;
@@ -1129,7 +1140,7 @@ async function mergeRecovery(slot, env, stale, text) {
     }
   } else if (had < (S.ownApplied || 0)) {
     // First contact: the file lacks what this window saved to save.json before it turned unreadable.
-    return keepOther(slot, env, stale, text);
+    return keepOther(slot, env, stale, text, back);
   }
   await pause(env);
   if (stale()) return null;
@@ -1138,19 +1149,22 @@ async function mergeRecovery(slot, env, stale, text) {
   // dispatched during its yields are replayed too, none after it.
   const ev = await replayPending(live, slot, env, stale);
   if (ev === null) return null;
-  if (ev === "lost") return keepOther(slot, env, stale, text); // the log was given up: never merged into
+  if (ev === "lost") return keepOther(slot, env, stale, text, back); // the log was given up: never merged into
   advance(live, env.now(), slot.writerId);
   slot.state = live;
   const t = env.now();
+  const refunds = [];
+  for (const e of ev) if (e && e.kind === "ignored" && e.reason === "afford" && e.item) refunds.push(itemName(String(e.item)));
   if (replaced) {
     S.recOwn = had;
     S.ownApplied = Math.min(S.ownApplied || 0, had);
-    setNotice(slot, "load", { kind: "recovered", text: recReplacedText(rec, kept), at: t });
+    // (a refund said in the same flash when it fits; the replaced game comes first)
+    recNotice(slot, recReplacedText(rec, kept), t, back, refunds.length ? `Refunded: ${refunds.slice(0, 3).join(", ")}${refunds.length > 3 ? "…" : ""}.` : null);
+  } else if (refunds.length) {
+    // The merged banner can't show under the unreadable notice (nor is there
+    // one on the way back): the refund is flashed instead (r5-05).
+    flash(slot, refundText(foreign, refunds), t, MERGED_MS);
   }
-  const refunds = [];
-  for (const e of ev) if (e && e.kind === "ignored" && e.reason === "afford" && e.item) refunds.push(itemName(String(e.item)));
-  // The merged banner can't show under the unreadable notice: the refund is flashed instead (r5-05).
-  if (refunds.length) flash(slot, refundText(foreign, refunds), t, MERGED_MS);
   touch(slot);
   return { took: true };
 }
@@ -1161,12 +1175,46 @@ async function mergeRecovery(slot, env, stale, text) {
  * lacks, or this window's log was given up). Returns { took: false }, or null
  * when superseded.
  */
-async function keepOther(slot, env, stale, text) {
+async function keepOther(slot, env, stale, text, back = false) {
   const rec = baseName(recoveryPath(slot.paths));
   const kept = await keepAsideListed(slot, slot.paths, text, `another window's ${rec}`);
   if (stale()) return null;
-  setNotice(slot, "load", { kind: "recovered", text: recOtherText(rec, kept), at: env.now() });
+  recNotice(slot, recOtherText(rec, kept), env.now(), back);
   return { took: false };
+}
+
+/**
+ * True when writer `k` of the file's game `live` is one game `state` has
+ * pruned (engine helpers.js: applied and writersSeen go together once a
+ * writer is unseen for writerPruneMs): a save.recovery.json left from an
+ * episode that long ago holds nothing new from it.
+ */
+function pruned(state, live, k) {
+  if (Object.hasOwn(state.applied, k)) return false;
+  const seen = Object.hasOwn(live.writersSeen || {}, k) ? live.writersSeen[k] : null;
+  return typeof seen === "number" && typeof state.clock === "number" && state.clock - seen > CONTENT.K.writerPruneMs;
+}
+
+/**
+ * A recovery-file notice (r5-02, r5-06) as the load notice. While save.json
+ * is unreadable the unreadable notice outranks it all through the episode, so
+ * it is flashed as well (MERGED_MS; with `extra`, a refund, when that fits
+ * the banner) and marked `rec`: leaving recovery mode drops it (it would be
+ * stale by then; the kept copy stays named in Details). On the way back
+ * (`back`) it shows as soon as the unreadable notice goes.
+ */
+function recNotice(slot, text, t, back = false, extra = null) {
+  const notice = { kind: "recovered", text, at: t };
+  if (!back) notice.rec = true;
+  setNotice(slot, "load", notice);
+  const both = extra ? `${text} ${extra}` : text;
+  if (!back) flash(slot, extra && graphemes(both).length <= NOTICE_MAX ? both : text, t, MERGED_MS);
+  else if (extra) flash(slot, extra, t, MERGED_MS);
+}
+
+/** Leaving recovery mode: a recovery-file notice of the episode (recNotice) is stale now, and was flashed. */
+function dropRecNotice(slot) {
+  if (slot.notices.load && slot.notices.load.rec) setNotice(slot, "load", null);
 }
 
 /** The notice for another window's recovery game kept aside (keepOther). */
@@ -1208,21 +1256,54 @@ async function recoveryWrite(slot, env, stale) {
   const r = await readOrError(P.save);
   if (stale()) return null;
   if (r.error === null) {
-    // Moved or fixed: back to save.json. Progress written to the recovery file
-    // counts as saved from here on (mergeFromDisk's replaced-save check).
+    // Moved or fixed: back to save.json. First the recovery file's latest game
+    // is taken in (r5-04): another window may have written it after this
+    // window's last write, and the save.json written next must hold it (the
+    // first window back would otherwise write a save.json lacking it, and the
+    // other window, finding its saved progress missing, would keep that
+    // fresh save aside). This window's own last write holds nothing new.
+    const recFile = await readOrError(recoveryPath(P));
+    if (stale()) return null;
+    if (recFile.error === null && recFile.text !== null && recFile.text !== S.recoveryText) {
+      if ((await mergeRecovery(slot, env, stale, recFile.text, true)) === null) return null; // nothing switched yet
+    }
+    // Progress written to the recovery file counts as saved from here on
+    // (mergeFromDisk's replaced-save check).
     const saved = Math.max(S.ownApplied || 0, S.recOwn || 0);
+    // A Reset / Restore already written to the recovery file has landed: the
+    // other window took it in from there (mergeRecovery), so a file found at
+    // save.json is merged or kept aside like any other, never written over
+    // unseen. One not yet written there replaces whatever is found.
+    const landed = !S.overwrite || S.overwriteRec;
     // A file there now is merged as a save.json conflict when it is a valid
     // save holding everything this window has saved: another window that went
-    // back first wrote it (r5-04). One that is damaged, from a newer build or
-    // lacking this window's saved progress (an older save put back by hand),
-    // or a log that was given up, is kept aside instead (overwriteBase).
+    // back first wrote it (r5-04). So is one lacking this window's recovery
+    // progress when that progress is kept aside: another window kept this
+    // window's game aside and replaced it (mergeFromDisk then says so). One
+    // that is damaged, from a newer build or lacking this window's saved
+    // progress (an older save put back by hand: after a Reset, any other
+    // game), or a log that was given up, is kept aside instead (overwriteBase).
     let mergeable = false;
-    if (r.text !== null && !S.logLost && !S.overwrite) {
+    let keptMine = null;
+    if (r.text !== null && !S.logLost && landed) {
       await pause(env); // the read already used much of the step (as mergeFromDisk)
       if (stale()) return null;
       const parsed = await parseIn(slot, r.text, env, stale);
       if (parsed === null || stale()) return null; // nothing switched yet: the next cycle checks again
-      mergeable = parsed.ok && ownApplied(parsed.state, slot.writerId) >= saved;
+      const same = !S.overwrite || parsed.state.created === slot.state.created;
+      const had = parsed.ok ? ownApplied(parsed.state, slot.writerId) : 0;
+      mergeable = parsed.ok && same && had >= saved;
+      if (parsed.ok && same && !mergeable && had < (S.recOwn || 0)) {
+        keptMine = await findKept(P, S.recoveryText);
+        if (stale()) return null;
+        mergeable = keptMine !== null;
+      }
+    } else if (r.text !== null && !landed) {
+      // Not the game the Reset / Restore replaced (that one was in the recovery
+      // file and is kept): kept aside too before it is written over, and said.
+      const kept = await keepAsideListed(slot, P, r.text, S.overwrite);
+      if (stale()) return null;
+      setNotice(slot, "load", { kind: "recovered", text: unmergedText(kept), at: env.now() });
     }
     // From here to the switch nothing awaits.
     S.unreadable = null;
@@ -1230,18 +1311,31 @@ async function recoveryWrite(slot, env, stale) {
     S.retryAt = 0;
     S.ownApplied = saved;
     S.recOwn = 0;
+    if (S.overwriteRec) {
+      S.overwrite = null;
+      S.overwriteRec = false;
+    }
+    if (keptMine && !S.damaged.some((d) => d === keptMine || String(d).startsWith(`${keptMine} (`))) S.damaged.push(keptMine);
     if (slot.notices.write && slot.notices.write.kind === "error") setNotice(slot, "write", null);
+    dropRecNotice(slot);
     // Expecting "absent" makes a file found there a CAS rejection: merged (mergeFromDisk), or kept aside (overwriteBase).
     slot.baseText = null;
     S.baseOk = false;
     if (r.text !== null) {
-      if (!mergeable) S.logLost = true;
+      if (!mergeable && landed) S.logLost = true;
     } else if ((await leaveMissingShared(slot, env, stale)) === null) return null; // (r4-04)
     return "main";
   }
   S.unreadable = r.error;
   const rec = recoveryPath(P);
   for (let attempt = 0; attempt <= MERGE_RETRIES; attempt++) {
+    if (attempt > 0) {
+      // The serialisation in a task step of its own, never after a merge
+      // (mergeRecovery's replay and advance), as in cycle's main path.
+      await pause(env);
+      if (stale()) return null;
+      progress(slot, env);
+    }
     const rev = slot.state.rev;
     const upto = slot.seq;
     const epoch = slot.logEpoch || 0;
@@ -1540,6 +1634,7 @@ async function settleShare(slot, env, stale) {
   S.recoveryText = null;
   S.ownApplied = 0; // none of this window's saves may be in that file yet
   S.recOwn = 0;
+  dropRecNotice(slot);
   slot.baseText = null;
   S.baseOk = false;
   S.sharing = null;
@@ -1666,9 +1761,16 @@ async function replaceGame(slot, env, make, reason) {
     const r = await readOrError(slot.paths.save);
     if (stale()) return "stale";
     let kept = null;
-    // save.json unreadable: the game being replaced is the one in save.recovery.json (kept as well).
-    const old = r.error === null ? r : await readOrError(recoveryPath(slot.paths));
-    if (stale()) return "stale";
+    // save.json unreadable: the game being replaced is this window's live game
+    // (the recovery file may not be written yet in this episode, may be left
+    // from an earlier one, or lack the latest actions). Another window's
+    // progress there is kept aside by the next recovery write (mergeRecovery).
+    let old = r;
+    if (r.error !== null) {
+      await pause(env); // the serialisation in a task step of its own
+      if (stale()) return "stale";
+      old = { text: serialize(slot.state), error: null };
+    }
     if (old.text !== null) {
       kept = await keepAsideListed(slot, slot.paths, old.text, reason);
       if (stale()) return "stale";
@@ -1787,6 +1889,7 @@ export async function sharePath(slot, env, path) {
     S.recoveryText = null;
     S.ownApplied = 0; // another file: none of this window's saves are in it yet
     S.recOwn = 0;
+    dropRecNotice(slot);
     if (parsed && parsed.ok) {
       const live = parsed.state;
       const ev = await replayPending(live, slot, env, stale);

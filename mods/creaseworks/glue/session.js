@@ -50,8 +50,10 @@ export const READ_FAIL_MS = 12000;
 export const READ_FAIL_TEXT = Object.freeze({
   // The words before the colon are what a narrow rail shows (ui/rail.js railFlash, 32 graphemes).
   agents: "Agent list unreadable: herdr's list failed, so helpers keep their last state.",
-  // r5-11: agents() still reads, so pane agents' statuses keep updating.
-  terminals: "Agent details unreadable: herdr's list failed; statuses still update.",
+  // r5-11: agents() still reads, so pane agents' statuses keep updating once
+  // a full read has been seen; before that (or after a reload from an older
+  // build) nothing is observed, so the text must hold in both cases.
+  terminals: "Agent details unreadable: herdr's list failed; some helpers keep their state.",
   layout: "Layout unreadable: herdr's layout failed, so the panel keeps its last place.",
 });
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };

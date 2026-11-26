@@ -140,6 +140,8 @@ export function newSlot(home, paths) {
       bakRetryAt: 0, bakError: null, bakErrors: 0,
       // save.json can't be read (> 1 MiB, not a file): progress goes to the recovery file
       unreadable: null, recoveryText: null,
+      // applied[writerId] in this window's last recovery write; a Reset/Restore landed in the recovery file (store.js mergeRecovery)
+      recOwn: 0, overwriteRec: false,
       // the next write replaces the file instead of merging (reset / restore, or a lost log)
       overwrite: null, logLost: false,
       // a "Share a save" pointer write under way, or cut off ({ to }): the next cycle follows location.json (store.js settleShare)

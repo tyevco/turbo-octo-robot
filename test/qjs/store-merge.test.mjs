@@ -31,6 +31,7 @@ const MOD = join(repo, "mods", "creaseworks");
 const HOME = "/home/player/.config/herdr-app";
 const SAVE = `${HOME}/data/creaseworks/save.json`;
 const SLOT = "globalThis[Symbol.for('creaseworks/live')]";
+const RECOVERY = `${HOME}/data/creaseworks/save.recovery.json`;
 const T0 = Date.UTC(2026, 10, 25, 9);
 
 /**
@@ -81,6 +82,17 @@ function teardownFault(leak, what) {
   return "JS_FreeRuntime leak check (engine collector timing; the held-back replay decides)";
 }
 
+/** 30 working agents (herdr's agent list and terminal records) at `now`. */
+function thirtyAgents(now) {
+  const agents = [];
+  const terminals = [];
+  for (let i = 1; i <= 30; i++) {
+    agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `a${i}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
+    terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: now - 5000 + i });
+  }
+  return { agents, terminals };
+}
+
 /** Runs three merge rounds; returns the dispose error (null when freed cleanly) and the headroom record. */
 async function mergeRounds(days, minKiB, gcHeadroom = 0) {
   const state = heavySave(days);
@@ -88,12 +100,7 @@ async function mergeRounds(days, minKiB, gcHeadroom = 0) {
   const kib = text.length / 1024;
   assert.ok(kib >= minKiB && kib < 640, `a ${days}-day save of ${kib.toFixed(0)} KiB (inside the 640 KiB envelope)`);
   const now = state.clock + 1000;
-  const agents = [];
-  const terminals = [];
-  for (let i = 1; i <= 30; i++) {
-    agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `a${i}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
-    terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: now - 5000 + i });
-  }
+  const { agents, terminals } = thirtyAgents(now);
   const host = await createHost({
     modRoot: MOD,
     scenario: { appHome: HOME, home: "/home/player", props: { role: "panel" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite", agents, terminals, now, files: { [SAVE]: text } },
@@ -153,6 +160,97 @@ async function mergeRoundsRetried(days, minKiB, gcHeadroom = 0) {
     console.log(`# ${days}-day save: ${e.message}; running once more (a busy machine?)`);
     return await mergeRounds(days, minKiB, gcHeadroom);
   }
+}
+
+/**
+ * The same rounds on the recovery path (r5 review): save.json can't be read
+ * (a directory: "Not a regular file"; a file over 1 MiB would do as well, but
+ * the mock's size check scans it inside the VM, which herdr does natively,
+ * and would be counted in the step), so the game is saved to
+ * save.recovery.json, and another
+ * window writes that file between this window's saves. Each of this window's
+ * recovery writes then meets a CAS rejection, takes the other game in
+ * (mergeRecovery: parse, replay, advance) and serialises again, which runs in
+ * a task step of its own. A last round moves the bad file away after the
+ * other window's write: the way back takes the recovery file in and writes
+ * save.json.
+ */
+async function recoveryRounds(days, minKiB, gcHeadroom = 0) {
+  const state = heavySave(days);
+  const text = engine.serialize(state);
+  const kib = text.length / 1024;
+  assert.ok(kib >= minKiB && kib < 640, `a ${days}-day save of ${kib.toFixed(0)} KiB (inside the 640 KiB envelope)`);
+  const now = state.clock + 1000;
+  const { agents, terminals } = thirtyAgents(now);
+  const host = await createHost({
+    modRoot: MOD,
+    scenario: {
+      appHome: HOME, home: "/home/player", props: { role: "panel" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite",
+      agents, terminals, now, files: { [`${SAVE}/pad`]: "x", [RECOVERY]: text },
+    },
+    gcHeadroom,
+  });
+  const rounds = [];
+  let leak = null;
+  try {
+    await host.load();
+    host.advance(0);
+    host.render();
+    host.fire("root", "on_size_change", { width: 320, height: 784 });
+    for (let i = 0; i < 25; i++) host.advance(1000);
+    assert.ok(host.evalInVm(`${SLOT}.save.unreadable`), "save.json can't be read: recovery mode");
+    const writer = host.evalInVm(`${SLOT}.writerId`);
+    for (let round = 0; round < 4; round++) {
+      const back = round === 3;
+      host.fire("cw-sheet", "on_mouse_down", { local_position: { x: 56, y: 56 } });
+      const disk = engine.parseSave(host.readFile(RECOVERY));
+      assert.ok(disk.ok);
+      engine.apply(disk.state, { w: "wB", s: round + 1, t: disk.state.clock + 10, type: "click", target: "sheet" });
+      host.writeFile(RECOVERY, engine.serialize(disk.state));
+      if (back) {
+        // The player moves the bad file away.
+        host.writeFile(`${SAVE}/pad`, null);
+        host.evalInVm(`globalThis.__herdr.dirs.delete(${JSON.stringify(SAVE)})`);
+      }
+      let max = 0;
+      for (let i = 0; i < 20; i++) for (const m of host.advance(1000).stepMs) max = Math.max(max, m);
+      rounds.push(max);
+      if (max >= 500 || (host.errors.length > 0 && host.errors.every((e) => e instanceof BudgetError))) {
+        throw Object.assign(new Error(`round ${round}: a task step of ${max.toFixed(1)} ms (${host.errors.map((e) => e.message).join("; ") || "no interrupt"})`), { timing: true });
+      }
+      assert.deepEqual(host.errors, [], `round ${round}: no budget error, no task error`);
+      assert.equal(host.evalInVm(`${SLOT}.save.writing`), null, `round ${round}: the claim is settled`);
+      const after = engine.parseSave(host.readFile(back ? SAVE : RECOVERY));
+      assert.ok(after.ok);
+      assert.equal(after.state.applied.wB, round + 1, `round ${round}: the other window's click is in the ${back ? "save" : "recovery file"} once`);
+      assert.equal(after.state.applied[writer], host.evalInVm(`${SLOT}.seq`), `round ${round}: and every action of this window`);
+      assert.equal(host.evalInVm(`${SLOT}.save.status`), back ? "ok" : "error", `round ${round}: ${back ? "back on save.json" : "still saving to the recovery file"}`);
+      assert.equal(host.evalInVm(`${SLOT}.save.damaged.length`), 0, `round ${round}: nothing kept aside`);
+    }
+    console.log(`# ${days}-day save (${kib.toFixed(0)} KiB): recovery merge rounds' longest task step ${rounds.map((m) => m.toFixed(0)).join(", ")} ms`);
+    for (const m of rounds) assert.ok(m < 500, `every task step of a recovery merge inside 500 ms (${m.toFixed(1)} ms)`);
+  } finally {
+    try {
+      host.dispose();
+    } catch (e) {
+      leak = e;
+    }
+  }
+  return { leak, headroom: host.headroom };
+}
+
+for (const [days, minKiB, what] of [[365, 300, "a one-year save"], [600, 480, "a save of about 500 KiB"]]) {
+  test(`a save.recovery.json merge onto ${what}, and the way back to save.json, stay inside the 500 ms task budget`, { timeout: 600000 }, async () => {
+    let r;
+    try {
+      r = await recoveryRounds(days, minKiB);
+    } catch (e) {
+      if (!(e && e.timing)) throw e;
+      console.log(`# ${days}-day recovery rounds: ${e.message}; running once more (a busy machine?)`);
+      r = await recoveryRounds(days, minKiB);
+    }
+    console.log(`# ${days}-day recovery merge teardown as the engine runs: ${teardownFault(r.leak, `${days}-day recovery merge`)}`);
+  });
 }
 
 for (const [days, minKiB, what] of [[365, 300, "a one-year save"], [600, 480, "a save of about 500 KiB"]]) {

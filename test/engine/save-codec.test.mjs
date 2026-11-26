@@ -285,9 +285,12 @@ test("Album compaction: old gone helpers are packed, never dropped, and a round 
   engine.advance(a, a.clock + 60000);
   engine.advance(back.state, back.state.clock + 60000);
   assert.equal(engine.serialize(back.state), engine.serialize(a));
-  // the Album still lists every one of them
+  // the Album still lists every one of them: each pane agent and its one fledgling,
+  // whether the fledgling keeps its own record or is folded into its parent (r5-16)
   const vm = engine.view(s, s.clock, { writer: "w-7f3a9c2e41" });
-  assert.equal(vm.helpers.albumCount, panes);
+  const kidsPast = hs.reduce((a, h) => a + (h.gone && h.stats && h.stats.kidsPast > 0 ? h.stats.kidsPast : 0), 0);
+  assert.equal(kidsPast + hs.filter((h) => h.kind === "kid" && h.gone).length, panes);
+  assert.equal(vm.helpers.albumCount, panes * 2);
 });
 
 test("a compacted helper whose agent returns rejoins with its name and stats; its turn is rebaselined (R13)", () => {
