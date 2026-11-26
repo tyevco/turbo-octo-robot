@@ -16,7 +16,9 @@
 // or sent while the window is hidden or inactive (`env.away`): a wanted
 // notification simply waits and is sent once the window is active again
 // (r6-02). The once-per-run wish notice and the daily slots are used only for
-// a toast that can be seen.
+// a toast that can be seen. A claim confirmed while the window is away or the
+// panel is in view is held, and one held past local midnight is claimed again
+// under the new day's slots rather than dropped (r7-08).
 //
 // Save problems never depend on notifications: if the ribbon and the panel
 // are both hidden while a save problem lasts 30 s, the ribbon is shown once
@@ -109,11 +111,30 @@ export function check(slot, t, env, save) {
   const claim = N.claim;
   if (claim) {
     if (slot.save.confirmed >= claim.s) {
-      // Confirmed while the window went away: held (already counted) until it is back.
-      if (env.away && claim.day === env.day) return null;
+      // Confirmed while the window went away, or while the panel came into
+      // view in an active window: held (already counted) until a toast can be
+      // seen and is wanted, on whatever day that is (r7-08).
+      if (env.away || env.quiet) return null;
+      if (!stillWanted(s, claim)) {
+        // The player turned it off, or made the wish / opened the pile meanwhile.
+        N.claim = null;
+        touch(slot);
+        return null;
+      }
+      if (claim.day !== env.day) {
+        // Held past local midnight: the engine has already used up the wish
+        // notice (firedFull / pileDay), so the notice is never dropped here.
+        // It is claimed again under today's slots (counted and confirmed like
+        // any claim), or held until a day with a free slot.
+        if (sentOn(s, env.day) >= DAILY_CAP || env.day < s.notify.day) return null;
+        dispatch(slot, { type: "notified", event: claim.event, day: env.day }, t);
+        N.claim = { ...claim, s: slot.seq, day: env.day, at: t };
+        save();
+        return "claimed";
+      }
       N.claim = null;
       touch(slot);
-      if (sentOn(s, claim.day) <= DAILY_CAP && claim.day === env.day) return send(claim, slot) ? "sent" : null;
+      if (sentOn(s, claim.day) <= DAILY_CAP) return send(claim, slot) ? "sent" : null;
       return "capped";
     }
     if (claim.at > t) claim.at = t; // the wall clock moved back: count the 10 min from now
@@ -129,6 +150,15 @@ export function check(slot, t, env, save) {
   N.claim = { s: slot.seq, event: w.event, day: env.day, at: t, title: w.title, body: w.body };
   save();
   return "claimed";
+}
+
+/** A held claim's event still applies: notifications and its switch on, and (for the wish) a wish still to make. */
+function stillWanted(s, claim) {
+  const set = s.settings.notify;
+  if (!set || set.master !== true) return false;
+  if (claim.event === "full") return set.full !== false && stringInfo(s).can;
+  if (claim.event === "pile") return set.pile !== false && s.notify.pileSince !== null;
+  return true;
 }
 
 /** Shows the ribbon once per save-problem episode when the ribbon and the panel are both hidden for 30 s. */

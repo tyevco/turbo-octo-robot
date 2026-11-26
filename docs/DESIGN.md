@@ -294,7 +294,7 @@ while Files is open) and resizes nothing.
         {"id": "cw-panel", "type": "block", "size": {"weight": 0.39}, "min": 64,
          "radius": 10, "border": {"width": 1, "color": "border"}, "background": "chrome",
          "content": {"mod": "creaseworks", "props": {"role": "panel"}}},
-        {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 160, "max": 900,
+        {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 160,
          "children": [{"id": "panel-body", "type": "stack", "active": "files", "children": [
            {"id": "files", "type": "block", "content": {"mod": "files"}},
            {"id": "changes", "type": "block", "content": {"mod": "changes"}}]}]}]},
@@ -938,8 +938,10 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   present helper keeps its id. A terminal that is already present always keeps the id it holds,
   plain or salted, even after the holder of its plain id leaves, so its name, stats and envelope
   never move mid-session. A salted helper that leaves keeps its `salt` (k) in its Album record
-  (such records are never compacted), so if its agent returns while its plain id belongs to a gone
-  helper it finds its own record first. An Album record keeps no address, but it keeps a 16-bit
+  (such records are never compacted), so when its agent returns it finds its own record first,
+  whatever became of its plain id: held by a gone helper, by a present one, or by no record at
+  all (a fledgling that held it folded into its parent, review r7-10). Every salt 1–16 is probed,
+  not only up to the first free one, since a smaller salt's record can have left the save too. An Album record keeps no address, but it keeps a 16-bit
   **terminal key** (`key`, a second FNV-1a of `"key#" + address + "#" + created_ms`, upper 16 bits;
   review r3-18): a terminal rejoins a gone record under its plain or salted id only when the keys
   match, so a new terminal whose plain id clashes with a gone helper's record takes a salted id
@@ -951,11 +953,11 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   A = `Mi Ko Pi Ta Su No Ri Ha Yu Fe Lo Bi Ka Mo Ze Wu`, B = `na to b ki ri mo sa ku ro n li po`
   in row-major order (short **ASCII** names: Mina, Koto, Pib, Tari, Yuro, Fen, Lopo…). A pair that
   spells a slur, a sexualised or vulgar slang word, a deity's or a well-known character's name is
-  never given (`NAME_SKIP`, review r2-28, two rounds: Feto, Haku, Han, Haro, Kaki, Kali, Kapo, Kato,
-  Kon, Koro, Loki, Loli, Misa, Miku, Mob, Momo, Mona, Moro, Nob, Pipo, Pito, Riku, Rin, Rito, Sub,
-  Suki, Taki, Tali, Yuna, Yuri, Zemo, Zero): it takes the next pair in that order that is not
-  skipped, so a remap can never land on a skipped pair (the first round remapped Haku to Haro), and
-  160 distinct names remain, none on more than 4 of the 192 slots.
+  never given (`NAME_SKIP`, review r2-28, two rounds, and r7-15: Feto, Haku, Han, Haro, Kaki, Kali,
+  Kapo, Kato, Kon, Koro, Loki, Loli, Misa, Miku, Mob, Momo, Mona, Moro, Nob, Pipo, Pito, Riki, Riku,
+  Rin, Rito, Sub, Suki, Taki, Tali, Yuna, Yuri, Zemo, Zeri, Zero): it takes the next pair in that
+  order that is not skipped, so a remap can never land on a skipped pair (the first round remapped
+  Haku to Haro), and 158 distinct names remain, none on more than 4 of the 192 slots.
   `content.js` holds `NAMES` written out and a test rebuilds it from A, B and the skip list. A
   helper or Album record named before the skip list (an older save) is renamed to its look name
   the next time it is observed or its Album record is pruned or loaded. On a clash among present

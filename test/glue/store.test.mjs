@@ -1669,7 +1669,9 @@ test("r6-04: save.json missing beside an unreadable backup: a fresh start that s
     assert.equal(n.message, msg, `${what}: the host message`);
     assert.doesNotMatch(n.text, /no backup/);
     const info = v.session.ctx().save;
-    assert.equal(info.backup, `can't be read, left in place (${msg}): ${BAK}`, `${what}: the message and path in Details`);
+    assert.equal(info.backup, "can't be read, left in place", what);
+    assert.equal(info.backupWhy, msg, `${what}: the message in Details, on a row of its own (r7-04)`);
+    assert.equal(info.backupPath, BAK, `${what}: and the path`);
     const banner = v.session.vm().notices.find((x) => x.save);
     assert.ok(banner && banner.actions.includes("details"), `${what}: the banner offers Details`);
     await w.advance(3000);
@@ -1689,7 +1691,8 @@ test("r6-04: save.json missing beside an unreadable backup: a fresh start that s
       const b = v.session.vm().notices.find((x) => x.save);
       assert.equal(b && b.text, text, `${what} +${dt}: the banner`);
       assert.doesNotMatch(b.text, /save itself is fine/, `${what} +${dt}`);
-      assert.equal(v.session.ctx().save.backup, `can't be read, left in place (${msg}): ${BAK}`, `${what} +${dt}: the Details row keeps the message and path`);
+      const si = v.session.ctx().save;
+      assert.deepEqual([si.backup, si.backupWhy, si.backupPath], ["can't be read, left in place", msg, BAK], `${what} +${dt}: the Details rows keep the message and path`);
     }
     assert.deepEqual(w.ctl.writes.filter((x) => x.path === BAK), [], `${what}: no write to the backup was tried`);
     assert.ok(parsed(w.ctl).ok, `${what}: the fresh game keeps saving`);
@@ -1728,7 +1731,8 @@ test("r6-04: an unreadable save.json beside an unreadable backup says both can't
   assert.equal(w.slot.notices.write.kind, "error", "the unreadable save.json notice comes first");
   assert.equal(w.slot.notices.load.text, "Save and backup can't be read (left in place; Details). Started fresh.");
   assert.equal(w.slot.notices.load.message, "Text file exceeds 1 MiB");
-  assert.match(v.session.ctx().save.backup, /^can't be read, left in place \(Text file exceeds 1 MiB\)/);
+  assert.equal(v.session.ctx().save.backup, "can't be read, left in place");
+  assert.equal(v.session.ctx().save.backupWhy, "Text file exceeds 1 MiB");
   assert.equal(w.ctl.readFile(BAK), BIG_BAK);
   w.dispose();
   w = win({ files: { [SAVE]: HUGE, [RECOVERY]: damagedText(5) } });
@@ -1788,7 +1792,8 @@ test("r6-04: a backup readable again that can't be kept aside is never rotated o
   await w.advance(6 * 60000);
   assert.equal(w.ctl.readFile(damaged(1)), null, "the keep-aside write failed");
   assert.equal(w.ctl.readFile(BAK), oldText, "not rotated over");
-  assert.equal(v.session.ctx().save.backup, `readable again, left in place (could not be kept aside yet): ${BAK}`);
+  const si = v.session.ctx().save;
+  assert.deepEqual([si.backup, si.backupWhy, si.backupPath], ["readable again, left in place", "could not be kept aside yet", BAK]);
   assert.equal(w.slot.notice && w.slot.notice.kind, "fresh", "the fresh-start notice stays");
   // The next try keeps it, then the backup rotates.
   await w.advance(6 * 60000);
@@ -1825,6 +1830,181 @@ test("r6-04: every unreadable-backup fresh-start notice fits the banner, alone a
     const j = store.goneJoined(t);
     assert.ok(j.startsWith("Shared save not found") && j.endsWith(t), j);
   }
+});
+
+// r7-05: a backup that can't be read beside a good save.json is never
+// rotated (r6-04), so while it lasts there is no working backup: an error
+// notice says so (banner, footer, ribbon, the save notification), not only
+// the Details row, until it can be read again or is gone.
+test("r7-05: a good save beside an unreadable backup shows a backup error until the backup is fixed", async () => {
+  for (const [what, make, msg, files] of BAK_CASES) {
+    const good = freshState(3);
+    good.bank = 5000;
+    w = win({ files: { ...files, [SAVE]: saveText(good) } });
+    make(w.ctl);
+    const v = await w.copy("panel");
+    await w.flush();
+    assert.ok(w.slot.state.bank >= 5000, `${what}: the save loads`);
+    const first = w.slot.notice;
+    for (const dt of [3000, 6 * 60000, 30 * 60000]) {
+      await w.advance(dt);
+      const n = w.slot.notice;
+      assert.equal(n && n.kind, "error", `${what} +${dt}: never silent`);
+      assert.equal(n, w.slot.notices.bak, `${what} +${dt}: the backup notice`);
+      assert.equal(n.text, store.backupUnreadableText(BAK, msg), what);
+      assert.match(n.text, /^Can't read the backup \(save\.bak\.json\): .+\. Left in place, not updated; the save itself is fine\.$/, what);
+      assert.doesNotMatch(n.text, /started fresh/i, what);
+      assert.equal(n.at, first.at, `${what}: one episode`);
+      const info = v.session.ctx().save;
+      assert.equal(info.state, "problem", `${what}: the footer's problem state`);
+      assert.match(info.text, /^Backup problem · saved/, what);
+      const vm = v.session.vm();
+      assert.equal(vm.ribbon.save, "Save problem", `${what}: the ribbon`);
+      const b = vm.notices.find((x) => x.save);
+      assert.equal(b && b.text, n.text, `${what}: the banner`);
+      assert.ok(store.problemEpisode(w.slot), `${what}: counted for the save notification`);
+      assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: left as it was`);
+    }
+    assert.deepEqual(w.ctl.writes.filter((x) => x.path === BAK), [], `${what}: never rotated over`);
+    // Fixed (an older copy of this same game put back): Retry reads it again at
+    // once; an ordinary backup of this game is adopted, not kept aside.
+    if (what === "a folder") w.ctl.dirs.delete(BAK);
+    w.ctl.externalWrite(BAK, saveText(good));
+    await w.handler(v, "retrySave");
+    await w.advance(3000);
+    assert.equal(w.slot.notices.bak, null, `${what}: the backup notice is cleared`);
+    assert.equal(w.slot.notice, null, `${what}: nothing else to say`);
+    assert.equal(w.slot.save.problemSince, null, what);
+    assert.equal(w.ctl.readFile(damaged(1)), null, `${what}: a backup of this game is not kept aside`);
+    assert.notEqual(w.ctl.readFile(BAK), saveText(good), `${what}: rotated as usual`);
+    assert.match(String(v.session.ctx().save.backup), /^rotated /, what);
+    w.dispose();
+    w = null;
+  }
+});
+
+test("r7-05: a backup that can't be read never covers the fresh-start or unreadable-save notice", async () => {
+  w = win({ files: { [BAK]: BIG_BAK } });
+  await w.copy("panel");
+  await w.advance(6 * 60000);
+  assert.equal(w.slot.notice.kind, "fresh");
+  assert.equal(w.slot.notices.bak, null);
+  w.dispose();
+  w = win({ files: { [SAVE]: HUGE, [BAK]: BIG_BAK } });
+  await w.copy("panel");
+  await w.advance(6 * 60000);
+  assert.equal(w.slot.notice, w.slot.notices.write, "the unreadable save.json comes first");
+  assert.equal(w.slot.notices.bak, null);
+});
+
+test("r7-05: a good save beside a backup readable again but not kept aside says so", async () => {
+  w = win({ files: { [SAVE]: saveText(freshState(3)), [BAK]: BIG_BAK } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  const other = saveText(freshState(2)); // another game: kept aside before any rotation
+  w.ctl.externalWrite(BAK, other);
+  w.ctl.failNextWrite("No space left on device (os error 28)", damaged(1));
+  await w.handler(v, "retrySave");
+  await w.advance(3000);
+  assert.equal(w.ctl.readFile(BAK), other, "not rotated over");
+  assert.equal(w.slot.notice && w.slot.notice.kind, "error");
+  assert.equal(w.slot.notice.text, store.backupHeldText(BAK));
+  assert.ok(engine.graphemes(store.backupHeldText(BAK)).length <= store.NOTICE_MAX);
+  await w.advance(6 * 60000);
+  assert.equal(w.ctl.readFile(damaged(1)), other, "kept on the next try");
+  assert.equal(w.slot.notices.bak, null, "the backup error is cleared");
+  assert.match(w.slot.notice.text, /^The backup can be read again: kept as save\.damaged-1\.json .+ It held another game; this one is unchanged\.$/);
+});
+
+test("r7-05: every backup-error text fits the banner", () => {
+  for (const [, , msg] of BAK_CASES) {
+    const t = store.backupUnreadableText("/x/" + "🗂".repeat(40) + "/save.bak.json", msg + " " + "🙁".repeat(80));
+    assert.ok(engine.graphemes(t).length <= store.NOTICE_MAX, t);
+  }
+});
+
+// r7-06: a backup readable again is kept aside only when it may hold progress
+// that is nowhere else, and "This game started fresh." only after a fresh start.
+test("r7-06: beside a good save, a backup readable again with another game is kept aside without saying the game started fresh", async () => {
+  w = win({ files: { [SAVE]: saveText(freshState(3)) } });
+  w.ctl.mkdir(BAK);
+  await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.dirs.delete(BAK);
+  const other = saveText(freshState(2));
+  w.ctl.externalWrite(BAK, other);
+  await w.advance(6 * 60000);
+  assert.equal(w.ctl.readFile(damaged(1)), other, "kept aside: another game");
+  const n = w.slot.notices.load;
+  assert.equal(n && n.kind, "recovered");
+  assert.doesNotMatch(n.text, /started fresh/, n.text);
+  assert.match(n.text, /It held another game; this one is unchanged\.$/);
+  assert.ok(engine.graphemes(store.backupKeptText("save.damaged-5.json", " (game from 23:59)", false)).length <= store.NOTICE_MAX);
+});
+
+test("r7-06: two windows on one save: the second never keeps the first one's ordinary rotation aside", async () => {
+  w = win();
+  for (let n = 1; n <= 5; n++) w.ctl.externalWrite(damaged(n), `kept ${n}`);
+  const base = engine.newGame({ seed: 9, now: Date.now(), day: "2026-01-01" });
+  w.ctl.externalWrite(SAVE, engine.serialize(base));
+  w.ctl.mkdir(BAK);
+  const env = { now: () => Date.now() };
+  const mk = async (id) => {
+    const slot = newSlot(HOME, store.slotPaths(HOME));
+    slot.writerId = id;
+    slot.loading = 1;
+    await hostWork(() => store.load(slot, { now: () => Date.now(), seed: () => 1, gen: 1 }));
+    slot.loading = 0;
+    return slot;
+  };
+  const A = await mk("wA");
+  const B = await mk("wB");
+  assert.equal(A.save.bakUnreadable, "Not a regular file");
+  assert.equal(B.notice && B.notice.kind, "error", "B says the backup can't be read too");
+  await w.ctl.advance(2000);
+  await hostWork(() => store.cycle(A, env));
+  await hostWork(() => store.cycle(B, env));
+  // The player puts an older game back in place of the folder.
+  w.ctl.dirs.delete(BAK);
+  const oldGame = saveText(freshState(2));
+  w.ctl.externalWrite(BAK, oldGame);
+  await w.ctl.advance(6 * 60000);
+  dispatch(A, { type: "click", target: "sheet" }, Date.now());
+  await hostWork(() => store.cycle(A, env)); // A keeps the old game aside
+  await w.ctl.advance(6 * 60000);
+  dispatch(A, { type: "click", target: "sheet" }, Date.now());
+  await hostWork(() => store.cycle(A, env)); // A rotates
+  assert.notEqual(w.ctl.readFile(BAK), oldGame, "A rotated its save in");
+  dispatch(B, { type: "click", target: "sheet" }, Date.now());
+  await hostWork(() => store.cycle(B, env)); // B probes now
+  assert.deepEqual([1, 2, 3, 4].map((n) => w.ctl.readFile(damaged(n))), ["kept 2", "kept 3", "kept 4", "kept 5"], "only the oldest made room, once");
+  assert.equal(w.ctl.readFile(damaged(5)), oldGame, "the old game is kept, once");
+  assert.equal(B.notice, null, "B says nothing: its backup is an ordinary one again");
+  assert.equal(B.save.bakUnreadable, null);
+  assert.equal(B.save.damaged.length, 0, "B kept nothing aside");
+});
+
+// r7-07: the backup check moves back with the clock like every other save timer.
+test("r7-07: the wall clock moving back does not delay the unreadable-backup check", async () => {
+  w = win({ files: { [SAVE]: saveText(freshState(3)) } });
+  w.ctl.mkdir(BAK);
+  await w.copy("panel");
+  await w.advance(6 * 60000);
+  assert.ok(typeof w.slot.save.bakProbeAt === "number", "probed");
+  const OFF = 3 * 3600000;
+  Date.now = () => w.ctl.t - OFF; // clock.js reads Date.now; timers keep virtual time
+  w.ctl.dirs.delete(BAK);
+  w.ctl.externalWrite(BAK, saveText(freshState(3)));
+  for (let i = 0; i < 28; i++) {
+    await w.advance(15000);
+    if (!w.slot.save.bakUnreadable) break;
+  }
+  assert.equal(w.slot.save.bakUnreadable, null, "read again within the 5 min cadence on the new clock");
+  assert.ok(w.slot.save.bakProbeAt <= Date.now());
+  assert.equal(w.slot.notices.bak, null);
+  const s = { save: { dirtyAt: null, urgentAt: null, retryAt: 0, bakRetryAt: 0, savedAt: null, bakProbeAt: 5000 }, bakAt: null };
+  store.rebaseClock(s, 1000);
+  assert.equal(s.save.bakProbeAt, 1000);
 });
 
 // r6-18: herdr's create_new write (expected null) returns the OS text when the

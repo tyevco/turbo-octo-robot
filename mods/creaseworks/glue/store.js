@@ -395,6 +395,7 @@ export function rebaseClock(slot, t) {
   if (S.retryAt > t + cap) S.retryAt = t + backoff(S.errors);
   if ((S.bakRetryAt || 0) > t + cap) S.bakRetryAt = t + cap;
   if (slot.bakAt !== null && slot.bakAt > t) slot.bakAt = t;
+  if (typeof S.bakProbeAt === "number" && S.bakProbeAt > t) S.bakProbeAt = t; // (r7-07)
   if (S.savedAt !== null && S.savedAt > t) S.savedAt = t;
 }
 
@@ -600,7 +601,10 @@ export async function load(slot, opts) {
     }
   }
   slot.paths = slotPaths(home, shared);
-  const fresh = () => newGame({ seed: opts.seed, now: t0, day: localDay(t0) });
+  const fresh = () => {
+    S.bakFresh = bak.error !== null; // the game in that backup is not this one (r7-06)
+    return newGame({ seed: opts.seed, now: t0, day: localDay(t0) });
+  };
   const S = slot.save;
   let main = await readOrError(slot.paths.save);
   if (stale()) return false;
@@ -628,6 +632,7 @@ export async function load(slot, opts) {
   S.bakUnreadable = bak.error;
   S.bakHeld = null;
   S.bakProbeAt = null;
+  S.bakFresh = false; // set below when this game started fresh beside it (r7-06)
   slot.readOnly = false;
   S.unreadable = null;
   S.recoveryText = null;
@@ -768,6 +773,7 @@ export async function load(slot, opts) {
     slot.notices.write = null;
   }
   refreshNotice(slot);
+  noteBackupState(slot, t0);
   // A first run or a repaired save is written at once.
   if (!S.baseOk && !slot.readOnly) {
     markDirty(slot, t0, true);
@@ -966,6 +972,7 @@ async function leaveMissingShared(slot, env, stale) {
   S.bakUnreadable = own.error;
   S.bakHeld = null;
   S.bakProbeAt = null;
+  S.bakFresh = false;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -976,6 +983,7 @@ async function leaveMissingShared(slot, env, stale) {
   S.baseOk = false;
   const t = env.now();
   setNotice(slot, "load", { kind: "recovered", text: goneText(P.shared), at: t });
+  noteBackupState(slot, t);
   markDirty(slot, t, true);
   S.urgentAt = t;
   touch(slot);
@@ -1452,13 +1460,16 @@ async function recoveryWrite(slot, env, stale) {
  * While save.bak.json was there but could not be read (r6-04: a folder, over
  * 1 MiB, invalid UTF-8, no permission), it is never rotated: herdr's write
  * reads the file first (mod_files.rs write), so the rotation would fail with
- * the same host error and its "the save itself is fine" notice would cover
- * the fresh-start one, while the player's progress is in that backup, not in
- * the save. It is read again on the rotation's cadence instead, quietly (the
- * fresh-start notice and Details already say it). Once it can be read, its
- * text is kept aside (save.damaged-<n>.json, listed in Details with what it
- * holds) and the player is told where it went before any rotation may
- * replace it; until that copy is written it is not rotated over (S.bakHeld).
+ * the same host error, and the progress in it may not be anywhere else. It is
+ * read again on the rotation's cadence instead (and at once on Retry), and
+ * said (noteBackupState). Once it can be read:
+ * - an ordinary backup of this same game (this window's or another writer's
+ *   rotation: r7-06) is simply adopted and rotated as usual;
+ * - anything else (the game a fresh start replaced, another game, a damaged or
+ *   newer file) is kept aside (save.damaged-<n>.json, listed in Details with
+ *   what it holds) and the player is told where it went before any rotation
+ *   may replace it; until that copy is written it is not rotated over
+ *   (S.bakHeld).
  * Gone (moved away by the player): nothing left to keep, it is rotated as
  * usual. Returns false when superseded.
  */
@@ -1471,14 +1482,15 @@ async function probeBackup(slot, env, stale, t) {
   if (r.error !== null) {
     S.bakUnreadable = r.error;
     S.bakHeld = null;
+    noteBackupState(slot, t);
     return true;
   }
   if (r.text === null) {
-    S.bakUnreadable = null;
-    S.bakHeld = null;
-    slot.bakText = null;
-    slot.bakState = null;
-    slot.bakAt = null;
+    backupSettled(slot, null, null, t);
+    return true;
+  }
+  if (r.text === slot.baseText) {
+    backupSettled(slot, r.text, "ok", t); // the save this window last read or wrote
     return true;
   }
   await pause(env); // the parse in task steps of its own (r3-01)
@@ -1486,6 +1498,11 @@ async function probeBackup(slot, env, stale, t) {
   progress(slot, env);
   const parsed = await parseIn(slot, r.text, env, stale);
   if (parsed === null || stale()) return false;
+  if (parsed.ok && sameGame(parsed.state, slot.state) && notAhead(parsed.state, slot.state)) {
+    // A backup of this game, at or behind it: nothing in it the save does not carry on.
+    backupSettled(slot, r.text, "ok", t);
+    return true;
+  }
   const what = parsed.ok ? `the unreadable backup, from ${localTime(parsed.state.clock)}` : parsed.reason === "newer" ? "the unreadable backup, from a newer version" : "the unreadable backup, damaged";
   const kept = await keepAsideListed(slot, P, r.text, what);
   if (stale()) return false;
@@ -1493,21 +1510,82 @@ async function probeBackup(slot, env, stale, t) {
     // Still left in place, never rotated over: tried again on the next probe.
     S.bakUnreadable = null;
     S.bakHeld = "could not be kept aside yet";
+    noteBackupState(slot, t);
     return true;
   }
-  S.bakUnreadable = null;
-  S.bakHeld = null;
-  slot.bakText = r.text;
-  slot.bakState = parsed.ok ? "ok" : "damaged";
-  slot.bakAt = null; // rotated on the next cycle: the old game is safe in the kept copy
+  const fresh = !!S.bakFresh;
+  backupSettled(slot, r.text, parsed.ok ? "ok" : "damaged", t);
   const from = parsed.ok ? ` (game from ${localTime(parsed.state.clock)})` : "";
-  setNotice(slot, "load", { kind: "recovered", text: backupKeptText(kept, from), at: t });
+  setNotice(slot, "load", { kind: "recovered", text: backupKeptText(kept, from, fresh), at: t });
   return true;
 }
 
+/** The same game (seed and start time), whatever its progress: a backup of it holds nothing the save lacks. */
+function sameGame(a, b) {
+  return !!a && !!b && a.seed === b.seed && a.created === b.created;
+}
+
+/**
+ * `bak` holds nothing `live` lacks: every writer's actions in it are applied
+ * in `live`, or it is no later than one rotation ahead of `live`'s clock (a
+ * rotation another window made since this one last merged its save).
+ */
+function notAhead(bak, live) {
+  if (bak.clock <= live.clock + BACKUP_EVERY_MS) return true;
+  for (const k of Object.keys(bak.applied || {})) {
+    if (!(Object.hasOwn(live.applied, k) && live.applied[k] >= bak.applied[k])) return false;
+  }
+  return true;
+}
+
+/** The backup can be read (or is gone) and nothing in it needs keeping: rotated as usual from here. */
+function backupSettled(slot, text, state, t) {
+  const S = slot.save;
+  S.bakUnreadable = null;
+  S.bakHeld = null;
+  S.bakFresh = false;
+  slot.bakText = text;
+  slot.bakState = text === null ? null : state;
+  slot.bakAt = null; // rotated on the next cycle
+  noteBackupState(slot, t);
+}
+
+/**
+ * The backup notice while save.bak.json can't be read or kept aside (r7-05):
+ * an error (banner, ribbon, footer, rail, the save notification), since there
+ * is no working backup while it lasts. Not while the fresh-start notice says
+ * it already, nor while save.json itself can't be read (that notice comes
+ * first); cleared once the backup is settled.
+ */
+function noteBackupState(slot, t) {
+  const S = slot.save;
+  const was = slot.notices.bak;
+  const load = slot.notices.load;
+  const why = S.bakUnreadable || null;
+  const held = !why && S.bakHeld ? S.bakHeld : null;
+  const mine = !!was && was.bakState === true;
+  if ((!why && !held) || S.unreadable || slot.readOnly || (load && load.kind === "fresh")) {
+    if (mine) setNotice(slot, "bak", null);
+    return;
+  }
+  const text = why ? backupUnreadableText(slot.paths.bak, why) : backupHeldText(slot.paths.bak);
+  if (mine && was.text === text) return;
+  setNotice(slot, "bak", { kind: "error", message: why || held, text, bakState: true, at: mine ? was.at : t });
+}
+
+/** The notice for a backup that can't be read beside a good save (≤ NOTICE_MAX graphemes). */
+export function backupUnreadableText(path, message) {
+  return clip(`Can't read the backup (${clip(baseName(path), 24)}): ${clip(String(message), 40)}. Left in place, not updated; the save itself is fine.`, NOTICE_MAX);
+}
+
+/** The notice for a backup readable again that could not be kept aside yet (≤ NOTICE_MAX graphemes). */
+export function backupHeldText(path) {
+  return clip(`The backup (${clip(baseName(path), 24)}) can be read again but could not be kept aside yet; not updated until it is. The save itself is fine.`, NOTICE_MAX);
+}
+
 /** The notice when an unreadable backup turns readable and is kept aside (≤ NOTICE_MAX graphemes). */
-export function backupKeptText(kept, from = "") {
-  return `The backup can be read again: kept as ${kept}${from} (Details). This game started fresh.`;
+export function backupKeptText(kept, from = "", fresh = true) {
+  return `The backup can be read again: kept as ${kept}${from} (Details). ${fresh ? "This game started fresh." : "It held another game; this one is unchanged."}`;
 }
 
 /** Rotates save.bak.json (≤ every 5 min). A failure other than another writer's rotation is shown and retried. */
@@ -1780,6 +1858,7 @@ async function settleShare(slot, env, stale) {
   S.bakUnreadable = bak.error;
   S.bakHeld = null;
   S.bakProbeAt = null;
+  S.bakFresh = false;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -1791,6 +1870,7 @@ async function settleShare(slot, env, stale) {
   S.baseOk = false;
   S.sharing = null;
   const t = env.now();
+  noteBackupState(slot, t);
   markDirty(slot, t, true);
   S.urgentAt = t;
   if (want !== was) flash(slot, want ? `Now sharing ${baseName(want)} with another herdr home.` : "Back to this window's own save.", t);
@@ -1839,6 +1919,7 @@ export function retryNow(slot, t) {
   const S = slot.save;
   S.retryAt = 0;
   S.bakRetryAt = 0;
+  S.bakProbeAt = null; // a backup that can't be read is read again at once
   markDirty(slot, t, true);
   S.urgentAt = t;
   touch(slot);
@@ -2038,6 +2119,7 @@ export async function sharePath(slot, env, path) {
     S.bakUnreadable = bak.error;
     S.bakHeld = null;
     S.bakProbeAt = null;
+    S.bakFresh = false;
     slot.bakAt = null;
     slot.bakState = null;
     S.unreadable = null;
@@ -2045,6 +2127,7 @@ export async function sharePath(slot, env, path) {
     S.ownApplied = 0; // another file: none of this window's saves are in it yet
     S.recOwn = 0;
     dropRecNotice(slot);
+    noteBackupState(slot, env.now());
     if (parsed && parsed.ok) {
       const live = parsed.state;
       const ev = await replayPending(live, slot, env, stale);
@@ -2096,10 +2179,19 @@ export function saveInfo(slot, t) {
     if (lead) text = `${lead} · ${text[0].toLowerCase()}${text.slice(1)}`;
   } else text = "Not saved yet";
   let backup = false;
-  // (an unreadable backup first: it holds progress, and the path says where: r6-04)
-  if (S.bakUnreadable) backup = `can't be read, left in place (${S.bakUnreadable}): ${slot.paths.bak}`;
-  else if (S.bakHeld) backup = `readable again, left in place (${S.bakHeld}): ${slot.paths.bak}`;
-  else if (S.bakError) backup = `not updated (${S.bakError})`;
+  // (an unreadable backup first: it holds progress. Its reason and path go
+  // apart, so Details and Settings show each on a line of its own: r7-04)
+  let backupWhy = null;
+  let backupPath = null;
+  if (S.bakUnreadable) {
+    backup = "can't be read, left in place";
+    backupWhy = String(S.bakUnreadable);
+    backupPath = slot.paths.bak;
+  } else if (S.bakHeld) {
+    backup = "readable again, left in place";
+    backupWhy = String(S.bakHeld);
+    backupPath = slot.paths.bak;
+  } else if (S.bakError) backup = `not updated (${S.bakError})`;
   else if (slot.bakText !== null) backup = slot.bakState === "damaged" ? "damaged" : slot.bakAt !== null ? `rotated ${localTime(slot.bakAt)}` : "present";
   return {
     state: problem ? "problem" : S.status === "saving" ? "saving" : "saved",
@@ -2107,6 +2199,8 @@ export function saveInfo(slot, t) {
     path: slot.paths.save,
     lastGood: S.savedAt !== null ? localTime(S.savedAt) : null,
     backup,
+    backupWhy,
+    backupPath,
     damaged: S.damaged.slice(-DAMAGED_MAX),
     shared: !!slot.paths.shared,
   };

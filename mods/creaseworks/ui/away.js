@@ -1,13 +1,20 @@
 // "While you were away" / "While you were busy" card (DESIGN §3.7, §10.3):
-// `renderAway(vm, ui, ctx)` (ARCHITECTURE B11) → element | null. An absolute,
-// non-blocking card the panel places over the mat (304 wide at mat x 0,
-// y 36); it has its own close ✕ and, for the away kind, Collect. Uses the
-// vm's ready lines (B10 `capText splitText …`) when present, else builds them
-// from the B6 fields.
+// `renderAway(vm, ui, ctx, fit)` (ARCHITECTURE B11) → element | null. An
+// absolute, non-blocking card the panel places over the mat (304 wide at mat
+// x 0, y 36); it has its own close ✕ and, for the away kind, Collect. Uses
+// the vm's ready lines (B10 `capText splitText …`) when present, else builds
+// them from the B6 fields.
+//
+// The card stays inside the mat and the boost bar, so the tabs below are
+// never covered (review r7-11: a full seven-row card ran 314 px down over the
+// Flock/Shop/String row). `fit.maxH` is the room the panel gives it; when the
+// whole card does not fit, `awayFit` makes it tight (less padding, Collect on
+// the folds row) and then lets the lowest rows give way (best helper, you
+// can afford, rested, envelopes; who needs you always stays).
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { clip } from "../engine/index.js";
+import { clip, graphemes } from "../engine/index.js";
 import { statusColor, statusDisc, surfaceColor } from "./color.js";
 import { icon, spritePath, sprite, statusGlyphPath } from "./art.js";
 import { button, divider, iconButton, text } from "./widgets.js";
@@ -73,14 +80,101 @@ export function awayLines(a) {
   };
 }
 
-/** The card for `vm.away`, or null. `width` defaults to 304 (the mat). */
-export function renderAway(vm, ui, ctx) {
+/**
+ * The card's box model, for its height (tested against the shots: gpui text
+ * lines are 1.618 × the text size; the 7-row card measures 314 + 2 px).
+ */
+export const AWAY_BOX = Object.freeze({
+  pad: 14, gap: 6, tightPad: 10, tightGap: 4, border: 1, lh: 1.618034,
+  row: 22, actionRow: 28, close: 28, collect: 28, collectTop: 4, capPx: 6.4,
+});
+
+/** The card's optional rows in draw order, and the order they give way when room is short (r7-11). */
+export const AWAY_ROWS = Object.freeze(["tasks", "envelopes", "needs", "rested", "best", "affordable"]);
+export const AWAY_DROP = Object.freeze(["best", "affordable", "rested", "envelopes", "tasks"]);
+
+/** The card's width for a panel `width` (the mat's, 304 at most). */
+export function awayWidth(width) {
+  return Math.max(200, Math.min(304, num(width, 320) - 16));
+}
+
+function headCap(a, L) {
+  return clip(L.cap ? `${a.duration ?? ""}  ${L.cap}` : String(a.duration ?? ""), AWAY_CLIP.cap);
+}
+
+/** The rows this card has, in draw order. */
+function presentRows(a, L) {
+  const busy = a.kind === "busy";
+  const has = { tasks: busy && L.tasks, envelopes: L.envelopes, needs: !busy && L.needs, rested: !busy && L.rested, best: !busy && L.best, affordable: !busy && L.affordable };
+  return AWAY_ROWS.filter((k) => Boolean(has[k]));
+}
+
+const hasCollect = (a) => a.kind !== "busy" && a.collectable !== false;
+
+/**
+ * The card's height in px for `rows` (keys of AWAY_ROWS), tight or not: its
+ * padding and border, the head (title and the wrapped cap line beside ✕),
+ * the divider, the folds row (with Collect at its end when tight), the rows
+ * and the Collect row, with the gaps between them.
+ */
+export function awayHeight(a, width, opts = {}) {
+  const B = AWAY_BOX;
+  const L = awayLines(a);
+  const tight = Boolean(opts.tight);
+  const rows = Array.isArray(opts.rows) ? opts.rows : presentRows(a, L);
+  const pad = tight ? B.tightPad : B.pad;
+  const gap = tight ? B.tightGap : B.gap;
+  const lh = (size) => size * B.lh;
+  const capW = Math.max(40, width - 2 * B.border - 2 * pad - B.close - 8);
+  const capLines = Math.max(1, Math.ceil((graphemes(headCap(a, L)).length * B.capPx) / capW));
+  const head = Math.max(B.close, lh(13) + capLines * lh(11));
+  let folds = lh(a.kind === "busy" ? 16 : 20) + (L.split ? lh(11) : 0);
+  const collect = hasCollect(a);
+  if (tight && collect) folds = Math.max(folds, B.collect);
+  const parts = [head, 1, folds];
+  for (const k of rows) parts.push(k === "needs" && (a.needs || [])[0] && a.needs[0].helperId ? B.actionRow : B.row);
+  if (collect && !tight) parts.push(B.collectTop + B.collect);
+  return 2 * B.border + 2 * pad + parts.reduce((x, y) => x + y, 0) + gap * (parts.length - 1);
+}
+
+/**
+ * How the card fits in `maxH` px (none: no limit): the whole card when it
+ * fits, else tight, else tight without the rows of AWAY_DROP in turn until it
+ * fits (needs-you rows never go). → { tight, rows, dropped, height }.
+ */
+export function awayFit(a, width, maxH) {
+  const L = awayLines(a);
+  const all = presentRows(a, L);
+  const room = typeof maxH === "number" && Number.isFinite(maxH) ? maxH : Infinity;
+  const full = awayHeight(a, width, { rows: all });
+  if (full <= room) return { tight: false, rows: all, dropped: [], height: full };
+  let rows = all.slice();
+  const dropped = [];
+  let height = awayHeight(a, width, { tight: true, rows });
+  for (const k of AWAY_DROP) {
+    if (height <= room) break;
+    if (!rows.includes(k)) continue;
+    rows = rows.filter((r) => r !== k);
+    dropped.push(k);
+    height = awayHeight(a, width, { tight: true, rows });
+  }
+  return { tight: true, rows, dropped, height };
+}
+
+/**
+ * The card for `vm.away`, or null. `width` defaults to 304 (the mat);
+ * `fit.maxH` (optional) caps its height (see `awayFit`).
+ */
+export function renderAway(vm, ui, ctx, fit = undefined) {
   const a = vm && vm.away;
   if (!a || typeof a !== "object") return null;
   const T = ctx.T;
   const busy = a.kind === "busy";
   const L = awayLines(a);
-  const width = Math.max(200, Math.min(304, num(ctx.width, 320) - 16));
+  const width = awayWidth(ctx.width);
+  const plan = awayFit(a, width, fit && fit.maxH);
+  const B = AWAY_BOX;
+  const show = new Set(plan.rows);
   const dismiss = handler(ctx, "dismiss");
   const collect = handler(ctx, "collect");
   const openHelper = handler(ctx, "openHelper");
@@ -93,7 +187,7 @@ export function renderAway(vm, ui, ctx) {
         .flex_1()
         .min_w(0)
         .child(text(clip(L.title, AWAY_CLIP.title), { size: 13, weight: 600, color: T.foreground }, T))
-        .child(text(clip(L.cap ? `${a.duration ?? ""}  ${L.cap}` : String(a.duration ?? ""), AWAY_CLIP.cap), { size: 11, color: T.muted }, T).whitespace_normal()),
+        .child(text(headCap(a, L), { size: 11, color: T.muted }, T).whitespace_normal()),
     )
     .child(iconButton("cw-away-close", "close", busy ? AWAY_CLOSE.busy : AWAY_CLOSE.away, {
       size: 14, surface: T.popover, stop: true, onClick: (e, cx) => dismiss(kind, cx),
@@ -102,8 +196,8 @@ export function renderAway(vm, ui, ctx) {
   const card = v_flex()
     .id("cw-away")
     .w(width)
-    .p(14)
-    .gap(6)
+    .p(plan.tight ? B.tightPad : B.pad)
+    .gap(plan.tight ? B.tightGap : B.gap)
     .rounded(10)
     .bg(T.popover)
     .border(1)
@@ -111,39 +205,42 @@ export function renderAway(vm, ui, ctx) {
     .shadow_lg()
     .child(head)
     .child(divider(T));
+  // The limit is a hard one: should the text run taller than the estimate,
+  // the card clips at its own edge rather than reach the tabs.
+  if (fit && typeof fit.maxH === "number" && Number.isFinite(fit.maxH)) card.max_h(Math.max(0, Math.floor(fit.maxH))).overflow_hidden();
+  const collectButton = () =>
+    button("cw-away-collect", "Collect", { variant: "primary", w: 88, h: B.collect, stop: true, onClick: (e, cx) => collect(cx) }, T);
+  const withCollect = !busy && a.collectable !== false;
 
   const foldsRow = h_flex()
     .gap(8)
     .child(div().w(16).flex_none().flex().justify_center().child(icon("fold", 16, T.muted)))
     .child(
       v_flex()
+        .flex_1()
         .min_w(0)
         .child(text(clip(String(a.folds ?? ""), AWAY_CLIP.folds) + " folds", { size: busy ? 16 : 20, weight: 600, color: T.foreground }, T))
         .when(Boolean(L.split), (el) => el.child(text(clip(L.split, AWAY_CLIP.line), { size: 11, color: T.muted, truncate: true }, T))),
     );
+  // Tight: Collect moves up to the end of the folds row (one row less).
+  if (plan.tight && withCollect) foldsRow.child(collectButton());
   card.child(foldsRow);
 
-  if (busy && L.tasks) card.child(line(icon("check", 12, T.muted), L.tasks, T));
-  if (L.envelopes) card.child(line(sprite(spritePath("status", "envelope"), 12, T.muted), L.envelopes, T));
+  const row = (key, el) => (show.has(key) ? card.child(el.id(`cw-away-row-${key}`)) : null);
+  if (show.has("tasks")) row("tasks", line(icon("check", 12, T.muted), L.tasks, T));
+  if (show.has("envelopes")) row("envelopes", line(sprite(spritePath("status", "envelope"), 12, T.muted), L.envelopes, T));
   const needs = Array.isArray(a.needs) ? a.needs : [];
-  if (!busy && L.needs) {
+  if (show.has("needs")) {
     const first = needs[0] && needs[0].helperId;
     const go = first
-      ? button("cw-away-open", "Open ›", { h: 28, size: 11, px: 8, stop: true, onClick: (e, cx) => openHelper(first, cx) }, T)
+      ? button("cw-away-open", "Open ›", { h: B.actionRow, size: 11, px: 8, stop: true, onClick: (e, cx) => openHelper(first, cx) }, T)
       : null;
-    card.child(line(statusMark(T, "blocked"), L.needs, T, go));
+    row("needs", line(statusMark(T, "blocked"), L.needs, T, go));
   }
-  if (!busy && L.rested) card.child(line(statusMark(T, "idle"), L.rested, T));
-  if (!busy && L.best) card.child(line(statusMark(T, "done"), L.best, T));
-  if (!busy && L.affordable) card.child(line(icon("shop", 12, T.muted), L.affordable, T));
+  if (show.has("rested")) row("rested", line(statusMark(T, "idle"), L.rested, T));
+  if (show.has("best")) row("best", line(statusMark(T, "done"), L.best, T));
+  if (show.has("affordable")) row("affordable", line(icon("shop", 12, T.muted), L.affordable, T));
 
-  if (!busy && a.collectable !== false) {
-    card.child(
-      h_flex()
-        .justify_end()
-        .pt(4)
-        .child(button("cw-away-collect", "Collect", { variant: "primary", w: 88, h: 28, stop: true, onClick: (e, cx) => collect(cx) }, T)),
-    );
-  }
+  if (withCollect && !plan.tight) card.child(h_flex().justify_end().pt(B.collectTop).child(collectButton()));
   return card;
 }

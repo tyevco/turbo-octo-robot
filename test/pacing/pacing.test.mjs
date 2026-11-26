@@ -79,6 +79,49 @@ test("a first wish reached by a night pot is noted on §4 M15 and the §5 rows",
   if (seeds.length >= 5) assert.ok(runs.P4.some((r) => r.byAway["wish:available"]), "P4 never flagged");
 });
 
+// Review r7-13: only run:/live: crossings and the first wish were ever noted; a purchase the
+// night pot paid for (P1's first Crane Loft at the day-3 open, BALANCE §4 M14) passed as live
+// progress. Every §4 row carries the count of seeds the sim flagged, and M14 bought at a day
+// open is flagged (BALANCE §4: the bank before the pot is a third of its cost).
+test("every §4 row reached by a night pot is noted, buy: rows included (M14 at the day-3 open)", () => {
+  const DAY = 8 * 3600;
+  for (const m of bal.milestones) {
+    const row = ev.rows.find((x) => x.section === "§4" && x.id === m.id);
+    const n = runs.P1.filter((r) => r.byAway[m.key] === true).length;
+    assert.equal(row.byAway, n, `§4 ${m.id}`);
+    if (n) assert.match(row.note, new RegExp(`reached by a night pot on ${n} of ${runs.P1.length} seeds`), `§4 ${m.id}`);
+    else assert.equal(row.note, undefined, `§4 ${m.id}`);
+  }
+  for (const r of runs.P1) {
+    // a spawn runs on active time only (BALANCE §1); no pot brings it
+    assert.notEqual(r.byAway["spawn:crane#1"], true, `seed ${r.seed}`);
+    const t = r.milestones["buy:crane-loft"];
+    if (t % DAY === 0) assert.equal(r.byAway["buy:crane-loft"], true, `seed ${r.seed}: Crane Loft at ${fmtClock(t)} not noted`);
+  }
+  const m14 = ev.rows.find((x) => x.section === "§4" && x.id === "M14");
+  assert.ok(m14.byAway > 0, "M14 never noted");
+});
+
+// Review r7-14: §6.2 looked at seed 1 only, so P3's day-1 floor passed at 5.09 % while seeds
+// 16 and 17 sat under it. Every seed is checked now; the row fails if any seed is below.
+test("§6.2 click-share floors hold on every seed, not only seed 1", () => {
+  for (const b of bal.dayShares) {
+    const row = ev.rows.find((x) => x.section === "§6.2" && x.id === b.id);
+    const below = [];
+    for (const r of runs[b.id]) {
+      for (let i = 0; i < 3; i++) {
+        const d = r.dayShares[i];
+        if (d && !(d.click >= b.mins[i])) below.push(`day ${i + 1} seed ${r.seed} ${(d.click * 100).toFixed(2)} %`);
+      }
+    }
+    assert.equal(row.pass, below.length === 0, `§6.2 ${b.id}: ${below.join(", ")}`);
+    for (let i = 0; i < 3; i++) {
+      const vals = runs[b.id].map((r) => (r.dayShares[i] ? r.dayShares[i].click : null)).filter((v) => v !== null);
+      assert.equal(row.days[i].min, vals.length ? Math.min(...vals) : null, `§6.2 ${b.id} day ${i + 1}`);
+    }
+  }
+});
+
 const show = (r) => {
   if (r.unit === "text") return r.note;
   const f = r.unit === "pct" ? (x) => `${(x * 100).toFixed(1)} %` : r.unit === "clock" || r.unit === "M15+" ? fmtClock : String;

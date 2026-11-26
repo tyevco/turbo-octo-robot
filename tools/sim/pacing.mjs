@@ -318,6 +318,37 @@ class Win {
 // ---------------------------------------------------------------------------
 
 /**
+ * Night-pot attribution for purchases (BALANCE §4, review r7-13). `ev` is one apply/advance
+ * call's events, `bankAfter` the bank when it returned, `potLeft` the away credit still sitting
+ * in the bank before it. Away credit is taken as spent last: a purchase counts as paid by a night
+ * pot when its cost is more than the bank held without the pot money still in it. Returns the new
+ * `potLeft` and, per event index, whether that `buy` needed the pot. The bank before each event is
+ * rebuilt backwards from `bankAfter` (a buy took its cost, an earn added its amount).
+ */
+export function potAttribution(ev, bankAfter, potLeft) {
+  const before = new Array(ev.length);
+  let b = bankAfter;
+  for (let i = ev.length - 1; i >= 0; i--) {
+    const e = ev[i];
+    if (e.kind === "buy") b += e.cost;
+    else if (e.kind === "earn") b -= e.amount;
+    before[i] = b;
+  }
+  const byPot = new Array(ev.length).fill(false);
+  let left = potLeft;
+  for (let i = 0; i < ev.length; i++) {
+    const e = ev[i];
+    if (e.kind === "earn" && e.source === "away") left += e.amount;
+    else if (e.kind === "buy") {
+      byPot[i] = left > 0 && e.cost > before[i] - left;
+      left = Math.min(left, before[i] - e.cost);
+    }
+    left = Math.max(0, left);
+  }
+  return { potLeft: Math.max(0, Math.min(left, bankAfter)), byPot };
+}
+
+/**
  * Run one profile with one seed. opts:
  *   idleStep (s, default 10, ≤ 60), stopAt ("wish" | "wish2"; default "wish2" for P1 else "wish"),
  *   maxHours (play-clock cap, default 60), days (run exactly this many days, no stop),
@@ -373,28 +404,42 @@ export function runProfile(profileId, seed, opts = {}) {
   const primary = wins[0];
 
   // -- milestone tracking (single window; the two-window mode reports days only)
-  const hit = (key, p) => {
-    if (!(key in sim.milestones)) sim.milestones[key] = p;
+  // Every milestone goes through hit(); `away` says an away segment's credit (a night pot) carried
+  // it there, and is kept in sim.byAway for the "reached by a night pot" note (BALANCE §4, every
+  // §4 and §5 row: review r7-13, buy: rows were never flagged before).
+  const hit = (key, p, away) => {
+    if (key in sim.milestones) return;
+    sim.milestones[key] = p;
+    if (away) sim.byAway[key] = true;
   };
   let last = { p: 0, run: 0, live: 0, life: 0, wishCount: 0 };
   let awayNow = false; // the events being tracked credit an away segment (a night pot)
+  let potLeft = 0; // away credit still in the bank (spent last; potAttribution)
   const cross = (key, target, prevV, v, p0, p1, continuous) => {
     if (key in sim.milestones || !(prevV < target && v >= target)) return;
-    hit(key, continuous && p1 > p0 ? p0 + (p1 - p0) * (target - prevV) / (v - prevV) : p1);
-    if (awayNow) sim.byAway[key] = true;
+    hit(key, continuous && p1 > p0 ? p0 + (p1 - p0) * (target - prevV) / (v - prevV) : p1, awayNow);
   };
   sim.onEvents = (win, ev, wall, continuous) => {
     if (win !== primary || sim.multi) return;
     const s = win.state;
     const p = sim.p / 1000;
     if (opts.trace) for (const e of ev) opts.trace(p, e, s);
-    for (const e of ev) {
+    awayNow = ev.some((e) => e.kind === "away" || (e.kind === "earn" && e.source === "away"));
+    // a purchase the bank could pay only with a night pot's money (review r7-13: P1 buys its
+    // first Crane Loft at the day-3 open from the pot on every seed)
+    const pot = potAttribution(ev, s.bank, potLeft);
+    potLeft = pot.potLeft;
+    // workshops owned after each buy of this call (the state holds them all at the end)
+    let owned = 0;
+    for (const id in s.owned) owned += s.owned[id];
+    for (const e of ev) if (e.kind === "buy" && e.item in s.owned) owned -= e.count;
+    ev.forEach((e, i) => {
       if (e.kind === "buy") {
-        hit(`buy:${e.item}`, p);
+        hit(`buy:${e.item}`, p, pot.byPot[i]);
         if (e.by !== "player") sim.purchases.push({ item: e.item, p, active: sim.sessionSec, by: "auto", payback: null, run: s.wishCount });
-        let n = 0;
-        for (const id in s.owned) n += s.owned[id];
-        if (n >= 10) hit("own:workshops>=10", p);
+        if (e.item in s.owned) owned += e.count;
+        if (owned >= 10) hit("own:workshops>=10", p, pot.byPot[i]);
+        // spawn clocks run on active time only (BALANCE §1), so no night pot brings a spawn
       } else if (e.kind === "spawn" && e.what === "crane" && e.n === 1) {
         hit("spawn:crane#1", p);
         const c = s.spawn.crane;
@@ -405,12 +450,11 @@ export function runProfile(profileId, seed, opts = {}) {
       } else if (e.kind === "away") {
         sim.nights.push({ p, seconds: e.seconds, credited: e.credited, capped: e.capped });
       }
-    }
+    });
     const p0 = last.p;
     // live income this run: the run's folds without away credit (BALANCE §4 M13, review r5-21:
     // the run total passed 1 B only through the night pot collected at the day-3 open)
     const live = s.runFolds - (s.stats.runBySource.away || 0);
-    awayNow = ev.some((e) => e.kind === "away" || (e.kind === "earn" && e.source === "away"));
     if (s.wishCount === last.wishCount) {
       cross("run:1e6", 1e6, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
       cross("run:1e8", 1e8, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
@@ -422,17 +466,16 @@ export function runProfile(profileId, seed, opts = {}) {
       if (info.can) {
         const target = engine.lifetimeFor(engine.CONTENT.PRESTIGE.firstCranes);
         cross("wish:available", target, last.life, s.lifetime, p0, p, continuous);
-        hit("wish:available", p);
         // review r6-12: the first wish became available in a step that credited a night pot
         // (cross() may not fire when the crane count, not L, was the last gate to open)
-        if (awayNow) sim.byAway["wish:available"] = true;
+        hit("wish:available", p, awayNow);
         sim.m15Gain = info.gain;
         sim.shares = { ...s.stats.runBySource };
         sim.daySnaps.push({ p: sim.milestones["wish:available"], src: { ...s.stats.runBySource }, m15: true });
       }
     }
+    if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) hit("wish2:available", p, awayNow);
     awayNow = false;
-    if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) hit("wish2:available", p);
     last = { p, run: s.runFolds, live, life: s.lifetime, wishCount: s.wishCount };
   };
 
@@ -792,18 +835,30 @@ export function evaluate(runs, bal = parseBalance()) {
         window: row.window, pass: inWin(v, row.window), note: `all-seed median ${(median(all) * 100).toFixed(1)} %` });
     }
   }
-  // §6.2 click share per day (seed 1)
+  // §6.2 click share per day, every seed (review r7-14: seed 1 alone passed P3's day-1 floor
+  // at 5.09 % while seeds 16 and 17 sat at 4.97 % and 4.95 %); the row reports seed 1 and the
+  // all-seed minimum with its seed
   for (const row of bal.dayShares) {
     const rs = runs[row.id];
     if (!rs) continue;
     const s1 = rs.find((r) => r.seed === 1) || rs[0];
-    const vals = [0, 1, 2].map((i) => (s1.dayShares[i] ? s1.dayShares[i].click : null));
-    let ok = true;
-    vals.forEach((v, i) => {
-      if (v !== null && !(v >= row.mins[i])) ok = false;
+    const pct = (v) => (v === null ? "—" : (v * 100).toFixed(2) + " %");
+    const days = [0, 1, 2].map((i) => {
+      let min = null;
+      let seed = null;
+      const bad = [];
+      for (const r of rs) {
+        const v = r.dayShares[i] ? r.dayShares[i].click : null;
+        if (v === null) continue;
+        if (min === null || v < min) { min = v; seed = r.seed; }
+        if (!(v >= row.mins[i])) bad.push(r.seed);
+      }
+      return { seed1: s1.dayShares[i] ? s1.dayShares[i].click : null, min, seed, bad };
     });
-    add({ section: "§6.2", id: row.id, what: `click share of live income, days 1-3 ≥ ${row.mins.map((x) => x * 100 + " %").join(" / ")}`, unit: "text",
-      note: vals.map((v) => (v === null ? "—" : (v * 100).toFixed(1) + " %")).join(" / "), pass: ok });
+    const bad = days.flatMap((d, i) => d.bad.map((sd) => `day ${i + 1} seed ${sd}`));
+    add({ section: "§6.2", id: row.id, what: `click share of live income, days 1-3 ≥ ${row.mins.map((x) => x * 100 + " %").join(" / ")} on every seed`, unit: "text",
+      note: `seed 1 ${days.map((d) => pct(d.seed1)).join(" / ")}; all-seed min ${days.map((d) => (d.min === null ? "—" : `${pct(d.min)} (seed ${d.seed})`)).join(" / ")}${bad.length ? "; below: " + bad.join(", ") : ""}`,
+      pass: bad.length === 0, days, mins: row.mins });
   }
   // §6.3 sessions
   {

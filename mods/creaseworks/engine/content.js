@@ -110,10 +110,11 @@ export const NAME_B = f(["na", "to", "b", "ki", "ri", "mo", "sa", "ku", "ro", "n
 // this list, so a remap can never land on a listed pair.
 export const NAME_SKIP = f([
   "Feto", "Haku", "Han", "Haro", "Kaki", "Kali", "Kapo", "Kato", "Kon", "Koro", "Loki",
-  "Loli", "Misa", "Miku", "Mob", "Momo", "Mona", "Moro", "Nob", "Pipo", "Pito", "Riku",
-  "Rin", "Rito", "Sub", "Suki", "Taki", "Tali", "Yuna", "Yuri", "Zemo", "Zero",
+  "Loli", "Misa", "Miku", "Mob", "Momo", "Mona", "Moro", "Nob", "Pipo", "Pito", "Riki",
+  "Riku", "Rin", "Rito", "Sub", "Suki", "Taki", "Tali", "Yuna", "Yuri", "Zemo", "Zeri",
+  "Zero",
 ]);
-// The 192 helper names (160 distinct), index (h >>> 8) % 16 · 12 + (h >>> 12) % 12:
+// The 192 helper names (158 distinct), index (h >>> 8) % 16 · 12 + (h >>> 12) % 12:
 // NAME_A × NAME_B with NAME_SKIP remapped (a literal, so module scope holds
 // data only; a test rebuilds it from the three tables above).
 export const NAMES = f([
@@ -123,7 +124,7 @@ export const NAMES = f([
   "Tana", "Tato", "Tab", "Tari", "Tari", "Tamo", "Tasa", "Taku", "Taro", "Tan", "Tapo", "Tapo",
   "Suna", "Suto", "Suri", "Suri", "Suri", "Sumo", "Susa", "Suku", "Suro", "Sun", "Suli", "Supo",
   "Nona", "Noto", "Noki", "Noki", "Nori", "Nomo", "Nosa", "Noku", "Noro", "Non", "Noli", "Nopo",
-  "Rina", "Rib", "Rib", "Riki", "Riri", "Rimo", "Risa", "Riro", "Riro", "Rili", "Rili", "Ripo",
+  "Rina", "Rib", "Rib", "Riri", "Riri", "Rimo", "Risa", "Riro", "Riro", "Rili", "Rili", "Ripo",
   "Hana", "Hato", "Hab", "Haki", "Hari", "Hamo", "Hasa", "Hali", "Hali", "Hali", "Hali", "Hapo",
   "Yuto", "Yuto", "Yub", "Yuki", "Yumo", "Yumo", "Yusa", "Yuku", "Yuro", "Yun", "Yuli", "Yupo",
   "Fena", "Feb", "Feb", "Feki", "Feri", "Femo", "Fesa", "Feku", "Fero", "Fen", "Feli", "Fepo",
@@ -131,7 +132,7 @@ export const NAMES = f([
   "Bina", "Bito", "Bib", "Biki", "Biri", "Bimo", "Bisa", "Biku", "Biro", "Bin", "Bili", "Bipo",
   "Kana", "Kab", "Kab", "Kari", "Kari", "Kamo", "Kasa", "Kaku", "Karo", "Kan", "Moto", "Moto",
   "Moto", "Moto", "Moki", "Moki", "Mori", "Mosa", "Mosa", "Moku", "Mon", "Mon", "Moli", "Mopo",
-  "Zena", "Zeto", "Zeb", "Zeki", "Zeri", "Zesa", "Zesa", "Zeku", "Zen", "Zen", "Zeli", "Zepo",
+  "Zena", "Zeto", "Zeb", "Zeki", "Zesa", "Zesa", "Zesa", "Zeku", "Zen", "Zen", "Zeli", "Zepo",
   "Wuna", "Wuto", "Wub", "Wuki", "Wuri", "Wumo", "Wusa", "Wuku", "Wuro", "Wun", "Wuli", "Wupo",
 ]);
 

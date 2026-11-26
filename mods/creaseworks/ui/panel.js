@@ -3,8 +3,10 @@
 // with a notice), the mat (§3.2), boost bar 26, tabs 32, the active tab's
 // content (flex_1, min_h 0, overflow_y_scrollbar) and footer 22, on T.chrome
 // with 1 px T.border dividers. Below 200 px wide (folded, or unfolded in a
-// window that leaves it too little room) the panel is the rail (§3.9, §2.4). The away card (§3.7) is the last child, an absolute overlay over the
-// mat, so it paints above everything else; it never blocks the tabs.
+// window that leaves it too little room) the panel is the rail (§3.9, §2.4).
+// The away card (§3.7) is the last child, an absolute overlay over the mat,
+// so it paints above everything else; it never blocks the tabs: `awaySlot`
+// keeps it inside the mat and the boost bar (review r7-11).
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -14,7 +16,7 @@ import { icon, spritePath, sprite, statusGlyphPath } from "./art.js";
 import { countdownBar, iconButton, text, hoverOn } from "./widgets.js";
 import { renderMat, matGeometry, isCalm } from "./mat.js";
 import { renderBanner, bannerLayout, saveProblem } from "./banner.js";
-import { renderAway } from "./away.js";
+import { renderAway, awayFit, awayWidth } from "./away.js";
 import { renderRail } from "./rail.js";
 import { flockParts } from "./flock.js";
 import { renderShop } from "./shop.js";
@@ -24,8 +26,12 @@ import { renderSettings } from "./settings.js";
 /** Grapheme limits for every string this module draws (tested). */
 export const PANEL_CLIP = Object.freeze({ folds: 10, rate: 12, count: 5, wishes: 6, boost: 22, footer: 60, tab: 12, glow: 24 });
 
-/** Fixed heights of the frame (DESIGN §3.1). */
-export const FRAME = Object.freeze({ header: 44, matTop: 4, boost: 26, tabs: 32, footer: 22, awayTop: 36 });
+/**
+ * Fixed heights of the frame (DESIGN §3.1). The away card sits at mat y
+ * `awayTop` when it fits, else higher (to mat y `awayMinTop`), and its bottom
+ * stays `awayGap` px above the tabs.
+ */
+export const FRAME = Object.freeze({ header: 44, matTop: 4, boost: 26, tabs: 32, footer: 22, awayTop: 36, awayMinTop: 4, awayGap: 4 });
 
 /** Below this width the panel copy draws the rail (§2.4). */
 export const RAIL_BELOW = 140;
@@ -249,6 +255,27 @@ function footer(vm, ctx) {
   return row;
 }
 
+/**
+ * Where the away card goes (panel px) and how tall it may be (r7-11): the
+ * tabs' top is header + banner + mat top + mat + boost bar; the card's bottom
+ * stays `awayGap` above it, its top no higher than mat y `awayMinTop`, at mat
+ * y `awayTop` (36; less on a low mat) when the card fits there.
+ * → { top, maxH, tabsTop, fit } (fit: away.js `awayFit`).
+ */
+export function awaySlot(vm, ui, ctx) {
+  const lay = bannerLayout(vm, ui, ctx);
+  const g = matGeometry(vm, ctx);
+  const matY = FRAME.header + (lay ? lay.total : 0) + FRAME.matTop;
+  const tabsTop = matY + g.h + FRAME.boost;
+  const bottom = tabsTop - FRAME.awayGap;
+  const minTop = matY + FRAME.awayMinTop;
+  const maxH = Math.max(0, bottom - minTop);
+  const fit = awayFit(vm.away, awayWidth(ctx.width), maxH);
+  const pref = matY + Math.min(FRAME.awayTop, Math.max(0, g.h - 140));
+  const top = Math.round(Math.max(minTop, Math.min(pref, bottom - fit.height)));
+  return { top, maxH: bottom - top, tabsTop, fit };
+}
+
 /** The whole panel copy (or the rail below FULL_BELOW px). Pure (B11). */
 export function renderPanel(vm, ui, ctx) {
   const width = num(ctx.width, 320);
@@ -274,12 +301,10 @@ export function renderPanel(vm, ui, ctx) {
     root.child(div().id("cw-content").flex_1().min_h(0).w_full().overflow_y_scrollbar().child(content));
   }
   root.child(footer(vm, ctx));
-  const away = renderAway(vm, ui, ctx);
-  if (away) {
-    const lay = bannerLayout(vm, ui, ctx);
-    const g = matGeometry(vm, ctx);
-    const top = FRAME.header + (lay ? lay.total : 0) + FRAME.matTop + Math.min(FRAME.awayTop, Math.max(0, g.h - 140));
-    root.child(div().id("cw-away-slot").absolute().left(8).top(top).child(away));
+  if (vm.away && typeof vm.away === "object") {
+    const slot = awaySlot(vm, ui, ctx);
+    const away = renderAway(vm, ui, ctx, { maxH: slot.maxH });
+    if (away) root.child(div().id("cw-away-slot").absolute().left(8).top(slot.top).child(away));
   }
   return root;
 }

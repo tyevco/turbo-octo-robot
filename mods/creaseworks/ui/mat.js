@@ -29,12 +29,18 @@ const STD = Object.freeze({ h: 232, sheet: 112, sx: 96, sy: 58 });
 const SHORT = Object.freeze({ h: 184, sheet: 96, sx: 104, sy: 42 });
 const TOP_BAND = 28;
 const BOTTOM_BAND = 32;
+/** The mat's bands (tested): the top band, the bottom band (tray and streak meter) and the 4 px edge strip inside it. */
+export const MAT_BANDS = Object.freeze({ top: TOP_BAND, bottom: BOTTOM_BAND, edge: 4 });
 const HALF_HIT = 14;
 const CRANE = Object.freeze({ w: 48, h: 36 });
 /** The Paper Boat's hit box: 48 × 30 (the 40 × 28 art at top 1) in its own lane above the bottom band. */
 const BOAT = Object.freeze({ w: 48, h: 30, x0: 8, x1: 248 });
 const ENV_TYPES = Object.freeze(["bundle", "rush", "storm", "chorus"]);
-/** Confetti's two cool flecks: the light identity hues coral and sky (the mat is dark green in both appearances). */
+/**
+ * Confetti's coral and sky flecks: the light-valued identity hues (HUE_DARK,
+ * the set made for dark grounds), since the mat is dark green in both
+ * appearances (review r7-12 notes: "light" means light in value).
+ */
 const CONFETTI_HUES = Object.freeze({ coral: HUE_DARK[0], sky: HUE_DARK[4] });
 const HINT_TEXT = "Click the paper to fold it";
 const CRANE_HINT = "A gilded crane! Click it before it flies off.";
@@ -147,25 +153,30 @@ function background(g, S, calm, zoom, storm) {
   return out.filter(Boolean);
 }
 
-/** One confetti fleck's corners: a 6 × 2.5 px strip turned to one of four angles. */
-const FLECK = Object.freeze({ w: 6, h: 2.5, cellW: 34, cellH: 30, angles: Object.freeze([0.35, 1.2, -0.45, 2.1]) });
+/** One confetti fleck's corners: a 6 × 2.5 px strip turned to one of four angles (reach: the half diagonal, 3.25 px). */
+const FLECK = Object.freeze({ w: 6, h: 2.5, reach: 3.25, cellW: 34, cellH: 30, angles: Object.freeze([0.35, 1.2, -0.45, 2.1]) });
 
 /**
  * The confetti flecks (DESIGN §3.2 item 2): `{ hue: k, pts: [[x, y]...] }` in
  * mat px, one per 34 × 30 cell on a staggered grid, jittered and turned by a
  * fixed integer hash of the cell (no randomness: every frame draws the same
- * flecks), each in one of four hues.
+ * flecks), each in one of four hues. Every fleck lies whole inside the mat
+ * and above the bottom band, so none sits under the streak meter's "×N"
+ * label, the tray or the 4 px edge strip (review r7-12: a fleck at h - 5
+ * touched the label's digits and reached into the edge).
  */
 export function confettiFlecks(w, h) {
   const out = [];
-  const rows = Math.ceil(h / FLECK.cellH);
+  const floor = h - BOTTOM_BAND;
+  const rows = Math.ceil(floor / FLECK.cellH);
   const cols = Math.ceil(w / FLECK.cellW) + 1;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const k = (Math.imul(r * 131 + c * 197 + 7, 0x9e3779b1) >>> 0);
       const cx = c * FLECK.cellW + (r % 2) * (FLECK.cellW / 2) + ((k % 17) - 8);
       const cy = r * FLECK.cellH + FLECK.cellH / 2 + (((k >>> 5) % 15) - 7);
-      if (cx < 4 || cx > w - 4 || cy < 4 || cy > h - 4) continue; // whole flecks only (half diagonal 3.25)
+      // whole flecks only, clear of the mat's sides and of the bottom band
+      if (cx - FLECK.reach < 0 || cx + FLECK.reach > w || cy - FLECK.reach < 0 || cy + FLECK.reach > floor) continue;
       const a = FLECK.angles[(k >>> 9) % 4];
       const ux = Math.cos(a) * FLECK.w / 2;
       const uy = Math.sin(a) * FLECK.w / 2;

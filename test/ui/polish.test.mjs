@@ -20,7 +20,7 @@ import { graphemes } from "../../mods/creaseworks/engine/index.js";
 import { FREE_SLOTS, PERKS, AUTOMATIONS } from "../../mods/creaseworks/engine/content.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
 import { slotPos } from "../../mods/creaseworks/engine/view.js";
-import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks } from "../../mods/creaseworks/ui/mat.js";
+import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks, MAT_BANDS } from "../../mods/creaseworks/ui/mat.js";
 import { renderShop, rowText, rowTextWidth, SHOP_CLIP } from "../../mods/creaseworks/ui/shop.js";
 import { renderString } from "../../mods/creaseworks/ui/string.js";
 
@@ -476,3 +476,52 @@ test("r6-09: Confetti looks like confetti: multi-hue flecks on the mat (no storm
 function close1(a, b) {
   assert.ok(Math.abs(a - b) < 0.11, `${a} ≈ ${b}`);
 }
+
+// ---------------------------------------------------------------------------
+// r7-12
+
+test("r7-12: no confetti fleck reaches the bottom band (the streak meter's ×N label, the tray, the 4 px edge strip)", () => {
+  assert.deepEqual([MAT_BANDS.bottom, MAT_BANDS.edge], [32, 4]);
+  // every mat size the panel, the narrow panel, the short mat and a wide pane draw
+  for (const width of [200, 240, 279, 280, 320, 399, 400, 636]) {
+    for (const short of [false, true]) {
+      const g = matGeometry({ sheet: { short } }, { width });
+      const floor = g.h - MAT_BANDS.bottom;
+      const a = confettiFlecks(g.w, g.h);
+      assert.ok(a.length >= (g.w * floor) / 2000, `${g.w}×${g.h}: still confetti (${a.length} flecks)`);
+      for (const f of a) {
+        for (const [x, y] of f.pts) {
+          assert.ok(x >= 0 && x <= g.w && y >= 0, `${g.w}×${g.h}: [${x}, ${y}] inside the mat`);
+          assert.ok(y <= floor, `${g.w}×${g.h}: [${x}, ${y}] stays above the bottom band (y ${floor})`);
+        }
+      }
+    }
+  }
+  // the drawn paths too, against the band's own top (percent coordinates)
+  const s = seeded(11);
+  s.ui.hints.fold = true;
+  s.stats.hits = 10;
+  s.boosts.storm = 12000;
+  s.boosts.stormEnd = T0 + 12000;
+  for (const [width, short] of [[320, false], [320, true], [240, false]]) {
+    const vm = engine.view(s, T0, { role: "panel", width });
+    vm.sheet = { ...vm.sheet, short };
+    const g = matGeometry(vm, { width });
+    const json = renderMat(vm, { tab: "flock" }, makeCtx({ width })).toJSON();
+    const band = json.children.find((c) => c && c.id === "cw-mat-bottom");
+    const bandTop = styleVal(band, "top");
+    assert.equal(bandTop, g.h - MAT_BANDS.bottom);
+    const box = json.children.find((c) => c && c.id === "cw-storm");
+    assert.ok(box, `${width}${short ? " short" : ""}: confetti is drawn`);
+    let n = 0;
+    for (const p of box.children.filter((c) => c && c.kind === "path")) {
+      for (const cmd of p.args[0].commands) {
+        if (cmd[0] !== "move_to" && cmd[0] !== "line_to") continue;
+        const y = (parseFloat(cmd[2]) / 100) * g.h;
+        assert.ok(y <= bandTop + 0.25, `${width}${short ? " short" : ""}: fleck corner y ${y.toFixed(2)} clear of the band at ${bandTop}`);
+        n++;
+      }
+    }
+    assert.ok(n > 0);
+  }
+});

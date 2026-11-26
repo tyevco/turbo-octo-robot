@@ -4,7 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as engine from "../../mods/creaseworks/engine/index.js";
-import { PROFILES, PROFILE_IDS, activeFrac, parseBalance, parseWindow, parseClock, fmtClock } from "../../tools/sim/profiles.mjs";
+import { readFileSync } from "node:fs";
+import { PROFILES, PROFILE_IDS, activeFrac, parseBalance, parseWindow, parseClock, fmtClock, section } from "../../tools/sim/profiles.mjs";
 import { SHARE_BUCKETS } from "../../tools/sim/pacing.mjs";
 
 const bal = parseBalance();
@@ -117,6 +118,11 @@ test("§6 shares: the four buckets cover every income source the engine credits,
   const rowed = new Set(bal.dayShares.map((r) => r.id));
   for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P13"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
   assert.deepEqual(bal.dayShares.find((r) => r.id === "P9").mins, [0.008, 0.008, 0.03]);
+  // review r7-14: the floors hold on every seed (the sim checks them all), so P3 has its own
+  // day-1 floor, under its all-seed minimum; the others keep the 5 / 10 / 12 % bar
+  assert.match(section(readFileSync(new URL("../../docs/BALANCE.md", import.meta.url), "utf8"), "6.2").split("\n")[0], /every seed/);
+  assert.deepEqual(bal.dayShares.find((r) => r.id === "P3").mins, [0.045, 0.1, 0.12]);
+  for (const id of ["P4", "P5", "P7", "P8", "P10", "P11"]) assert.deepEqual(bal.dayShares.find((r) => r.id === id).mins, [0.05, 0.1, 0.12], id);
   assert.ok(bal.sessions.p1Min > bal.sessions.handsMin);
 });
 

@@ -13,11 +13,12 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { clip } from "../engine/index.js";
+import { clip, clipCells } from "../engine/index.js";
 import { statusColor } from "./color.js";
 import { icon } from "./art.js";
 import { button, checkbox, divider, radioGroup, settingRow, text, toggle } from "./widgets.js";
-import { middleClip } from "./banner.js";
+import { backupTip, middleClip, middleClipCells } from "./banner.js";
+import { cellsFor } from "./flock.js";
 import { isArmed, ARM_MS } from "./string.js";
 
 /** Grapheme limits for every string this module draws (tested). */
@@ -110,6 +111,12 @@ function confirmCard(id, title, body, yes, onYes, ui, ctx) {
     );
 }
 
+/** The Save rows' text width in px: the panel's 8 px sides and a scrollbar's 8 px. */
+export function saveRowPx(ctx) {
+  const width = ctx && typeof ctx.width === "number" && ctx.width > 0 ? ctx.width : 320;
+  return Math.max(80, width - 16 - 8);
+}
+
 function saveSection(vm, ui, ctx) {
   const T = ctx.T;
   const save = (ctx && ctx.save) || {};
@@ -127,13 +134,30 @@ function saveSection(vm, ui, ctx) {
   const parts = [str(save.text) || (save.state === "saving" ? "Saving…" : save.state === "problem" ? "Save problem: see the banner" : "Saved")];
   if (typeof save.backup === "string" && save.backup) parts.push(`backup ${save.backup}`);
   else if (save.backup === false || save.backup === null) parts.push("no backup yet");
-  const status = h_flex().gap(6).min_w(0);
-  if (save.state === "problem") status.child(icon("warn", 12, statusColor(T, "blocked", "chrome")));
-  status.child(text(clip(parts.join(" · "), SETTINGS_CLIP.line), { size: 11, color: T.muted, truncate: true }, T));
+  // Rows are cut to the box's cell budget here, so gpui's own truncation
+  // (by code point: it can cut inside an emoji) never runs (r7-04).
+  const rowPx = saveRowPx(ctx);
+  const cells = cellsFor(rowPx, 11);
+  const why = str(save.backupWhy);
+  const where = str(save.backupPath);
+  const full = parts.join(" · ");
+  const tip = backupTip(full, why, where, 140);
+  const status = h_flex().id("cw-set-save-status").gap(6).min_w(0).tooltip(tip);
+  const warn = save.state === "problem";
+  if (warn) status.child(icon("warn", 12, statusColor(T, "blocked", "chrome")));
+  status.child(text(clipCells(clip(full, SETTINGS_CLIP.line), warn ? cellsFor(rowPx - 18, 11) : cells), { size: 11, color: T.muted, truncate: true }, T));
   box.child(status);
+  if (why || where) {
+    // A backup that can't be read: its reason and where it is, each on a row of their own.
+    box.child(text(clipCells(clip(`Why: ${why || "not known"}`, SETTINGS_CLIP.line), cells), { size: 11, color: T.muted, truncate: true, id: "cw-set-save-bak-why" }, T).tooltip(tip));
+    if (where) {
+      box.child(text(`At: ${middleClipCells(middleClip(where, SETTINGS_CLIP.path), cells - 4)}`, { size: 11, color: T.muted, truncate: true, id: "cw-set-save-bak-path" }, T).tooltip(tip));
+    }
+  }
   const damaged = Array.isArray(save.damaged) ? save.damaged.filter((d) => typeof d === "string") : [];
   if (damaged.length) {
-    box.child(text(clip(`Damaged copies kept: ${damaged.join(", ")}`, SETTINGS_CLIP.damaged), { size: 11, color: T.muted, truncate: true }, T));
+    const all = `Damaged copies kept: ${damaged.join(", ")}`;
+    box.child(text(clipCells(clip(all, SETTINGS_CLIP.damaged), cells), { size: 11, color: T.muted, truncate: true, id: "cw-set-save-damaged" }, T).tooltip(clip(all, 140)));
   }
   const restoring = ui && ui.confirm === "restore";
   box.child(

@@ -483,6 +483,11 @@ test("inv. 7 (R13, r5-07): 130 agents with 4 sub-agents each over a full Album: 
   ctx.diagnostic(`peak Album ${(peak / 1024).toFixed(0)} KiB; with 650 present: ${sizes.map((x) => (x / 1024).toFixed(0)).join(", ")} KiB`);
   // nobody was dropped: the archives hold the older Album helpers, still counted
   assert.equal(counted(), before + roster.length);
+  // and the Album header counts every helper who has left: every record's helpers
+  // and folded fledglings, less the present ones (r7-09: fledglings folded into a
+  // present parent are counted too)
+  const albumCount = () => engine.view(s, t, { role: "panel", width: 320, album: false }).helpers.albumCount;
+  assert.equal(albumCount(), counted() - Object.values(s.helpers).filter((h) => !h.gone).length);
   assert.equal(Object.values(s.helpers).filter((h) => !h.gone).length, roster.length);
   assert.ok(Object.values(s.helpers).some((h) => h.archive > 0));
   // the roster leaves (whole Album records, then compacted): still bounded and counted
@@ -492,6 +497,7 @@ test("inv. 7 (R13, r5-07): 130 agents with 4 sub-agents each over a full Album: 
   assert.ok(Buffer.byteLength(text, "utf8") < MiB);
   assert.ok(saveBytes(s) <= K.saveBudget);
   assert.equal(counted(), before + roster.length);
+  assert.equal(albumCount(), counted());
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
   assert.equal(engine.serialize(back.state), text);

@@ -175,6 +175,81 @@ test("r6-02: a claim confirmed after the window went away is sent once it is act
   assert.equal(notifier.check(A, t + 20 * 60000 + 2000, here, () => {}), null, "sent once");
 });
 
+// r7-08: a held claim survives local midnight (claimed again under the new
+// day's slots, never dropped as "capped"), and is held while quiet too.
+function wishSlot(day, t, sent = 0) {
+  const base = engine.newGame({ seed: 4, now: t, day });
+  base.lifetime = 7e9;
+  base.settings.notify.master = true;
+  base.notify.day = day;
+  base.notify.sent = sent;
+  w.ctl.externalWrite(SAVE, engine.serialize(base));
+  return writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+}
+
+test("r7-08: a wish notice held while away past local midnight is sent the next day, on that day's slots", async () => {
+  w = win();
+  const t = Date.now();
+  const day1 = "2026-01-01";
+  const day2 = "2026-01-02";
+  const A = wishSlot(day1, t);
+  const here = (day) => ({ day, quiet: false, away: false, layout: { known: false } });
+  let saves = 0;
+  const save = () => saves++;
+  assert.equal(notifier.check(A, t, here(day1), save), "claimed");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  assert.equal(notifier.check(A, t + 1000, { ...here(day1), away: true }, save), null, "held while away");
+  // Back after midnight: claimed again under day 2, not dropped.
+  assert.equal(notifier.check(A, t + 2000, here(day2), save), "claimed", "claimed again on the new day");
+  assert.equal(w.ctl.notifications.length, 0, "not before that claim is saved");
+  assert.equal(A.notify.claim.day, day2);
+  assert.ok(saves >= 2, "the new claim asks for a save");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  assert.equal(notifier.check(A, t + 3000, here(day2), save), "sent");
+  assert.equal(w.ctl.notifications.length, 1);
+  assert.equal(w.ctl.notifications[0].notification.title, "Your string is full");
+  assert.equal(notifier.sentOn(A.state, day2), 1, "counted on the day it was sent");
+  assert.equal(notifier.check(A, t + 4000, here(day2), save), null, "once");
+  assert.equal(parsed(w.ctl).state.notify.day, day2);
+});
+
+test("r7-08: a held claim waits for a day with a free slot, and is dropped only when no longer wanted", async () => {
+  w = win();
+  const t = Date.now();
+  const day1 = "2026-01-01";
+  const A = wishSlot(day1, t);
+  const here = (day) => ({ day, quiet: false, away: false, layout: { known: false } });
+  assert.equal(notifier.check(A, t, here(day1), () => {}), "claimed");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  // Day 2 is already full (another window used its three slots).
+  A.state.notify.day = "2026-01-02";
+  A.state.notify.sent = 3;
+  assert.equal(notifier.check(A, t + 1000, here("2026-01-02"), () => {}), null, "held: day 2 has no slot");
+  assert.ok(A.notify.claim, "still held");
+  assert.equal(notifier.check(A, t + 2000, here("2026-01-03"), () => {}), "claimed", "claimed on day 3");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  // The wish was made meanwhile: nothing stale is sent.
+  A.state.lifetime = 0;
+  assert.equal(engine.stringInfo(A.state).can, false);
+  assert.equal(notifier.check(A, t + 3000, here("2026-01-03"), () => {}), null);
+  assert.equal(A.notify.claim, null, "dropped: no longer wanted");
+  assert.equal(w.ctl.notifications.length, 0);
+});
+
+test("r7-08: a confirmed claim is held while the panel is shown in an active window", async () => {
+  w = win();
+  const t = Date.now();
+  const day = "2026-01-01";
+  const A = wishSlot(day, t);
+  const here = { day, quiet: false, away: false, layout: { known: false } };
+  assert.equal(notifier.check(A, t, here, () => {}), "claimed");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  assert.equal(notifier.check(A, t + 1000, { ...here, quiet: true }, () => {}), null, "quiet: held");
+  assert.equal(w.ctl.notifications.length, 0);
+  assert.equal(notifier.check(A, t + 2000, here, () => {}), "sent", "sent once the panel is folded");
+  assert.equal(w.ctl.notifications.length, 1);
+});
+
 test("a save problem lasting 5 min notifies once per episode; hidden ribbon and panel → ribbon shown once", async () => {
   const layout = { id: "root", children: [{ id: "cw-panel", hidden: true }, { id: "cw-ribbon", hidden: true }] };
   w = win({ layout });

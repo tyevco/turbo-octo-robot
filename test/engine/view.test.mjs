@@ -1047,12 +1047,63 @@ test("r5-16: gone fledglings are Album rows and counted; folded into a gone pare
   assert.deepEqual(h.album.map((r) => [r.helperId, r.folds]), [[pid, "1,120"]]);
 });
 
-test("r5-16: fledglings that fold into a present parent are part of it, not Album helpers", () => {
+// Review r7-09: a fledgling folded into a present parent has no Album row, but
+// it is still a helper who has left: the header counts it (it used to drop out,
+// so the count shrank as fledglings folded and jumped when the parent left),
+// and the parent's detail card says how many.
+test("r7-09: fledglings that fold into a present parent stay counted in the Album header, and its card says so", () => {
   const s = seeded();
   const me = writer(s, "wA");
   me.act(observeAction(T0, [agent(1, "working", 0), kid(2, 1, "working", 0)]));
   me.act(observeAction(T0 + 1000, [agent(1, "working", 0)]));
   assert.equal(v(s, T0 + 1000).helpers.albumCount, 1);
-  me.act(observeAction(T0 + 31 * 86400000, [agent(1, "working", 0)], { day: "2026-12-26" }));
-  assert.equal(v(s, T0 + 31 * 86400000).helpers.albumCount, 0);
+  let t = T0 + 31 * 86400000;
+  me.act(observeAction(t, [agent(1, "working", 0)], { day: "2026-12-26" }));
+  const pid = engine.helperId("t1", 1001);
+  assert.equal(s.helpers[pid].stats.kidsPast, 1);
+  let vm = v(s, t);
+  assert.equal(vm.helpers.albumCount, 1, "folded into its present parent: still counted");
+  assert.deepEqual(vm.helpers.album, [], "no row of its own");
+  assert.equal(v(s, t, { album: false }).helpers.albumCount, 1);
+  const card = () => v(s, t).helpers.groups.flatMap((g) => g.tiles).find((x) => x.helperId === pid).detail.line;
+  assert.match(card(), / · 1 fledgling left · /);
+  // the parent leaves: one more, never a jump
+  me.act(observeAction((t += 1000), []));
+  vm = v(s, t);
+  assert.equal(vm.helpers.albumCount, 2);
+  assert.equal(v(s, t, { album: false }).helpers.albumCount, 2);
+  // it returns: back to the one fledgling
+  me.act(observeAction((t += 1000), [agent(1, "working", 0)]));
+  assert.equal(v(s, t).helpers.albumCount, 1);
+  assert.equal(v(s, t, { album: false }).helpers.albumCount, 1);
+});
+
+test("r7-09: 250 short sub-agents of one long-lived agent: the Album count never shrinks, before or after 30 days", () => {
+  const s = seeded();
+  const me = writer(s, "wA");
+  const pid = engine.helperId("t1", 1001);
+  let t = T0;
+  const counts = (where, n) => {
+    const open = v(s, t).helpers;
+    assert.equal(open.albumCount, n, `${where}: open`);
+    assert.equal(v(s, t, { album: false }).helpers.albumCount, n, `${where}: folded`);
+    assert.equal(v(engine.cloneState(s), t, { album: false }).helpers.albumCount, n, `${where}: fresh`);
+    // every helper who has left: each gone record's own helpers (archive or 1) and
+    // its folded fledglings, and the fledglings folded into each present record
+    let sum = 0;
+    for (const h of Object.values(s.helpers)) sum += (h.gone ? (h.archive > 0 ? h.archive : 1) : 0) + (h.stats.kidsPast || 0);
+    assert.equal(sum, n, `${where}: the records hold them all`);
+  };
+  for (let i = 0; i < 250; i++) {
+    me.act(observeAction((t += 60000), [agent(1, "working", 0), kid(1000 + i, 1, "working", 0)]));
+    me.act(observeAction((t += 60000), [agent(1, "working", 0)]));
+    if (i % 50 === 49) counts(`after ${i + 1}`, i + 1);
+  }
+  assert.ok(s.helpers[pid].stats.kidsPast >= 50, "past K.kidAlbumKeep, fledglings fold into the present parent");
+  assert.match(v(s, t).helpers.groups.flatMap((g) => g.tiles).find((x) => x.helperId === pid).detail.line, / · 50 fledglings left · /);
+  me.act(observeAction((t += 32 * 86400000), [agent(1, "working", 0)], { day: "2026-12-27" }));
+  assert.equal(s.helpers[pid].stats.kidsPast, 250);
+  counts("32 days on", 250);
+  me.act(observeAction((t += 1000), []));
+  counts("the parent leaves", 251);
 });

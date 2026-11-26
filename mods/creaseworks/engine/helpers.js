@@ -710,8 +710,8 @@ export function observe(state, ctx, action, t, ev) {
  * plain id, unless that id is held by a different terminal (an earlier entry of
  * this list, a present helper with another address or created_ms, or an Album
  * record whose `key` is another terminal's, r3-18), when it takes the first
- * free salted id. A returning terminal whose plain id belongs to a gone record
- * first looks for its own salted Album record (`salt`, `key`). The
+ * free salted id. A returning terminal first looks for its own salted Album
+ * record (`salt`, `key`), whoever holds its plain id or none (r7-10). The
  * same terminal always resolves to the same id. undefined = no id (a duplicate
  * of an earlier entry, or no free salt).
  */
@@ -728,20 +728,20 @@ function claimId(hs, claim, list, o, i, present) {
     }
     if (same(j)) return held;
   }
-  let id = helperId(addr, created);
-  const plain = hs[id];
-  if (plain && plain.gone) {
-    // Salted ids are taken in order, so the probe stops at the first unused one.
-    for (let k = 1; k <= 16; k++) {
-      const sid = saltedId(addr, created, k);
-      const r = hs[sid];
-      if (!r) break;
-      if (r.gone && r.salt === k && claim[sid] === undefined && albumMatch(r, addr, created)) {
-        claim[sid] = i;
-        return sid;
-      }
+  // A returning terminal finds its own salted Album record first, whatever
+  // became of its plain id (review r7-10): that id may be held by a present
+  // terminal, or have no record at all (a fledgling that held it folded into
+  // its parent, a compact record merged into an archive entry). Every k is
+  // probed: the records of smaller salts can have left the save the same way.
+  for (let k = 1; k <= 16; k++) {
+    const sid = saltedId(addr, created, k);
+    const r = hs[sid];
+    if (r && r.gone && r.salt === k && claim[sid] === undefined && albumMatch(r, addr, created)) {
+      claim[sid] = i;
+      return sid;
     }
   }
+  let id = helperId(addr, created);
   for (let k = 1; k <= 16; k++) {
     const j = claim[id];
     if (j !== undefined) {

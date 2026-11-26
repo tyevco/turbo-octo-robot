@@ -48,10 +48,10 @@ if (missingTabs.length) {
   register("data:text/javascript," + encodeURIComponent(hooks));
 }
 
-const { renderPanel, activeTab, RAIL_BELOW } = await import("../../mods/creaseworks/ui/panel.js");
+const { renderPanel, activeTab, RAIL_BELOW, FRAME, awaySlot } = await import("../../mods/creaseworks/ui/panel.js");
 const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creaseworks/ui/mat.js");
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
-const { renderAway, awayLines, AWAY_CLOSE } = await import("../../mods/creaseworks/ui/away.js");
+const { renderAway, awayLines, AWAY_CLOSE, awayFit, awayHeight, AWAY_DROP } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
 const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, fitLevelC, blockNeeds, CHIP_GLYPH, ENV_MARKER, HINT_FOLD, HINT_HIDE } = await import("../../mods/creaseworks/ui/ribbon.js");
 const { statusColor, statusDisc, contrast } = await import("../../mods/creaseworks/ui/color.js");
@@ -1180,4 +1180,128 @@ test("r3-21: win98's needs-you glyph keeps its red on the away card and the ribb
     if (c) icons.push(c);
   });
   assert.ok(icons.includes(T.blocked.toLowerCase()), icons.join(","));
+});
+
+// ---------------------------------------------------------------------------
+// Review r7-11: the away card stays inside the mat and the boost bar
+
+/**
+ * A height for a serialised tree, from its own styles (not away.js's model):
+ * gpui text lines are 1.618 × the size, a wrapping (whitespace_normal) line
+ * takes ≈ 6.4 px a grapheme at 11 px, h / min_h / max_h / padding / gap /
+ * border as styled; v_flex stacks, h_flex / Button / flex divs sit in a row
+ * (flex_1 children take the room the others leave).
+ */
+function treeHeight(n, availW, size = 11) {
+  if (!n || typeof n !== "object") return 0;
+  const st = Object.create(null);
+  for (const [k, v] of n.styles || []) st[k] = v === undefined ? true : v;
+  if (n.kind === "text") return size * 1.618034;
+  const fs = typeof st.text_size === "number" ? st.text_size : size;
+  const b = typeof st.border === "number" ? st.border : 0;
+  const p = typeof st.p === "number" ? st.p : 0;
+  const pl = st.pl ?? st.px ?? p, pr = st.pr ?? st.px ?? p;
+  const pt = st.pt ?? st.py ?? p, pb = st.pb ?? st.py ?? p;
+  const w = typeof st.w === "number" ? st.w : availW;
+  const inner = Math.max(0, w - 2 * b - pl - pr);
+  const kids = (n.children || []).filter((c) => c && typeof c === "object");
+  let content;
+  if (typeof st.h === "number") content = st.h - pt - pb - 2 * b;
+  else if (kids.length === 1 && kids[0].kind === "text" && st.whitespace_normal) {
+    content = Math.max(1, Math.ceil((graphemes(kids[0].text).length * 6.4 * (fs / 11)) / Math.max(1, inner))) * fs * 1.618034;
+  } else {
+    const row = n.kind === "h_flex" || n.kind === "Button" || st.flex === true;
+    const gap = typeof st.gap === "number" ? st.gap : 0;
+    if (row) {
+      const widthOf = (c) => {
+        const cs = Object.fromEntries((c.styles || []).map(([k, v]) => [k, v]));
+        if (typeof cs.w === "number") return cs.w;
+        if (c.kind === "text") return graphemes(c.text).length * 6.4 * (fs / 11);
+        if ("flex_1" in cs) return null;
+        return typeof cs.min_w === "number" ? cs.min_w : 0;
+      };
+      const ws = kids.map(widthOf);
+      const fixed = ws.reduce((x, y) => x + (y ?? 0), 0) + gap * Math.max(0, kids.length - 1);
+      const flexN = ws.filter((x) => x === null).length || 1;
+      content = Math.max(0, ...kids.map((c, i) => treeHeight(c, ws[i] ?? Math.max(0, inner - fixed) / flexN, fs)));
+    } else {
+      content = kids.reduce((x, c) => x + treeHeight(c, inner, fs), 0) + gap * Math.max(0, kids.length - 1);
+    }
+  }
+  let hgt = content + pt + pb + 2 * b;
+  if (typeof st.min_h === "number") hgt = Math.max(hgt, st.min_h);
+  if (typeof st.max_h === "number") hgt = Math.min(hgt, st.max_h);
+  return hgt;
+}
+
+/** The panel y of the tabs' top, from the rendered frame above them. */
+function tabsTopOf(json, vm, ui, ctx) {
+  let y = 0;
+  for (const c of json.children) {
+    if (!c || typeof c !== "object") continue;
+    if (c.id === "cw-tabs") return y;
+    if (c.id === "cw-mat-slot") y += styleOf(c, "pt") + styleOf(c.children[0], "h");
+    else if (typeof styleOf(c, "h") === "number") y += styleOf(c, "h");
+    else y += bannerLayout(vm, ui, ctx).total; // the save banner
+  }
+  throw new Error("no tabs row");
+}
+
+test("r7-11: the 'While you were away' card never reaches the tab row (H 784 and the short H 584, with and without a banner)", () => {
+  // the tree estimate matches the shot it was measured on: the old 7-row card ran y 84-398 (≈ 314 px)
+  const a0 = F.scenario("away");
+  const old = treeHeight(renderAway(a0.vm, a0.ui, makeCtx("graphite", a0)).toJSON(), 320);
+  assert.ok(old >= 310 && old <= 340, `the untrimmed card measures ${old.toFixed(1)} px`);
+  assert.ok(84 + old > 306, "which is why it covered the tabs at y 306");
+
+  const bannerVm = F.scenario("banner-error").vm;
+  const capped = { ...a0.vm.away, capped: true, duration: "8 h", needs: a0.vm.away.needs.concat([{ helperId: "c0ffee01", name: "Rumi" }]) };
+  const variants = { away: a0.vm.away, capped, busy: F.scenario("busy").vm.away, few: { ...a0.vm.away, best: null, affordable: [], rested: 0 } };
+  let checked = 0;
+  for (const H of [784, 584]) {
+    for (const width of [320, 240, 400]) {
+      for (const banner of [false, true]) {
+        for (const [name, away] of Object.entries(variants)) {
+          for (const theme of THEME_NAMES) {
+            const vm = { ...a0.vm, away, sheet: { ...a0.vm.sheet, short: H < 700 }, notices: banner ? bannerVm.notices : [] };
+            const ctx = makeCtx(theme, { ...a0, width, height: H });
+            const json = renderPanel(vm, a0.ui, ctx).toJSON();
+            const where = `H ${H}, width ${width}${banner ? ", banner" : ""}, ${name}, ${theme}`;
+            const slot = json.children.at(-1);
+            assert.equal(slot.id, "cw-away-slot", `${where}: the card paints last`);
+            const card = slot.children[0];
+            const top = styleOf(slot, "top");
+            const tabs = tabsTopOf(json, vm, a0.ui, ctx);
+            assert.equal(tabs, awaySlot(vm, a0.ui, ctx).tabsTop, `${where}: the slot's idea of the tabs matches the frame`);
+            const matY = FRAME.header + (banner ? bannerLayout(vm, a0.ui, ctx).total : 0) + FRAME.matTop;
+            assert.ok(top >= matY, `${where}: the card starts on the mat (${top} ≥ ${matY})`);
+            const hgt = treeHeight(card, styleOf(card, "w"));
+            assert.ok(top + hgt <= tabs - FRAME.awayGap + 0.5, `${where}: card ${top}–${(top + hgt).toFixed(1)} stays above the tabs at ${tabs}`);
+            assert.ok(top + styleOf(card, "max_h") <= tabs, `${where}: its hard cap ends above the tabs too`);
+            // what never gives way: who needs you (with Open) and Collect
+            const got = ids(card);
+            if (away.kind !== "busy") {
+              assert.ok(got.includes("cw-away-collect"), `${where}: Collect stays`);
+              assert.ok(got.includes("cw-away-row-needs") && got.includes("cw-away-open"), `${where}: the needs-you row and its Open stay`);
+            }
+            // rows give way only in AWAY_DROP order
+            const fit = awayFit(away, styleOf(card, "w"), styleOf(card, "max_h"));
+            assert.deepEqual(fit.dropped, AWAY_DROP.filter((k) => fit.dropped.includes(k)), `${where}: drop order`);
+            for (const k of fit.dropped) assert.ok(!got.includes(`cw-away-row-${k}`), `${where}: ${k} gave way`);
+            for (const k of fit.rows) assert.ok(got.includes(`cw-away-row-${k}`), `${where}: ${k} drawn`);
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.equal(checked, 2 * 3 * 2 * 4 * THEME_NAMES.length);
+  // on the standard panel the full card keeps its two most useful lower rows; only the best-helper line gives way
+  const std = awayFit(a0.vm.away, 304, awaySlot(a0.vm, a0.ui, makeCtx("graphite", a0)).maxH);
+  assert.deepEqual(std.dropped, ["best"]);
+  // with room to spare the card is the full one: every row, Collect on its own row at the bottom
+  const roomy = renderAway(a0.vm, a0.ui, makeCtx("graphite", a0), { maxH: 1000 }).toJSON();
+  assert.deepEqual(["envelopes", "needs", "rested", "best", "affordable"].filter((k) => ids(roomy).includes(`cw-away-row-${k}`)).length, 5);
+  assert.equal(roomy.children.at(-1).children[0].id, "cw-away-collect");
+  assert.ok(Math.abs(awayHeight(a0.vm.away, 304) - treeHeight(roomy, 304)) < 1, "away.js's own height model agrees with the tree");
 });

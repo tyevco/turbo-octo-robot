@@ -494,6 +494,9 @@ function detail(state, t, h, status, title, where, nKids) {
     parts.push(Number.isFinite(s) && s <= t ? `Working ${ago(t - s)}` : "Working");
   } else parts.push(WORD[status]);
   if (nKids > 0) parts.push(plural(nKids, "fledgling", "fledglings"));
+  // fledglings folded into this record (§5.1): counted in the Album header (r7-09)
+  const past = kidsIn(h);
+  if (past > 0) parts.push(`${plural(past, "fledgling", "fledglings")} left`);
   parts.push(`${cnt(num(h.stats && h.stats.run), state.settings.style)} folds this run`);
   const restMax = state.bought["warm-hands"] === true ? 2 : K.restMax;
   const rest = num(h.rest);
@@ -562,7 +565,10 @@ let f64 = null; // [Float64Array(1), Uint32Array view], made on first use (A2 ru
  * the exact bits of each leaving time, folds and folded-in fledglings. Every
  * gone record is one: pane helpers, archive entries and gone fledglings, which
  * stay in the Album for their 30 days (DESIGN §5.1) before they fold into
- * their parent's record (review r5-16).
+ * their parent's record (review r5-16). `helpers` counts every helper who has
+ * left: the gone records' and the fledglings folded into a present parent's
+ * record (r7-09; they have left too, and the count must not shrink when they
+ * fold).
  */
 function albumScan(state) {
   if (!f64) {
@@ -578,7 +584,10 @@ function albumScan(state) {
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (!h.gone) continue;
+    if (!h.gone) {
+      helpers += kidsIn(h);
+      continue;
+    }
     gone.push(h);
     helpers += helpersIn(h);
     fb[0] = typeof h.missingSince === "number" ? h.missingSince : NaN;
@@ -600,7 +609,7 @@ function albumEntry(state, idx) {
   if (prev && prev.idx === idx) return prev;
   const scan = albumScan(state);
   let c;
-  if (prev && prev.count === scan.gone.length && prev.a === scan.a && prev.b === scan.b) {
+  if (prev && prev.count === scan.gone.length && prev.helpers === scan.helpers && prev.a === scan.a && prev.b === scan.b) {
     c = prev;
   } else {
     // A changed Album keeps the last built rows to rebuild from (r3-02): rows
@@ -636,7 +645,11 @@ function recordFolds(h) {
   return num(st.folds) + k;
 }
 
-/** How many helpers the Album holds (no rows, no fingerprint: every view asks). */
+/**
+ * How many helpers have left (the Album header; no rows, no fingerprint: every
+ * view asks): every gone record's helpers, and the fledglings folded into a
+ * present parent's record (r7-09), so the count never drops as they fold.
+ */
 function albumCount(state, idx) {
   const rows = memoGet(state, ALBUM);
   if (rows && rows.idx === idx) return rows.helpers;
@@ -646,7 +659,7 @@ function albumCount(state, idx) {
   const hs = state.helpers;
   for (const id in hs) {
     const h = hs[id];
-    if (h.gone) n += helpersIn(h);
+    n += h.gone ? helpersIn(h) : kidsIn(h);
   }
   memoSet(state, ALBUM_N, { gen: GEN, idx, n });
   return n;

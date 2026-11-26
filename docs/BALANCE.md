@@ -30,7 +30,8 @@ the numbers was the originality review r7 (§10): a new workshop ladder and knob
   and **every seed** lies in "Every seed".
 * Purchases happen only in sessions, so many milestones land on a session start (every 40 min);
   windows are at least one session wide.
-* Shares and invariants are computed on seed 1 unless the row says "all seeds".
+* Shares and invariants are computed on seed 1 unless the row or its section says "all seeds" or
+  "every seed" (§6.2 does: every seed must clear its click-share floor).
 
 ---
 
@@ -146,13 +147,19 @@ income passes 1 B on day 3 itself (sim median 16:01, min 15:49, max 16:09; on a 
 day 2's last session). `npm run sim` notes any §4 or §5 row first reached by an away segment's
 credit ("reached by a night pot on N of 20 seeds"); `run:1e9` is still recorded and is reached
 that way on 16 of 20 seeds (the other 4 pass it in day 2's last session). M15 counts too: a first wish that only the night pot collected at a day
-open makes available is noted (review r6-12; no P1 seed today, see §5 for the others).
+open makes available is noted (review r6-12; no P1 seed today, see §5 for the others). So do
+purchases (`buy:` rows and M3, review r7-13): the sim takes away credit as spent last, and a
+purchase counts as reached by a night pot when its cost is more than the bank held without the pot
+money still in it. **M14 is noted on 20 of 20 seeds**: at the day-3 open P1's bank holds
+1.6e8–2.6e8 folds before the pot, the pot credits about 4.7e8, and the Crane Loft costs 5.6e8,
+so the Loft is bought from the pot on every seed. M5 (a spawn) cannot be: spawn clocks run on
+active time only (§1). No other §4 row is noted today.
 
 **Lag behind the written targets (recorded, not retuned).** From M10 on, the real-engine P1
 curve runs up to 80 min of play-clock behind the targets above, which were written from the
 prototype: M10 median 7:20 (target 6:40), M11 9:26 (9:20), M12 11:20 (10:00), M13 16:01 (16:30;
 the old run-total target was 15:30), M14 16:00 (16:00, bought at the day-3 open from the night
-pot), M15 21:24 (min 21:20, max 21:42; target 20:30). Every row passes its windows and the first wish stays on day 3,
+pot on every seed, so its play-clock row says when day 3 opens, not when the live curve could pay), M15 21:24 (min 21:20, max 21:42; target 20:30). Every row passes its windows and the first wish stays on day 3,
 which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retuned for the lag.
 
 ## 5. First wish across profiles
@@ -198,17 +205,24 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | Workshops, live (`workshops`) | 23 % | 15 – 32 % | 23.4 % |
 | Away (`away`) | 9 % | 5 – 20 % | 9.2 % |
 
-### 6.2 Clicking matters at every stage (share of live income per day, seed 1)
+### 6.2 Clicking matters at every stage (share of live income per day, every seed)
 
 | Profile | Day 1 | Day 2 | Day 3 | Proto (d1 / d2 / d3) |
 |---|---|---|---|---|
 | P1 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 9.1 / 28.1 / 37.6 % |
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
-| P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
+| P3 | ≥ 4.5 % | ≥ 10 % | ≥ 12 % | proto 5.9 / 12.5 / 15.9 %; sim seed 1: 5.1 / 10.5 / 14.1 %, all-seed min 4.95 / 10.40 / 14.05 % |
+| P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | sim all-seed min: P4 5.5 / 11.7 / 18.3 %, P10 7.4 / 19.0 / 23.2 % |
 | P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 0.9 / 1.4 / 4.2 % (before r7: 1.0 / 1.1 / 4.0 %; before r6: 1.2 / 1.3 / 4.4 %) |
 | P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 8.2 / 20.1 / 22.8 % |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
+Every floor holds on **every seed** (`npm run sim` prints seed 1 and the all-seed minimum with its
+seed). Until review r7-14 only seed 1 was checked, and P3's day-1 floor of 5 % passed at 5.09 %
+while seeds 16 and 17 gave 4.97 % and 4.95 %. P3 (no agents) now has its own day-1 floor of
+4.5 %, half a point under its all-seed minimum; it was not retuned. Its day-2 share (all-seed min
+10.40 %, seed 14, against 10 %) and P9's day-1 share (all-seed min 0.80 %, seed 12, against
+0.8 %, with no margin at all) are the tightest floors.
 
 P9 has its own floor, not the 5 / 10 / 12 % bar. It plays 4 sessions a day, all in the first 2 h
 of 8 open hours (about 10 active minutes, a third of P1's), so for 6 h a day the helpers and
@@ -372,8 +386,10 @@ Effect (20 seeds, before → after):
 sim today gives M15 21:24 (21:20–21:42), M17 M15 + 17:01, P2 24:52, P1 click share 26.3 % on
 seed 1 (all-seed median 24.5 %) and P2's cadence 2.67 h, the rest within a minute of the above. `npm run sim` prints the current table.
 
-The tightest rows are now P3's day-1 and day-2 click shares (5.1 % against 5 %, 10.5 % against
-10 %), P9's day-1 click share (0.9 % against 0.8 %), P2's purchase cadence
+The tightest rows are now the §6.2 click shares on their worst seed (review r7-14: they were
+quoted for seed 1, 5.1 % against 5 % for P3's day 1, while seeds 16 and 17 were already under it):
+P9's day 1 (0.80 % on seed 12 against 0.8 %), P3's day 2 (10.40 % on seed 14 against 10 %) and
+P3's day 1 (4.95 % on seed 17 against its own 4.5 % floor, §6.2), P2's purchase cadence
 (2.67 h against 3 h, before the Crane Loft) and P7's fastest seed (10:49 against the ≥ 10:00 every-seed bound, median 12:00).
 
 The calibration prototype was a throwaway script outside the repository; it is not a reference.

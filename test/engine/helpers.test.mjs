@@ -22,11 +22,13 @@ test("helper id = fnv1a32(addr#created); look from the hash (§5.1)", () => {
 // next pair in table order that is not skipped (§5.1); NAMES is that table,
 // written out. NEVER is the review's list, kept here independently of
 // NAME_SKIP so that dropping one from the skip list fails this test (round 2
-// added the second and third rows: "Haku" was first remapped to "Haro").
+// added the second and third rows: "Haku" was first remapped to "Haro"; round 7 the fourth).
 const NEVER = [
   "Loli", "Nob", "Yuri", "Miku", "Riku", "Yuna", "Zero", "Mona", "Rito", "Pipo", "Loki", "Haku", "Tali",
   "Haro", "Rin", "Moro", "Zemo", "Kapo", "Pito", "Misa", "Kon",
   "Han", "Mob", "Momo", "Kato", "Koro", "Kali", "Kaki", "Feto", "Taki", "Suki", "Sub",
+  // review r7-15: game characters (a Dota 2 and Xenoblade hero, a League of Legends champion)
+  "Riki", "Zeri",
 ];
 
 test("helper names: none of the 192 is a skipped word or borrowed name; NAMES is NAME_A × NAME_B with skips remapped (§5.1, r2-28)", () => {
@@ -55,7 +57,7 @@ test("helper names: none of the 192 is a skipped word or borrowed name; NAMES is
     }
   }
   assert.equal(seen.size, 192 - NAME_SKIP.length);
-  assert.equal(seen.size, 160);
+  assert.equal(seen.size, 158);
   // no name holds more than 4 of the 192 slots (remaps do not pile up on one name)
   const per = new Map();
   for (const x of NAMES) per.set(x, (per.get(x) || 0) + 1);
@@ -633,6 +635,76 @@ test("a salted id is kept after the plain id's holder leaves, and each agent of 
   for (let i = 0; i < 260; i++) obs([ag(a, "working", 6), agent(20000 + i, "working")]);
   assert.equal(s.helpers[salted].compact, undefined);
   assert.equal(s.helpers[salted].salt, 1);
+});
+
+// Review r7-10: the search for a returning terminal's own salted record ran
+// only while its plain id belonged to a gone record, and stopped at the first
+// free salt. With the plain id's record gone from the save (a fledgling that
+// held it folded into its parent) the terminal took the plain id as a new
+// helper, and one terminal became two.
+test("r7-10: a returning salted helper finds its own record when its plain id has no record left", () => {
+  const [a, b, created] = clashingPair();
+  const plain = engine.helperId(`t${a}`, created + a);
+  const salted = saltedId(`t${b}`, created + b, 1);
+  const P = agent(1, "working", 0);
+  const A = (status = "working") => agent(a, status, 0, { created: created + a, kind: "kid", pane: null, parent: "t1" });
+  const B = (turn = 0) => agent(b, "working", turn, { created: created + b });
+  const s = seeded();
+  const me = writer(s);
+  let t = T0;
+  me.act(observeAction((t += 1000), [P, A()]));
+  me.act(observeAction((t += 1000), [P, A(), B()]));
+  assert.equal(s.helpers[plain].kind, "kid");
+  assert.equal(s.helpers[salted].addr, `t${b}`);
+  me.act(observeAction((t += 1000), [P, A(), B(1)]));
+  const nameB = s.helpers[salted].name;
+  me.act(observeAction((t += 1000), [P])); // both leave
+  assert.equal(s.helpers[salted].salt, 1);
+  // 31 days on, A folds into its parent: the plain id has no record left
+  me.act(observeAction((t += 31 * 86400000), [P], { day: "2026-12-26" }));
+  assert.equal(s.helpers[plain], undefined);
+  assert.equal(s.helpers[engine.helperId("t1", 1001)].stats.kidsPast, 1);
+  const count = () => engine.view(s, t, { role: "panel", width: 320, writer: "wA", album: false }).helpers.albumCount;
+  assert.equal(count(), 2);
+  // B returns: its own salted record, with its name and stats, not a new helper on the plain id
+  me.act(observeAction((t += 1000), [P, B(1)]));
+  assert.equal(s.helpers[plain], undefined, "the plain id is not taken");
+  assert.equal(s.helpers[salted].gone, false);
+  assert.equal(s.helpers[salted].addr, `t${b}`);
+  assert.equal(s.helpers[salted].name, nameB);
+  assert.equal(s.helpers[salted].stats.tasks, 1);
+  assert.equal(Object.values(s.helpers).filter((h) => h.addr === `t${b}`).length, 1);
+  assert.equal(count(), 1, "A, folded into its present parent, is the one helper who has left");
+});
+
+test("r7-10: a returning terminal salted at k = 2 finds its record while its plain id is held and k = 1 is free", () => {
+  const [a, b, created] = clashingPair();
+  const plain = engine.helperId(`t${a}`, created + a);
+  const s1 = saltedId(`t${b}`, created + b, 1);
+  const s2 = saltedId(`t${b}`, created + b, 2);
+  const A = agent(a, "working", 0, { created: created + a });
+  const B = (turn = 0) => agent(b, "working", turn, { created: created + b });
+  const s = seeded();
+  const me = writer(s);
+  let t = T0;
+  me.act(observeAction((t += 1000), [A, B()]));
+  me.act(observeAction((t += 1000), [A, B(1)]));
+  me.act(observeAction((t += 1000), [A]));
+  // as if B had been salted at k = 2 (k = 1 was held then, by a record since gone from the save)
+  const r = s.helpers[s1];
+  delete s.helpers[s1];
+  r.id = s2;
+  r.salt = 2;
+  s.helpers[s2] = r;
+  rosterChanged(s);
+  const nameB = r.name;
+  me.act(observeAction((t += 1000), [A, B(1)]));
+  assert.equal(s.helpers[s1], undefined, "k = 1 is not taken as a new helper");
+  assert.equal(s.helpers[s2].gone, false);
+  assert.equal(s.helpers[s2].name, nameB);
+  assert.equal(s.helpers[s2].stats.tasks, 1);
+  assert.equal(s.helpers[plain].addr, `t${a}`);
+  assert.equal(Object.keys(s.helpers).length, 2);
 });
 
 test("r3-18: a new terminal whose plain id clashes with a gone helper's Album record does not take it over", () => {

@@ -2,8 +2,10 @@
 // (ARCHITECTURE B11) → element | null. At least 28 px under the header; text
 // is always T.foreground (never a status colour on a tint), tints go through
 // withAlpha() after hex6(). "Details ▸" expands a 3-line card (path with
-// middle truncation, last good save, backup state) and, when files were kept
-// aside, a wrapping "Kept aside:" line with every name in its tooltip.
+// middle truncation, last good save, backup state; for a backup that can't be
+// read, its reason and path on rows of their own with the whole text in a
+// tooltip) and, when files were kept aside, a wrapping "Kept aside:" line with
+// every name in its tooltip.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -78,6 +80,18 @@ export function middleClipCells(str, maxCells) {
   return g.slice(0, i).join("") + "…" + g.slice(j).join("");
 }
 
+/**
+ * A backup row's tooltip, ≤ `max` graphemes (BANNER_CLIP.text): `lead`, the
+ * reason in brackets, then the path, middle-clipped so its head and file name
+ * both stay (r7-04).
+ */
+export function backupTip(lead, why, where, max = BANNER_CLIP.text) {
+  const head = `${lead}${why ? ` (${clip(String(why), BANNER_CLIP.line)})` : ""}`;
+  if (!where) return clip(head, max);
+  const room = max - graphemes(head).length - 2;
+  return room >= 16 ? `${head}: ${middleClip(String(where), room)}` : clip(`${head}: ${where}`, max);
+}
+
 /** Background of a banner kind on the panel chrome, as an opaque colour. */
 export function bannerBg(T, kind) {
   const look = Object.hasOwn(LOOK, kind) ? LOOK[kind] : LOOK.error;
@@ -103,8 +117,11 @@ export const KEPT_ROWS = 3;
 
 /**
  * The Details card's text: three one-line rows (file, last good save, backup
- * state) and the kept file names on their own wrapping row (`kept`, with
- * `keptTip` for the tooltip and `keptRows` from a width estimate), or null.
+ * state), two more for a backup that can't be read or kept aside (its reason
+ * and its path, each on a row of its own: r7-04), `tips` (each row's tooltip
+ * or null; the backup rows carry the whole text), and the kept file names on
+ * their own wrapping row (`kept`, with `keptTip` for the tooltip and
+ * `keptRows` from a width estimate), or null.
  */
 export function detailsText(ctx) {
   const save = (ctx && ctx.save) || {};
@@ -114,26 +131,47 @@ export function detailsText(ctx) {
   // One-line rows are cut to the box's cell budget here, so gpui's own
   // truncation (which can cut inside an emoji) never has to engage (r1-04).
   const lines = [];
+  const tips = [];
   lines.push(save.path ? `File: ${middleClipCells(middleClip(save.path, BANNER_CLIP.path), perLine - 6)}` : "File: the save in herdr's app home");
+  tips.push(null);
   lines.push(clipCells(clip(save.lastGood ? `Last good save: ${save.lastGood}` : "Last good save: not known yet", BANNER_CLIP.line), perLine));
-  lines.push(clipCells(clip(`Backup: ${save.backup ? String(save.backup) : "see Settings › Save"}`, BANNER_CLIP.line), perLine));
+  tips.push(null);
+  const backup = save.backup ? String(save.backup) : "see Settings › Save";
+  lines.push(clipCells(clip(`Backup: ${backup}`, BANNER_CLIP.line), perLine));
+  const why = save.backupWhy ? String(save.backupWhy) : "";
+  const where = save.backupPath ? String(save.backupPath) : "";
+  if (why || where) {
+    const tip = backupTip(`Backup: ${backup}`, why, where);
+    tips.push(tip);
+    lines.push(clipCells(clip(`Why: ${why || "not known"}`, BANNER_CLIP.line), perLine));
+    tips.push(tip);
+    lines.push(where ? `At: ${middleClipCells(middleClip(where, BANNER_CLIP.path), perLine - 4)}` : "At: beside the save");
+    tips.push(tip);
+  } else tips.push(null);
   const names = Array.isArray(save.damaged) ? save.damaged.map(String).filter((x) => x) : [];
-  if (!names.length) return { lines, kept: null, keptTip: null, keptRows: 0 };
+  if (!names.length) return { lines, tips, kept: null, keptTip: null, keptRows: 0 };
   const all = `Kept aside: ${names.join(", ")}`;
   const kept = clip(all, BANNER_CLIP.kept);
   const keptRows = Math.min(KEPT_ROWS, Math.max(1, Math.ceil(graphemes(kept).length / perLine)));
-  return { lines, kept, keptTip: clip(all, BANNER_CLIP.keptTip), keptRows };
+  return { lines, tips, kept, keptTip: clip(all, BANNER_CLIP.keptTip), keptRows };
 }
 
-/** Height of the expanded Details card for `ctx` (DETAILS_H plus the kept rows). */
+/** Height of the expanded Details card for `ctx` (DETAILS_H plus any backup and kept rows). */
 export function detailsHeight(ctx) {
-  return DETAILS_H + detailsText(ctx).keptRows * LINE;
+  const d = detailsText(ctx);
+  return DETAILS_H + (d.lines.length - 3 + d.keptRows) * LINE;
 }
+
+const ROW_IDS = Object.freeze(["cw-banner-file", "cw-banner-last", "cw-banner-backup", "cw-banner-backup-why", "cw-banner-backup-path"]);
 
 function detailsCard(ctx, T) {
   const d = detailsText(ctx);
   const card = v_flex().id("cw-banner-details").mx(8).mb(4).px(6).py(4).gap(0).rounded(6).bg(T.raised).border(1).border_color(T.border);
-  for (const l of d.lines) card.child(text(l, { size: 11, color: T.muted, truncate: true }, T));
+  d.lines.forEach((l, i) => {
+    const tip = d.tips[i];
+    const row = text(l, { size: 11, color: T.muted, truncate: true, id: tip ? ROW_IDS[i] || `cw-banner-row-${i}` : undefined }, T);
+    card.child(tip ? row.tooltip(tip) : row);
+  });
   if (d.kept) {
     card.child(
       div().id("cw-banner-kept").w_full().min_w(0).h(d.keptRows * LINE).overflow_hidden().text_size(11).line_height("127%")
