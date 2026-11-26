@@ -12,7 +12,7 @@ import { makeMap, newSpawn } from "./state.js";
  * and L = Lw (6e9) gives exactly 1,000.
  *
  * Review r6-03: the count is held at Number.MAX_SAFE_INTEGER (reached near
- * L 1.3e42), where c + 1 would equal c and the correction could never end,
+ * L 1.46e42), where c + 1 would equal c and the correction could never end,
  * and Infinity or NaN never loop either. The estimate is off by float
  * rounding only, so each correction is capped at CRANE_STEPS steps; every
  * call is a fixed handful of pow calls whatever L is (render 50 ms).

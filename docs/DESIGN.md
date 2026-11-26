@@ -921,7 +921,10 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
   terminal whose `parent` chain reaches a pane agent within 32 hops,
   `{addr, created, status, raw, turn, parent, pane, title, paneName, space, tab}`. `agents()` and
   `terminals()` are joined by `address` (`created_ms` and `turn` come from `terminals()`; a missing
-  `created_ms` is treated as 0). Maps are `Map`s or `Object.create(null)`.
+  `created_ms` is treated as 0). A pane agent with no live `terminals()` entry is left out, and its
+  sub-agents wait with it (review r6-01): herdr builds `agents()` from its pane model without
+  checking liveness, so without this it joined as a phantom helper `addr#0` and sent the real one
+  to the Album. Maps are `Map`s or `Object.create(null)`.
 * An `observe` action is emitted only when something changed (status, turn, title, set of
   helpers), so `pending` stays short.
 * **Helper id** = FNV-1a 32-bit hex of `address + "#" + created_ms`. This deliberately leaves out

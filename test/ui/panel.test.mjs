@@ -829,7 +829,15 @@ test("mat: sizes per width state, grid is two paint_path strokes, nothing overla
   const storm = F.scenario("storm");
   const sj = renderMat(storm.vm, storm.ui, makeCtx("graphite", storm)).toJSON();
   const stripes = sj.children.find((c) => c.id === "cw-storm");
-  assert.equal(stripes.args[1].kind, "pattern-slash");
+  // Confetti flecks (r6-09): up to four solid fill paths, one per hue, no slash pattern.
+  const fleckPaths = stripes.children.filter((c) => c.kind === "path");
+  assert.ok(fleckPaths.length >= 1 && fleckPaths.length <= 4, `fleck layers ${fleckPaths.length}`);
+  for (const p of fleckPaths) {
+    assert.match(p.id, /^cw-storm-[0-3]$/);
+    assert.equal(p.args[0].fill, true);
+    assert.equal(p.args[1].kind, "solid");
+    assert.match(p.args[1].values[0], /^#[0-9a-f]{6}$/);
+  }
   const sheetIndex = sj.children.findIndex((c) => c.id === "cw-sheet");
   assert.ok(sj.children.indexOf(stripes) < sheetIndex, "stripes paint under the play pieces");
   assert.ok(sj.children.findIndex((c) => c.id === "cw-crease-line") < sheetIndex);

@@ -1097,7 +1097,7 @@ wishes, another writer's observation, `failNextWrite` / `raceNextWrite` / `exter
 banners, a wall-clock step back for `clock`). Where luck or hours decide a state, setup moves the
 one engine field that decides it (spawn clock due, a storm's end time, banked folds) and lets the
 engine do the rest. Panel-width views follow the shipped layout (B15): `narrow` 226×584 (1100×700),
-`narrow-files` 146×584 (1100×700 with Files open), `wide` 440×784, `wide-2560` 636×1324 (2560×1440).
+`narrow-files` 152×584 (1100×700 with Files open), `wide` 440×784, `wide-2560` 636×1324 (2560×1440).
 Ribbon views are `ribbon-<n>-<1100|1440>`; `flock-12` (block `cw-panel`) and
 `ribbon-window` (block `cw-ribbon`) fill the whole-window shots; `windowScenario` gives the
 chrome the same 12 agents. `garlands` is 320×1160 (`GARLANDS_SIZE`): at 784 the String tab ends at
@@ -1186,7 +1186,7 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   is the **Narrow** state (mat at full width, Flock dense, Shop icons only) and so is 1440×900
   with Files open; big windows are Wide with no cap (the old max was 560; 2560 gives 636). The
   terminals gain what the game gives up (1100×700: 581 instead of 488). Shots: `narrow` 226,
-  `narrow-files` 146 (152 since r6-07), `wide-2560` 636 and `window-1920x1080-*` (456) cover these widths.
+  `narrow-files` 152 (146 before r6-07), `wide-2560` 636 and `window-1920x1080-*` (456) cover these widths.
 * **Past zoom 1.5: Files is clipped, never the game (r2-15).** herdr's zoom runs 0.5–3.0 in 0.1
   steps (settings.rs), `render_node` makes every container `overflow_hidden` (src/window.rs
   ~4624) and a row never wraps, so once the mins do not fit, the row's END is cut. With Files
