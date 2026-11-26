@@ -71,6 +71,8 @@ function texts(json) {
 
 const style = (node, name) => (node.styles || []).find((s) => s[0] === name);
 const styleVal = (node, name) => style(node, name)?.[1];
+/** A box's width: `w`, or `size` for a square one (the Flock sets both at once). */
+const widthOf = (node) => styleVal(node, "w") ?? styleVal(node, "size");
 
 /** A real engine vm: agent 1 working with a working and a waiting paneless fledgling, agent 2 waiting, agent 3 resting. */
 function flockVm(extra = {}) {
@@ -95,7 +97,7 @@ test("r1-14: a waiting fledgling's pip opens that fledgling (and stops the click
   const kidId = engine.helperId("t21", 1021);
   const pip = findById(tree.toJSON(), `cw-flock-kid-${kidId}`);
   assert.ok(pip, "the needs-you pip is its own target");
-  assert.equal(styleVal(pip, "w"), TILE.normal.pip + 2 * PIP_HIT);
+  assert.equal(widthOf(pip), TILE.normal.pip + 2 * PIP_HIT);
   assert.match(styleVal(pip, "tooltip"), /click to open it/);
   assert.equal(findById(tree.toJSON(), `cw-flock-kid-${engine.helperId("t20", 1020)}`), null, "a working pip stays a plain mark");
   const cx = fakeCx();
@@ -536,7 +538,7 @@ test("r3-17: a parent whose fledgling waits gets a badge-size needs-you flag tha
     const tree = renderFlock(vm, {}, ctx);
     const flag = findById(tree.toJSON(), `cw-flock-kidflag-${tileId(1)}`);
     assert.ok(flag, `dense ${dense}: the flag`);
-    assert.equal(styleVal(flag, "w"), g.badge, "as big as the status badge");
+    assert.equal(widthOf(flag), g.badge, "as big as the status badge");
     assert.equal(styleVal(flag, "border_color"), statusColor(ctx.T, "blocked", "raised"), "ringed in needs-you (guarded for the tile)");
     assert.match(styleVal(flag, "tooltip"), /click to open it/);
     // Inside its own tile, clear of the left neighbour's status badge (which
@@ -633,7 +635,8 @@ test("r4-14: the needs-you flag never covers the species figure; the name and pi
       const flag = findById(json, `cw-flock-kidflag-${tileId(i)}`);
       const fx = styleVal(flag, "left");
       const fy = styleVal(flag, "top");
-      const fBox = { x0: fx, x1: fx + styleVal(flag, "w"), y0: fy, y1: fy + styleVal(flag, "h") };
+      const fBox = { x0: fx, x1: fx + widthOf(flag), y0: fy, y1: fy + (styleVal(flag, "h") ?? styleVal(flag, "size")) };
+      assert.ok(Number.isFinite(fBox.x1) && Number.isFinite(fBox.y1), "the flag has a size");
       const gBox = { x0: lay.figureLeft, x1: lay.figureLeft + g.glyph, y0: lay.figureTop, y1: lay.figureTop + g.glyph };
       assert.ok(!overlap(fBox, gBox), `dense ${dense}: flag ${JSON.stringify(fBox)} clear of figure ${JSON.stringify(gBox)}`);
       const pipsTop = g.h - lay.pipsBottom - g.pip;

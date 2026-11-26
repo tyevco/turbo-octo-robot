@@ -1036,25 +1036,35 @@ test("qjs: the frame modules load under the sandbox and render 64 helpers within
     const host = await createHost({ modRoot: dir, scenario: {} });
     try {
       const load = await host.load();
-      // First pass: every copy cold (the harness itself throws a BudgetError
-      // past herdr's 50 ms render interrupt). Second pass: warm, each with
-      // real headroom under the budget.
+      // First pass: every copy cold. Then WARM passes. Every render, cold or
+      // warm, stays inside herdr's 50 ms budget (the harness itself throws a
+      // BudgetError past its render interrupt: hard). The headroom check is on
+      // each copy's median warm render: one render in a few dozen can take
+      // twice its usual time when the machine is busy (a GC pause, a
+      // descheduled thread: a lone 35 ms warm render failed this once), which
+      // the median rides out, while a copy that really got slower is slow in
+      // most passes and still fails.
+      const WARM = 7;
       const cold = [];
-      const warm = [];
-      for (const pass of [cold, warm]) {
+      const warm = views.map(() => []);
+      for (let pass = 0; pass <= WARM; pass++) {
         for (let k = 0; k < views.length; k++) {
           const { tree, ms } = host.render();
           assert.equal(tree.id, "m");
           assert.equal(tree.children.length, 1);
-          pass.push(ms);
+          if (pass === 0) cold.push(ms);
+          else warm[k].push(ms);
         }
       }
       assert.deepEqual(host.errors, []);
+      const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
       const fmt = (xs) => xs.map((x) => x.toFixed(1)).join(", ");
-      console.log(`# qjs: module graph ${JSON.stringify(load.ms ?? load)}; one 64-helper copy a render: cold ${fmt(cold)} ms, warm ${fmt(warm)} ms`);
+      console.log(`# qjs: module graph ${JSON.stringify(load.ms ?? load)}; one 64-helper copy a render: cold ${fmt(cold)} ms, ` +
+        `warm median ${fmt(warm.map(median))} ms, warm max ${fmt(warm.map((xs) => Math.max(...xs)))} ms`);
       for (let k = 0; k < views.length; k++) {
         assert.ok(cold[k] < 50, `${views[k].name} cold render ${cold[k]} ms`);
-        assert.ok(warm[k] < 35, `${views[k].name} warm render ${warm[k]} ms (wants 15 ms of headroom under the 50 ms budget)`);
+        for (const ms of warm[k]) assert.ok(ms < 50, `${views[k].name} warm render ${ms} ms`);
+        assert.ok(median(warm[k]) < 35, `${views[k].name} warm renders ${fmt(warm[k])} ms: the median wants 15 ms of headroom under the 50 ms budget`);
       }
     } finally {
       host.dispose();

@@ -116,7 +116,8 @@ Paths (absolute, from `appHome()`):
 
 Written only with herdr `writeTextFile(path, text, expected)` (CAS + atomic rename for existing
 files); read with `readTextFile` (≤ 1 MiB, null if absent). Save text stays < 256 KiB at 64 helpers
-(asserted by a test with 500 historical helpers).
+(asserted by a test with 500 historical helpers) and ≤ `K.saveBudget` (896 KiB) with 4,000 present
+helpers over a full Album (format 5, below).
 
 Format: one JSON object `{ "format": "<mod>-save", "version": N, "check": "<hash>", "state": {...} }`.
 `check` (format 3, `engine/save-codec.js` `saveCheck(state)`) is a 32-bit FNV-1a hex over the
@@ -136,7 +137,33 @@ never 8 hex digits): each is a gone pane record with `archive` (how many helpers
 summed stats, `missingSince` (the newest left) and `from` (the oldest left). `prune` never
 compacts them, Album counts add up `archive`, and fledglings whose parent's record was archived
 fold into them. A format-3 build reads format 4 as newer (read-only). Live records carry `unitAt`
-and `kidUnitAt` (the envelope-unit budgets, DESIGN §6.1). Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
+and `kidUnitAt` (the envelope-unit budgets, DESIGN §6.1).
+
+**Format 5** (current `SAVE_VERSION`, DESIGN R13 "present helpers", §12.1) packs the present
+helpers and the envelopes; a format-4 build reads it as newer (read-only), and formats 1–4 still
+load (a present record of an older build is brought to this build's shape, `normalizePresent`, and
+written packed at the next save). A present helper is written as `[1, S, X, P]` (full), `[1, S, X]`
+(lean: no place strings) or `[2, S]` (slim) with `S = [addr, name|0, kp, status, seenBy, lastSeen,
+lastTurn, created', joined', env, [tasks, folds, run|null, envelopes, checkIns(, kidsPast,
+kidsFolds)]]`, `X = [rest, warm, warmUntil', thanksUntil', lastFinishAt', unitAt', kidUnitAt',
+blockedAt']` and `P = [title, pane, paneName, space, tab]`: `kp` 0 = pane, 1 = fledgling without a
+parent, else the parent's id; `seenBy` the index of its writer among the `writersSeen` keys (its id
+when absent); `t'` = t − lastSeen (null for 0 / null); species, hue, `missingSince`, `gone` and
+`group` (a cache nothing reads) follow on load. A record that is not exactly an engine record (an
+extra field, a non-hex id, a time that is no exact delta) is written whole, as before. An envelope
+is `[typeIndex, units, landedAt, lastAt − landedAt]`. Tiers (`helpers.js` `presentPlan`, which
+gives `serialize` each packed text): all full when the save fits `K.saveBudget` (896 KiB);
+otherwise each one's slim form is reserved, then most recently active first (lastSeen, working
+before waiting / finished / idle, latest of joined / last finish / wait, id) every helper that
+fits goes lean, then the lean ones that still fit go full. A slim record loads with `slim: true`
+(budgets empty at lastSeen, no warmth, thanks or rest) and stays slim until observed again, so a
+reload or a merge writes the same text (the plan is canonical: a degraded record writes the same
+at any tier; slim ones leave the order). `saveBytes` is the plan's byte count: the present
+helpers exactly, the rest by `K.saveBytes*`. 4,000 present helpers (1,000 agents with 3
+sub-agents, long CJK titles, an envelope per agent) save at ≈ 882 KiB; store.js `oversize` stays
+the last resort for a roster whose slim records alone pass 1 MiB (≈ 8,500 present helpers, 5,800
+with an envelope each), and the store refuses such a roster before serialising it when
+`saveFloorBytes` (each present helper at its slim size, no text built) already passes 1 MiB. Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
 by `engine/index.js`) yields after the JSON parse and after every 1,500 helpers, and the store's
 `parseIn` drives it with a task yield between steps for any save of 64 KiB or more
 (`STEP_PARSE_CHARS`) on the load, merge, overwrite, check, restore and share paths (a two-year
@@ -162,7 +189,9 @@ Write protocol (one writer per process, see A6):
 1. Serialise the live state → `text`.
 2. If the last confirmed disk text `baseText` is non-null, first rotate the backup:
    `writeTextFile(bak, baseText, lastBakText)` (create with `null` if absent). Backup is rotated
-   at most every 5 minutes so it trails the main save.
+   at most every 5 minutes so it trails the main save. The serialisation of step 1 runs in a task
+   step of its own, after a task yield (also after this rotation: a 4,000-helper save's first
+   serialisation after a load is most of a 500 ms step, DESIGN R13).
 3. `writeTextFile(save, text, baseText)`.
 4. On success: `baseText = text`, drop the confirmed actions from `pending` (A5), status `ok`.
 5. On a CAS rejection (`"The file changed outside Herdr…"`, `"The file changed while saving…"`,
@@ -452,6 +481,7 @@ view(state, now, opts) → ViewModel                 // B5; opts = { role, width
 cloneState(state) → GameState                      // JSON round trip + MAP rebuild
 migrate(state) → GameState                         // older versions → current; throws on newer
 serialize(state) → string                          // the full save file text (A4 envelope)
+saveFloorBytes(state) → number                     // a lower bound of serialize's UTF-8 size (0 below 4,000 present helpers; A4)
 parseSave(text) → { ok: true, state } | { ok: false, reason: "parse"|"format"|"check"|"newer"|"shape" }
 VERSION                                            // integer save version
 clip, graphemes, formatCount, formatRate, formatDuration

@@ -1,7 +1,7 @@
 // Save codec (ARCHITECTURE A4): envelope, check, MAP rebuild, damaged inputs, size.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { engine, seeded, writer, agent, kid, observeAction, T0 } from "./_util.mjs";
+import { engine, seeded, writer, agent, kid, observeAction, T0, close } from "./_util.mjs";
 import { SAVE_VERSION, saveCheck } from "../../mods/creaseworks/engine/save-codec.js";
 import { jsonBytes, saveBytes } from "../../mods/creaseworks/engine/helpers.js";
 
@@ -34,6 +34,24 @@ function checkByHand(state) {
   if (n) digests += engine.fnv1a32(JSON.stringify(cur));
   const rest = JSON.stringify({ ...state, helpers: "\u0001helpers" });
   return engine.fnv1a32(`${rest}\n${digests}`);
+}
+
+/**
+ * The format-4 file of the same game as format-5 `text`: every present helper
+ * and envelope a whole record (as builds before format 5 wrote them), the
+ * chunked check over that state.
+ */
+function format4(text) {
+  const doc = JSON.parse(text);
+  const st = engine.parseSave(text).state;
+  for (const id of Object.keys(doc.state.helpers)) {
+    const v = doc.state.helpers[id];
+    if (Array.isArray(v) && (v[0] === 1 || v[0] === 2)) doc.state.helpers[id] = { ...st.helpers[id], stats: { ...st.helpers[id].stats } };
+  }
+  for (const id of Object.keys(doc.state.envelopes)) doc.state.envelopes[id] = { ...st.envelopes[id] };
+  doc.version = 4;
+  doc.check = checkByHand(doc.state);
+  return JSON.stringify(doc);
 }
 
 /** A file of format 1 or 2 (check = FNV-1a 32 of the whole state text) for the same state. */
@@ -96,19 +114,27 @@ test("damaged inputs are reported, never thrown (A4, A12)", () => {
   assert.equal(engine.parseSave(JSON.stringify(doc2)).reason, "check");
 });
 
-test("the file format is 4 (chunked check, keyed Album entries, archives); formats 1-3 still load; a newer one is read-only, never damaged (R13)", () => {
+test("the file format is 5 (packed present helpers and envelopes); formats 1-4 still load; a newer one is read-only, never damaged (R13)", () => {
   // Builds before Album compaction compare the envelope version with their own
   // VERSION (1): "newer" means read-only and never written, where "shape" would
   // restore the backup and write it over this save (a rollback).
-  assert.equal(SAVE_VERSION, 4);
+  assert.equal(SAVE_VERSION, 5);
   assert.ok(SAVE_VERSION > engine.VERSION);
   const s = played();
   const text = engine.serialize(s);
-  assert.equal(JSON.parse(text).version, 4);
-  // a format-3 file (chunked check, the same rule) still loads, to the same game
-  const v3 = text.replace(`"version":4,`, `"version":3,`);
-  assert.equal(engine.parseSave(v3).ok, true);
-  assert.equal(engine.serialize(engine.parseSave(v3).state), text);
+  assert.equal(JSON.parse(text).version, 5);
+  // a format-3 or format-4 file (chunked check, the same rule) still loads, to the same game
+  for (const v of [3, 4]) {
+    const old = text.replace(`"version":5,`, `"version":${v},`);
+    assert.equal(engine.parseSave(old).ok, true);
+    assert.equal(engine.serialize(engine.parseSave(old).state), text);
+  }
+  // a real format-4 file (present helpers and envelopes as whole records) loads to the same game
+  const v4 = format4(text);
+  assert.ok(Object.values(JSON.parse(v4).state.helpers).some((h) => !Array.isArray(h) && !h.gone));
+  const back4 = engine.parseSave(v4);
+  assert.equal(back4.ok, true, back4.reason);
+  assert.equal(engine.serialize(back4.state), text);
   // format-1 and format-2 files (whole-text check) still load, to the same game
   for (const v of [1, 2]) {
     const back = engine.parseSave(oldFormat(text, v));
@@ -121,12 +147,12 @@ test("the file format is 4 (chunked check, keyed Album entries, archives); forma
   assert.equal(engine.parseSave(oldFormat(text, 3)).reason, "check");
   // a format newer than this build's is read-only: with the same check rule its state shows,
   // with a check this build cannot verify it is still "newer" (never restored over)
-  const v4 = text.replace(`"version":${SAVE_VERSION},`, `"version":${SAVE_VERSION + 1},`);
-  assert.equal(engine.parseSave(v4).reason, "newer");
-  assert.equal(engine.parseSave(v4).state.bank, s.bank);
-  const v4other = oldFormat(text, SAVE_VERSION + 1);
-  assert.equal(engine.parseSave(v4other).reason, "newer");
-  assert.equal(engine.parseSave(v4other).state, undefined);
+  const v6 = text.replace(`"version":${SAVE_VERSION},`, `"version":${SAVE_VERSION + 1},`);
+  assert.equal(engine.parseSave(v6).reason, "newer");
+  assert.equal(engine.parseSave(v6).state.bank, s.bank);
+  const v6other = oldFormat(text, SAVE_VERSION + 1);
+  assert.equal(engine.parseSave(v6other).reason, "newer");
+  assert.equal(engine.parseSave(v6other).state, undefined);
 });
 
 test("a newer version is detected (state kept for read-only display); migrate() refuses it", () => {
@@ -153,7 +179,16 @@ test("shape validation: a well-formed envelope around a wrong state is 'shape'",
     (x) => { x.bank = -5; },
     (x) => { x.envelopes.zz = { type: "gold", units: 1 }; },
     (x) => { x.owned["paper-stack"] = -1; },
-    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id].id = "other"; },
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][1][0] = 7; }, // a packed present helper's address (format 5)
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][1] = 7; },
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][2].pop(); },
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id] = { ...engine.parseSave(engine.serialize(played())).state.helpers[id], id: "other" }; },
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][1][10] = [1, 2]; }, // its stats
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][1][4] = 99; }, // a writer index past writersSeen
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id][0] = 3; }, // an unknown tag
+    (x) => { const id = Object.keys(x.helpers)[0]; x.helpers[id].length = 6; },
+    (x) => { x.envelopes.zz = [9, 1, 0, 0]; }, // a packed envelope of no known type
+    (x) => { x.envelopes.zz = [0, 1, 0]; },
     (x) => { delete x.spawn; },
     (x) => { x.notices = {}; },
   ]) {
@@ -658,4 +693,211 @@ test("a save with lifetime 2e42 or more loads and renders fast; a non-number lif
   const r = engine.parseSave(engine.serialize(s));
   assert.equal(r.ok, false);
   assert.ok(r.reason === "shape" || r.reason === "check", r.reason);
+});
+
+// ---------------------------------------------------------------------------
+// Save format 5 (R13 "present helpers"): present helpers are packed arrays in
+// three tiers (full, lean without place strings, slim: identity and totals)
+// chosen under K.saveBudget, so every roster up to well past 4,000 present
+// helpers saves and none is left unsaved; envelopes are packed too.
+
+const K = engine.CONTENT.K;
+const CJK = "codex · 支払い照合サービスをリファクタリングして不安定な統合テストを修正する作業を続けています";
+const bytesOf = (text) => Buffer.byteLength(text, "utf8");
+const presentOf = (st) => Object.values(st.helpers).filter((h) => !h.gone);
+const loadedGroup = (h) => ({ working: "working", blocked: "needs", done: "finished", idle: "resting" })[h.status];
+const tierOf = (v) => (!Array.isArray(v) ? "whole" : v[0] === 2 ? "slim" : v[0] === 1 ? (v.length > 3 ? "full" : "lean") : "album");
+
+/** `agents` pane agents with `kids` sub-agents each, long CJK titles, through a few turns (an envelope each). */
+function bigRoster(agents, kids, { w = "w-7f3a9c2e41", seed = 31, base = 0, t0 = T0 } = {}) {
+  const list = [];
+  for (let i = 0; i < agents; i++) {
+    const p = agent(base + i, "working", 0, { addr: `w1:t${base + i}`, created: T0 - 86400000 + i * 997, title: CJK, space: "支払いチーム", tab: "統合テスト" });
+    list.push(p);
+    for (let k = 0; k < kids; k++) list.push(agent(1e6 + (base + i) * 10 + k, "working", 0, { addr: `w1:k${base + i}_${k}`, kind: "kid", pane: null, parent: p.addr, title: CJK, space: "支払いチーム", tab: "統合テスト" }));
+  }
+  return { list, w, seed, t0 };
+}
+
+function play(s, me, list, t) {
+  me.act(observeAction((t += 1000), list));
+  engine.advance(s, (t += 600000));
+  me.act(observeAction((t += 1000), list.map((o, i) => ({ ...o, turn: 1, status: i % 3 ? "idle" : "working" }))));
+  engine.advance(s, (t += 600000));
+  me.act(observeAction((t += 1000), list.map((o, i) => ({ ...o, turn: 2, status: i % 4 ? "working" : "blocked" }))));
+  engine.advance(s, (t += 60000));
+  return t;
+}
+
+test("format 5: a present helper packs to exactly the record it loads as, in every shape; one that cannot pack is written whole", async () => {
+  const { packPresent, unpackPresent } = await import("../../mods/creaseworks/engine/helpers.js");
+  const s = seeded(41);
+  const me = writer(s, "w-7f3a9c2e41");
+  const other = writer(s, "w-0b1c2d3e4f");
+  let t = T0;
+  other.act(observeAction((t += 1000), [agent(90, "blocked", 0)]));
+  me.act(observeAction((t += 1000), [agent(1, "working", 0), agent(2, "idle", 0), kid(3, 1, "working", 0), agent(4, "working", 0, { kind: "kid", parent: "nobody", pane: null })]));
+  engine.advance(s, (t += 3600000));
+  me.act(observeAction((t += 1000), [agent(1, "idle", 1), agent(2, "working", 0, { title: null, pane: null, paneName: null, space: null, tab: null }), kid(3, 1, "idle", 1), agent(4, "blocked", 0, { kind: "kid", parent: "nobody", pane: null })]));
+  engine.advance(s, (t += 30000));
+  const hs = presentOf(s);
+  assert.ok(hs.some((h) => h.group === "elsewhere"), "another window's helper");
+  assert.ok(hs.some((h) => h.kind === "kid" && h.parent !== null) && hs.some((h) => h.kind === "kid" && h.parent === null));
+  // a name of its own, fledgling totals, a run unlike its folds
+  const h1 = hs.find((h) => h.addr === "t1");
+  h1.name = "Pib 9";
+  h1.stats.kidsPast = 3;
+  h1.stats.kidsFolds = 12.5;
+  h1.stats.run = h1.stats.folds / 3;
+  for (const h of hs) {
+    const a = packPresent(h);
+    assert.ok(Array.isArray(a), h.addr);
+    assert.deepEqual(unpackPresent(h.id, JSON.parse(JSON.stringify(a))), { ...h, stats: { ...h.stats }, group: loadedGroup(h) }, h.addr);
+  }
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  for (const h of hs) assert.equal(tierOf(doc.state.helpers[h.id]), h.addr === "t2" ? "lean" : "full", h.addr);
+  for (const e of Object.values(doc.state.envelopes)) assert.ok(Array.isArray(e) && e.length === 4, "envelopes are packed");
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  // (group is a cache nothing reads: it loads as the status's group, "elsewhere" again at the next observation)
+  for (const h of hs) assert.deepEqual({ ...back.state.helpers[h.id] }, { ...h, group: loadedGroup(h) }, h.addr);
+  assert.deepEqual(Object.keys(back.state.envelopes), Object.keys(s.envelopes));
+  for (const id of Object.keys(s.envelopes)) assert.deepEqual({ ...back.state.envelopes[id] }, { ...s.envelopes[id] });
+  assert.equal(engine.serialize(back.state), text);
+  // records that are not exactly an engine record are kept whole
+  assert.equal(engine.saveFloorBytes(s), 0, "below 4,000 present helpers no floor is needed");
+  const odd = engine.cloneState(s);
+  const [a, b, c] = presentOf(odd);
+  a.extra = 1;
+  b.lastSeen = -1.7e308; // its times cannot be written as deltas from it
+  b.created = 1.7e308;
+  c.species = "nope";
+  const oddText = engine.serialize(odd);
+  const oddDoc = JSON.parse(oddText).state.helpers;
+  for (const h of [a, b, c]) assert.equal(tierOf(oddDoc[h.id]), "whole", h.addr);
+  const oddBack = engine.parseSave(oddText);
+  assert.equal(oddBack.ok, true);
+  assert.equal(oddBack.state.helpers[a.id].extra, 1);
+  assert.equal(engine.serialize(oddBack.state), oddText);
+  assert.ok(saveBytes(odd) >= bytesOf(oddText));
+});
+
+test("format 5: 4,000 present helpers (1,000 agents with 3 sub-agents each, long CJK titles) over a full Album save under K.saveBudget, every one kept", () => {
+  const s = seeded(33);
+  const me = writer(s, "w-7f3a9c2e41");
+  // a peak Album: K.albumCompactKeep + K.albumArchiveBatch packed records
+  for (let i = 0; i < K.albumCompactKeep + K.albumArchiveBatch; i++) {
+    const id = engine.helperId(`w2:t${i}`, 1700000000000 + i * 997);
+    s.helpers[id] = { id, kind: "pane", parent: null, ...engine.lookOf(id), joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0,
+      stats: { tasks: 30 + (i % 70), folds: Number((1.2345e7 + i * 98765.4321).toPrecision(4)), run: 0, envelopes: 0, checkIns: 0 },
+      missingSince: Math.floor((T0 - 2 * 86400000 - i * 2860000) / 60000) * 60000, gone: true, compact: true, key: (i * 7919) & 0xffff };
+  }
+  const { list } = bigRoster(1000, 3);
+  play(s, me, list, T0);
+  const text = engine.serialize(s);
+  const bytes = bytesOf(text);
+  const present = presentOf(s);
+  assert.equal(present.length, 4000);
+  assert.ok(bytes <= K.saveBudget, `${bytes} bytes over the budget`);
+  assert.ok(saveBytes(s) >= bytes, `estimate ${saveBytes(s)} below ${bytes}`);
+  assert.ok(saveBytes(s) <= K.saveBudget);
+  // store.js refuses a hopeless roster by this lower bound before serialising it
+  const floor = engine.saveFloorBytes(s);
+  assert.ok(floor > 0.4 * bytes && floor <= bytes, `floor ${floor} of ${bytes}`);
+  const written = JSON.parse(text).state.helpers;
+  const tiers = present.map((h) => tierOf(written[h.id]));
+  assert.equal(tiers.filter((x) => x === "whole").length, 0, "every present helper packs");
+  assert.equal(tiers.filter((x) => x === "slim").length, 0, "4,000 helpers keep all their game state");
+  assert.ok(Object.keys(s.envelopes).length >= 1000, "an envelope per agent");
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  assert.equal(presentOf(back.state).length, 4000, "every agent is a saved helper");
+  assert.equal(engine.serialize(back.state), text);
+  // the Album gave way to them (archived, still counted)
+  assert.ok(Object.values(s.helpers).some((h) => h.archive > 0));
+});
+
+test("format 5: past the budget the least recently active present helpers are written slim; the save stays canonical and a slim helper plays on", () => {
+  const s = seeded(35);
+  const me = writer(s, "w-7f3a9c2e41");
+  const them = writer(s, "w-0b1c2d3e4f");
+  // another window's 2,000 agents, last seen an hour before this window's 3,200
+  const theirs = bigRoster(2000, 0, { base: 50000 }).list;
+  let t = play(s, them, theirs, T0);
+  const mine = bigRoster(800, 3).list;
+  t = play(s, me, mine, t + 3600000);
+  const text = engine.serialize(s);
+  const bytes = bytesOf(text);
+  assert.equal(presentOf(s).length, 5200, "every agent present");
+  assert.ok(bytes <= K.saveBudget, `${bytes} bytes`);
+  assert.ok(saveBytes(s) >= bytes && saveBytes(s) <= K.saveBudget);
+  const floor = engine.saveFloorBytes(s);
+  assert.ok(floor > 0.6 * bytes && floor <= bytes, `floor ${floor} of ${bytes}`);
+  const doc = JSON.parse(text).state.helpers;
+  const slimIds = Object.keys(doc).filter((id) => tierOf(doc[id]) === "slim");
+  assert.ok(slimIds.length > 0 && slimIds.length < 2000, `${slimIds.length} slim`);
+  // the least recently active first: only the other window's (seen an hour earlier) are slim
+  for (const id of slimIds) assert.equal(s.helpers[id].seenBy, "w-0b1c2d3e4f");
+  assert.ok(Object.keys(doc).filter((id) => tierOf(doc[id]) === "lean" && s.helpers[id].seenBy === "w-0b1c2d3e4f").length > 0, "and the rest of them lean");
+  // a slim record keeps identity, the last sight of it and its totals
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true);
+  for (const id of slimIds) {
+    const a = s.helpers[id];
+    const b = back.state.helpers[id];
+    assert.equal(b.slim, true);
+    for (const k of ["addr", "created", "kind", "parent", "name", "joined", "lastSeen", "seenBy", "status", "lastTurn"]) assert.deepEqual(b[k], a[k], k);
+    for (const k of ["tasks", "envelopes", "checkIns"]) assert.equal(b.stats[k], a.stats[k], k);
+    for (const k of ["folds", "run"]) close(b.stats[k], a.stats[k], 1e-5, k); // 6 significant digits
+    close(b.env, a.env, 1e-5, "env");
+    assert.equal(b.unitAt, a.lastSeen, "its budget empty when last seen");
+  }
+  // canonical: a reload writes the same text, and two windows replaying the same actions onto it agree
+  assert.equal(engine.serialize(back.state), text);
+  const x = engine.parseSave(text).state;
+  const y = engine.parseSave(text).state;
+  const act = (st, a) => engine.apply(st, { w: "w-7f3a9c2e41", s: 9001, ...a });
+  for (const st of [x, y]) {
+    act(st, observeAction(t + 1000, mine.map((o) => ({ ...o, turn: 2 }))));
+    engine.advance(st, t + 61000);
+  }
+  const tx = engine.serialize(x);
+  assert.equal(engine.serialize(y), tx);
+  assert.equal(engine.serialize(engine.parseSave(tx).state), tx);
+  // the other window sees its agents again: they are whole records again, with no reward for the old turn
+  const units = x.stats.units.created;
+  const id0 = slimIds[0];
+  engine.apply(x, { w: "w-0b1c2d3e4f", s: 9002, ...observeAction(t + 62000, theirs.map((o, i) => ({ ...o, turn: 2, status: i % 4 ? "working" : "blocked" }))) });
+  assert.equal(x.helpers[id0].slim, undefined, "seen again: no longer slim");
+  assert.equal(x.stats.units.created, units, "the same turn pays nothing");
+  assert.equal(presentOf(x).length, 5200);
+  const again = engine.serialize(x);
+  assert.ok(bytesOf(again) <= K.saveBudget);
+  assert.equal(engine.serialize(engine.parseSave(again).state), again);
+});
+
+test("format 5 migrate path: a format-4 present record of an older build (kidFinishAt, a salt, no kidUnitAt) loads and is packed at the next save", () => {
+  const s = seeded(37);
+  const me = writer(s, "w-7f3a9c2e41");
+  me.act(observeAction(T0 + 1000, [agent(1, "working", 0), agent(2, "idle", 0)]));
+  const text = engine.serialize(s);
+  const doc = JSON.parse(format4(text));
+  const id = Object.keys(doc.state.helpers).find((k) => doc.state.helpers[k].addr === "t1");
+  const old = doc.state.helpers[id];
+  delete old.kidUnitAt;
+  old.kidFinishAt = T0 + 500;
+  old.salt = 2;
+  delete old.group;
+  doc.check = checkByHand(doc.state);
+  const r = engine.parseSave(JSON.stringify(doc));
+  assert.equal(r.ok, true, r.reason);
+  const h = r.state.helpers[id];
+  assert.equal(h.kidUnitAt, T0 + 500, "the budget's older field became its own");
+  assert.equal(h.kidFinishAt, undefined);
+  assert.equal(h.salt, undefined);
+  assert.equal(h.group, "working");
+  const out = engine.serialize(r.state);
+  assert.equal(tierOf(JSON.parse(out).state.helpers[id]), "full");
+  assert.equal(engine.serialize(engine.parseSave(out).state), out);
 });

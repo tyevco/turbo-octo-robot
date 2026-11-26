@@ -167,6 +167,13 @@ export const TEXT_CONTRAST = 4.5;
  * (r4-15: Elsewhere names at 50 % were 3.2 to 4.2:1 in every theme). Tested.
  */
 export function nameOpacityFloor(fg, bgs) {
+  // (memoised: the search costs ~30 colour blends, every render asks the same)
+  const key = typeof fg === "string" && Array.isArray(bgs) ? fg + "|" + bgs.join("|") : null;
+  if (key === null) return opacityFloor(fg, bgs);
+  return memo(FLOORS, key, () => opacityFloor(fg, bgs));
+}
+
+function opacityFloor(fg, bgs) {
   if (!isHex(fg)) return 1;
   for (const bg of bgs) if (!isHex(bg)) return 1;
   for (let k = 6; k < 20; k++) {
@@ -211,6 +218,8 @@ export function tileLook(ctx) {
     disc,
     // The badge glyph colours, guarded for `disc` (the name predates the disc choice).
     onPopover,
+    // The tiles' shared hover declaration (one closure a render, not one a tile).
+    hoverStyle: (x) => x.bg(hover),
     select: handler(ctx, "select"),
     open: handler(ctx, "open"),
     openHelper: handler(ctx, "openHelper"),
@@ -221,48 +230,52 @@ export function tileLook(ctx) {
 export const PIP_HIT = 4;
 
 /**
+ * Pip `i` of a tile (`alone`: absolutely placed, without the row): its
+ * diamond or triangle, and for a waiting fledgling with an id the hit area
+ * that opens it.
+ */
+function pipMark(pips, kids, i, g, hue, look, alone) {
+  const p = pips[i];
+  const st = p === "blocked" || p === "error" ? "blocked" : p === "working" ? "working" : "idle";
+  const mark = svg(pipFile(st)).size(g.pip).flex_none().text_color(st === "blocked" ? look.blocked : hue);
+  const kid = kids[i];
+  const kidId = kid && typeof kid.helperId === "string" ? kid.helperId : "";
+  if (st !== "blocked" || !kidId) return alone ? mark.absolute() : mark;
+  const box = div();
+  if (alone) box.absolute();
+  else box.relative().flex_none();
+  return box
+    .size(g.pip)
+    .child(mark)
+    .child(
+      div()
+        .id(`cw-flock-kid-${kidId}`)
+        .absolute()
+        .left(-PIP_HIT)
+        .top(-PIP_HIT)
+        .size(g.pip + 2 * PIP_HIT)
+        .cursor_pointer()
+        .tooltip(clipTip(str(kid.tooltip) || "A fledgling needs you: click to open it"))
+        .on_click((e, cx) => {
+          if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+          look.openHelper(kidId, cx);
+        }),
+    );
+}
+
+/**
  * The fledgling pips. A needs-you pip is the fledgling's own needs-you mark
  * (§5.2): clicking it opens that sub-agent (`openHelper(kidId)`: pane.focus,
  * or terminal.peek for one without a pane, §5.6) and stops the click there.
  */
 function pipsRow(pips, kids, g, hue, look, bottom) {
   const T = look.T;
-  const row = h_flex().absolute().left(4).bottom(bottom).gap(2);
   const n = Math.min(4, pips.length);
-  for (let i = 0; i < n; i++) {
-    const p = pips[i];
-    const st = p === "blocked" || p === "error" ? "blocked" : p === "working" ? "working" : "idle";
-    const mark = svg(pipPath(st)).w(g.pip).h(g.pip).flex_none().text_color(st === "blocked" ? look.blocked : hue);
-    const kid = kids[i];
-    const kidId = kid && typeof kid.helperId === "string" ? kid.helperId : "";
-    if (st !== "blocked" || !kidId) {
-      row.child(mark);
-      continue;
-    }
-    row.child(
-      div()
-        .relative()
-        .flex_none()
-        .w(g.pip)
-        .h(g.pip)
-        .child(mark)
-        .child(
-          div()
-            .id(`cw-flock-kid-${kidId}`)
-            .absolute()
-            .left(-PIP_HIT)
-            .top(-PIP_HIT)
-            .w(g.pip + 2 * PIP_HIT)
-            .h(g.pip + 2 * PIP_HIT)
-            .cursor_pointer()
-            .tooltip(clip(str(kid.tooltip) || "A fledgling needs you: click to open it", FLOCK_CLIP.tooltip))
-            .on_click((e, cx) => {
-              if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
-              look.openHelper(kidId, cx);
-            }),
-        ),
-    );
-  }
+  // One pip (the usual case) is placed by itself where the row would put it:
+  // one element fewer a tile, the same pixels.
+  if (n === 1 && pips.length === 1) return pipMark(pips, kids, 0, g, hue, look, true).left(4).bottom(bottom);
+  const row = h_flex().absolute().left(4).bottom(bottom).gap(2);
+  for (let i = 0; i < n; i++) row.child(pipMark(pips, kids, i, g, hue, look, false));
   if (pips.length > 4) {
     const more = text(`+${clip(String(pips.length - 4), FLOCK_CLIP.count)}`, { size: 11, color: T.muted }, T).line_height("100%");
     // Waiting fledglings come first (vm order), so one past the 4th pip only
@@ -363,15 +376,14 @@ function kidFlag(id, waiting, g, look) {
     .absolute()
     .top(KID_FLAG_TOP)
     .left(KID_FLAG_LEFT)
-    .w(g.badge)
-    .h(g.badge)
+    .size(g.badge)
     .rounded(g.badge / 2)
     .justify_center()
     .bg(look.disc || T.popover)
     .border(1)
     .border_color(look.blocked)
     .tooltip(clip(tip, FLOCK_CLIP.tooltip))
-    .child(svg(statusGlyphPath("blocked")).w(g.badgeGlyph).h(g.badgeGlyph).text_color(look.onPopover.blocked));
+    .child(svg(statusPath("blocked")).size(g.badgeGlyph).text_color(look.onPopover.blocked));
   if (kid) {
     const kidId = kid.helperId;
     el.cursor_pointer().on_click((e, cx) => {
@@ -382,6 +394,44 @@ function kidFlag(id, waiting, g, look) {
   return el;
 }
 
+// Render-time memo tables (A2 rule 6): a 64-tile Flock asks for the same few
+// sprite paths, layouts and clipped strings every frame, and each costs a few
+// microseconds in QuickJS. Filled lazily (never at import), keyed by value
+// (so a rebuilt vm hits them too) and bounded like color.js's tables (big
+// enough for every tooltip of a budget-full Flock and its fledgling pips, so a
+// big roster does not clear and refill them every frame).
+const MEMO_MAX = 2048;
+const FOLK_PATHS = new Map();
+const STATUS_PATHS = new Map();
+const PIP_PATHS = new Map();
+const TIPS = new Map();
+const NAMES = new Map();
+const LAYOUTS = new Map();
+const FLOORS = new Map();
+
+function memo(map, key, make) {
+  let v = map.get(key);
+  if (v === undefined) {
+    v = make(key);
+    if (map.size >= MEMO_MAX) map.clear();
+    map.set(key, v);
+  }
+  return v;
+}
+
+const folkPath = (sp) => memo(FOLK_PATHS, sp, (k) => spritePath("folk", k));
+const statusPath = (st) => memo(STATUS_PATHS, st, statusGlyphPath);
+const pipFile = (st) => memo(PIP_PATHS, st, pipPath);
+const clipTip = (tip) => memo(TIPS, tip, (k) => clip(k, FLOCK_CLIP.tooltip));
+const clipName = (name) => memo(NAMES, name, (k) => clip(k, FLOCK_CLIP.name));
+const layoutFor = (g, flagged) => memo(LAYOUTS, flagged ? (g === TILE.dense ? 3 : 1) : g === TILE.dense ? 2 : 0, () => Object.freeze(tileLayout(g, flagged)));
+
+/** The tile's tooltip, clipped (the vm's, else "name · status"). */
+function tileTip(tile) {
+  const t = tile.tooltip;
+  return clipTip(typeof t === "string" && t ? t : `${str(tile.name)} · ${str(tile.statusWord)}`);
+}
+
 /**
  * One tile (§3.3). `opts`: `{ dense, selected, calm, inStep, elsewhere,
  * look }` (`look` from `tileLook(ctx)`; computed here when absent).
@@ -389,31 +439,33 @@ function kidFlag(id, waiting, g, look) {
 export function tileElement(tile, opts, ctx) {
   const look = opts.look || tileLook(ctx);
   const T = look.T;
-  const g = opts.dense ? TILE.dense : TILE.normal;
+  const dense = Boolean(opts.dense);
+  const g = dense ? TILE.dense : TILE.normal;
   const id = str(tile.helperId);
   const status = statusOf(tile.status);
   const hue = hueOf(look.hues, tile.hue);
-  const select = look.select;
-  const open = look.open;
-  const openHelper = look.openHelper;
   const selected = Boolean(opts.selected);
+  const elsewhere = Boolean(opts.elsewhere);
   const needsYou = tile.dashed === true || status === "blocked";
+  // A needs-you tile is a needs-you mark: a click opens the agent (§5.6);
+  // every other tile, and any tile another window sees, selects (its
+  // detail card has "Open pane ›").
+  const onClick = needsYou && !elsewhere
+    ? (e, cx) => look.openHelper(id, cx)
+    : (e, cx) => look.select(selected ? null : id, cx);
 
+  // (no .relative(): gpui's default position, which the absolute children below use)
   const el = div()
-    .id(`cw-flock-tile-${id}`)
-    .relative()
+    .id("cw-flock-tile-" + id)
     .flex_none()
     .w(g.w)
     .h(g.h)
     .rounded(8)
     .bg(selected ? look.hover : T.raised)
     .cursor_pointer()
-    .hover((s) => s.bg(look.hover))
-    .tooltip(clip(str(tile.tooltip) || `${str(tile.name)} · ${str(tile.statusWord)}`, FLOCK_CLIP.tooltip))
-    // A needs-you tile is a needs-you mark: a click opens the agent (§5.6);
-    // every other tile, and any tile another window sees, selects (its
-    // detail card has "Open pane ›").
-    .on_click((e, cx) => (needsYou && !opts.elsewhere ? openHelper(id, cx) : select(selected ? null : id, cx)));
+    .hover(look.hoverStyle || ((x) => x.bg(look.hover)))
+    .tooltip(tileTip(tile))
+    .on_click(onClick);
   if (needsYou) el.border(2).border_dashed().border_color(look.blocked);
   else if (selected) el.border(2).border_color(T.accent);
   else el.border(1).border_color(T.border);
@@ -422,19 +474,24 @@ export function tileElement(tile, opts, ctx) {
   // the envelope marker stay opaque so the status shape always reads.
   // Each content child takes the tile's opacity (one call each instead of a
   // wrapper element: 64 tiles are rendered every frame).
-  const opacity = Math.max(0.3, Math.min(1, num(tile.opacity, 1)));
-  const fade = opacity < 1 ? (x) => x.opacity(opacity) : (x) => x;
-  const pips = Array.isArray(tile.pips) ? tile.pips : [];
+  const o = tile.opacity;
+  const opacity = typeof o === "number" && Number.isFinite(o) ? (o < 0.3 ? 0.3 : o > 1 ? 1 : o) : 1;
+  const faded = opacity < 1;
+  const pips = Array.isArray(tile.pips) ? tile.pips : null;
+  const nPips = pips ? pips.length : 0;
   // A waiting fledgling's needs-you flag (another window's helpers are not ours to open).
-  const waiting = pips.length && !opts.elsewhere ? waitingKids(tile) : [];
-  const lay = tileLayout(g, waiting.length > 0);
+  const waiting = nPips && !elsewhere ? waitingKids(tile) : null;
+  const flagged = waiting !== null && waiting.length > 0;
+  const lay = layoutFor(g, flagged);
   const sp = speciesOf(tile.species);
-  const figure = FACETS === "alpha" ? svg(spritePath("folk", sp)).size(g.glyph).text_color(hue) : speciesSprite(sp, g.glyph, hue, { surface: T.raised });
-  el.child(fade(figure.absolute().top(lay.figureTop).left(lay.figureLeft)));
-  if (!opts.dense) {
+  const figure = FACETS === "alpha" ? svg(folkPath(sp)).size(g.glyph).text_color(hue) : speciesSprite(sp, g.glyph, hue, { surface: T.raised });
+  figure.absolute().top(lay.figureTop).left(lay.figureLeft);
+  el.child(faded ? figure.opacity(opacity) : figure);
+  if (!dense) {
     // The name fades with the tile only as far as text stays ≥ 4.5:1 (r4-15).
-    const nameOpacity = Math.max(opacity, num(look.nameFloor, 1));
-    const name = text(clip(str(tile.name), FLOCK_CLIP.name), { size: 11, color: T.foreground, truncate: true }, T)
+    const floor = num(look.nameFloor, 1);
+    const nameOpacity = floor > opacity ? floor : opacity;
+    const name = text(clipName(str(tile.name)), { size: 11, color: T.foreground, truncate: true }, T)
       .absolute()
       .top(lay.nameTop)
       .left(3)
@@ -443,42 +500,42 @@ export function tileElement(tile, opts, ctx) {
       .line_height("120%");
     el.child(nameOpacity < 1 ? name.opacity(nameOpacity) : name);
   }
-  if (pips.length) el.child(fade(pipsRow(pips, Array.isArray(tile.kids) ? tile.kids : [], g, hue, look, lay.pipsBottom)));
-  const withEnvelope = tile.envelope === true && !opts.elsewhere;
+  if (nPips) {
+    const row = pipsRow(pips, Array.isArray(tile.kids) ? tile.kids : [], g, hue, look, lay.pipsBottom);
+    el.child(faded ? row.opacity(opacity) : row);
+  }
+  const withEnvelope = tile.envelope === true && !elsewhere;
   if (status === "idle" && typeof tile.rest === "number") {
     const k = Math.max(0, Math.min(1, tile.rest));
     const bar = restBar(g, withEnvelope);
     // The T.border track shows the bar's full extent, so a low store reads as
     // "a little of this" rather than a stray speck.
-    el.child(fade(div().id(`cw-flock-rest-track-${id}`).absolute().bottom(1).left(bar.left).h(2).w(bar.w).rounded(1).bg(T.border)));
-    el.child(
-      fade(
-        div()
-          .id(`cw-flock-rest-${id}`)
-          .absolute()
-          .bottom(1)
-          .left(bar.left)
-          .h(2)
-          .w(Math.round(bar.w * k * 10) / 10)
-          .rounded(1)
-          .bg(T.muted)
-          .transition("width", opts.calm ? 150 : 600),
-      ),
-    );
+    const track = div().id("cw-flock-rest-track-" + id).absolute().bottom(1).left(bar.left).h(2).w(bar.w).rounded(1).bg(T.border);
+    el.child(faded ? track.opacity(opacity) : track);
+    const fill = div()
+      .id("cw-flock-rest-" + id)
+      .absolute()
+      .bottom(1)
+      .left(bar.left)
+      .h(2)
+      .w(Math.round(bar.w * k * 10) / 10)
+      .rounded(1)
+      .bg(T.muted)
+      .transition("width", opts.calm ? 150 : 600);
+    el.child(faded ? fill.opacity(opacity) : fill);
   }
 
   // Status badge at the top right (−4, −4): a `look.disc` disc (T.popover in
   // every theme where needs-you reads there), 1 px T.border ring, the status
   // glyph guarded for that disc (widgets.glyph, inlined).
-  const mark = svg(statusGlyphPath(status)).w(g.badgeGlyph).h(g.badgeGlyph).text_color(look.onPopover[status]);
+  const mark = svg(statusPath(status)).size(g.badgeGlyph).text_color(look.onPopover[status]);
   if (!opts.calm && tile.spin === true && status === "working") mark.spin(opts.inStep ? 600 : 1200);
   const badge = h_flex()
-    .id(`cw-flock-badge-${id}`)
+    .id("cw-flock-badge-" + id)
     .absolute()
     .top(-4)
     .right(-4)
-    .w(g.badge)
-    .h(g.badge)
+    .size(g.badge)
     .rounded(g.badge / 2)
     .justify_center()
     .bg(look.disc || T.popover)
@@ -488,21 +545,21 @@ export function tileElement(tile, opts, ctx) {
   if (!opts.calm && tile.pulse === true && status === "blocked") badge.loop("opacity", { from: 0.55, to: 1, period: 1200 });
   el.child(badge);
 
-  if (waiting.length) el.child(kidFlag(id, waiting, g, look));
+  if (flagged) el.child(kidFlag(id, waiting, g, look));
 
   // Envelope marker at the bottom right: its own target (stops propagation).
   if (withEnvelope) {
     // The marker's centre sits near the corner (it pokes 2 px out, like the
     // badge at the top) so it never covers the name.
     const off = envOffset(g);
+    const open = look.open;
     el.child(
       h_flex()
-        .id(`cw-flock-env-${id}`)
+        .id("cw-flock-env-" + id)
         .absolute()
         .right(off)
         .bottom(off)
-        .w(g.envHit)
-        .h(g.envHit)
+        .size(g.envHit)
         .justify_center()
         .cursor_pointer()
         .tooltip("Envelope ready: open it")
@@ -512,14 +569,13 @@ export function tileElement(tile, opts, ctx) {
         })
         .child(
           h_flex()
-            .w(g.env)
-            .h(g.env)
+            .size(g.env)
             .rounded(g.env / 2)
             .justify_center()
             .bg(look.S.sheet)
             .border(1)
             .border_color(look.envRing || T.border)
-            .child(svg(spritePath("status", "envelope")).w(g.envGlyph).h(g.envGlyph).text_color(look.S.ink)),
+            .child(svg(statusPath("envelope")).size(g.envGlyph).text_color(look.S.ink)),
         ),
     );
   }
@@ -846,7 +902,8 @@ export function flockKeys(vm, ui) {
  * A tile's cost against TILE_BUDGET (tested): the elements `tileElement`
  * builds, with 2 more for each that carries a tooltip and a click handler
  * (the tile, a waiting fledgling's pip, the needs-you flag, the envelope
- * marker). A plain dense tile costs 6, a normal one 7.
+ * marker). A plain dense tile costs 6, a normal one 7. A lone pip still
+ * counts the row it no longer needs (one over, so the budget stays conservative).
  */
 export function tileCost(t, dense, elsewhere) {
   if (!t || typeof t !== "object") return 0;

@@ -203,12 +203,18 @@ export const K = f({
   albumCompactKeep: 10000, albumArchiveBatch: 1000, albumArchiveMs: 30 * 86400000,
   // R13, r5-07: the whole save is held under saveBudget (estimated bytes, far
   // under herdr's 1 MiB write limit) by archiving more compact records when the
-  // present roster is large. Per-record estimates (UTF-8 bytes as written):
-  // a present helper's fields without its strings (which are counted exactly),
+  // present roster is large, and (format 5) by writing the least recently
+  // active present helpers slim when the roster alone would pass it.
+  // Per-record estimates (UTF-8 bytes as written): a present helper written
+  // whole (one that cannot be packed) without its strings (which are counted
+  // exactly); the numbers, commas and brackets of a lean / slim packed present
+  // helper (what prune makes room for; the save plan counts them exactly);
   // a full Album record or archive entry, a packed entry (+ fledgling totals,
-  // + a name of its own), an envelope, and everything outside helpers/envelopes.
-  saveBudget: 896 * 1024, saveBytesPresent: 560, saveBytesGone: 416,
-  saveBytesCompact: 42, saveBytesCompactKids: 14, saveBytesEnvelope: 80, saveBytesRest: 16 * 1024,
+  // + a name of its own), an envelope written whole (packed ones and an away
+  // pot's task snapshot are counted exactly), and everything else outside
+  // helpers/envelopes.
+  saveBudget: 896 * 1024, saveBytesPresent: 560, saveBytesLean: 150, saveBytesSlim: 100, saveBytesGone: 416,
+  saveBytesCompact: 42, saveBytesCompactKids: 14, saveBytesEnvelope: 96, saveBytesRest: 16 * 1024,
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,
   spareKinds: 3, spareDiv: 10, // §9 25-Wish perk: a tenth of the last run's three cheapest workshops

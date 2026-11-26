@@ -108,6 +108,8 @@ function countLoops(json) {
 
 const style = (node, name) => (node.styles || []).find((s) => s[0] === name);
 const styleVal = (node, name) => style(node, name)?.[1];
+/** A box's width: `w`, or `size` for a square one (the Flock sets both at once). */
+const widthOf = (node) => styleVal(node, "w") ?? styleVal(node, "size");
 
 const fakeCx = () => {
   const cx = { stopped: 0, stop_propagation() { cx.stopped++; }, notify() {} };
@@ -366,7 +368,7 @@ test("tiles: normal 52×64 up to 20 helpers, dense 40×44 with no name; T.raised
       assert.equal(styleVal(t, "h"), g.h, name);
       assert.equal(styleVal(t, "rounded"), 8);
       const badge = t.children.find((c) => c.id && c.id.startsWith("cw-flock-badge-"));
-      assert.equal(styleVal(badge, "w"), g.badge);
+      assert.equal(widthOf(badge), g.badge);
       assert.equal(styleVal(badge, "top"), -4);
       assert.equal(styleVal(badge, "right"), -4);
     }
@@ -395,15 +397,15 @@ test("tiles: envelope marker, pips (4 then +n), rest bar, resting opacity, toolt
   assert.equal(pipSvgs.length, 4, "4 pips drawn");
   assert.deepEqual(pipSvgs.map((n) => n.args[0]), ["working", "idle", "blocked", "working"].map(pipPath));
   assert.ok(texts(tile).includes("+2"), "then +n");
-  for (const p of pipSvgs) assert.equal(styleVal(p, "w"), TILE.normal.pip);
+  for (const p of pipSvgs) assert.equal(widthOf(p), TILE.normal.pip);
   const env = findById(tile, `cw-flock-env-${working[0].helperId}`);
   assert.ok(env, "envelope marker");
   assert.ok(env.handlers.on_click);
   const disc = env.children[0];
-  assert.equal(styleVal(disc, "w"), 14);
+  assert.equal(widthOf(disc), 14);
   assert.equal(styleVal(disc, "bg"), ctx.S.sheet);
   assert.equal(styleVal(disc.children[0], "text_color"), ctx.S.ink);
-  assert.equal(styleVal(disc.children[0], "w"), 11);
+  assert.equal(widthOf(disc.children[0]), 11);
 
   const rt = findById(json, `cw-flock-tile-${resting[0].helperId}`);
   const bar = findById(rt, `cw-flock-rest-${resting[0].helperId}`);

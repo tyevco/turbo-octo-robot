@@ -2040,10 +2040,12 @@ test("r6-18: a racing first write on Windows is merged, not shown as a save erro
 });
 
 // r6-16: the engine holds the save under K.saveBudget by archiving Album
-// records, but a roster that alone passes herdr's 1 MiB limit (about 1,300
-// helpers present at once, DESIGN R13) cannot shrink. The store measures the
-// text before writing: such a write is never sent, the reason is said in
-// words, and it is retried until the roster is small enough again.
+// records and (format 5) by writing the least recently active present helpers
+// slim, but a roster whose slim records alone pass herdr's 1 MiB limit (about
+// 8,500 helpers present at once, DESIGN R13; 1,300 before format 5) cannot
+// shrink. The store measures the text before writing, as a last resort: such
+// a write is never sent, the reason is said in words, and it is retried until
+// the roster is small enough again.
 test("r6-16: oversize measures UTF-8 bytes exactly around herdr's 1 MiB limit", () => {
   assert.equal(store.FILE_LIMIT, 1024 * 1024);
   const L = store.FILE_LIMIT;
@@ -2074,10 +2076,33 @@ test("r6-16: the too-big message fits the banner's error clip whole", () => {
   assert.equal(store.oversizeText(store.oversize("漢".repeat(store.FILE_LIMIT))), "save is 3072 KiB, over herdr's 1 MiB cap: too many helpers");
 });
 
+test("R13 (format 5): 4,000 agents present at once save under the budget, every one a saved helper", async () => {
+  const agents = [];
+  const terminals = [];
+  for (let i = 1; i <= 4000; i++) {
+    agents.push({ address: `t${i}`, pane: `p${i}`, status: i % 3 ? "working" : "idle", title: `agent ${i} 支払い照合サービスのテスト ${"漢".repeat(20)}`, space_name: "支払いチーム", tab_name: "統合テスト", tab_index: 1, focused: i === 1 });
+    terminals.push({ address: `t${i}`, status: i % 3 ? "working" : "idle", turn: 0, created_ms: 1000 + i * 997 });
+  }
+  w = win({ agents, terminals });
+  await w.copy("panel");
+  await w.advance(3000);
+  const text = w.ctl.readFile(SAVE);
+  assert.ok(text, "written");
+  assert.ok(Buffer.byteLength(text, "utf8") <= engine.CONTENT.K.saveBudget, `${Buffer.byteLength(text, "utf8")} bytes`);
+  assert.equal(w.slot.save.status, "ok");
+  assert.equal(w.slot.notices.write, null);
+  const p = parsed(w.ctl);
+  assert.ok(p && p.ok);
+  assert.equal(Object.values(p.state.helpers).filter((h) => !h.gone).length, 4000, "every agent is a saved helper");
+});
+
+/** Pane agents enough that even their slim records pass 1 MiB (format 5, R13). */
+const OVER_MIB = 14000;
+
 test("r6-16: a recovery write over 1 MiB is never sent, and its message is shown whole", async () => {
   const agents = [];
   const terminals = [];
-  for (let i = 1; i <= 2000; i++) {
+  for (let i = 1; i <= OVER_MIB; i++) {
     agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `agent ${i} 支払い照合サービスのテスト ${"漢".repeat(20)}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
     terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: 1000 + i * 997 });
   }
@@ -2102,7 +2127,7 @@ test("r6-16: a save over 1 MiB is never sent, is said in words, and saves again 
     }
     return { agents, terminals };
   };
-  w = win(many(2000));
+  w = win(many(OVER_MIB));
   const v = await w.copy("panel");
   await w.advance(3000);
   assert.equal(w.ctl.readFile(SAVE), null, "nothing written");
