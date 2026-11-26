@@ -69,7 +69,7 @@ The palette also has "Creaseworks: hide or show the panel" (`layout.toggle {id:"
 
 **Settings** (gear): Calm mode, Notifications (off by default; at most 3 a day; never sound), a switch for each automation you own, Play (Helpers gather, Crease nodes appear, Floating numbers), Roster (order and density), Number style, Save (path, Check save now, Restore backup…, Share a save with another herdr home…) and Reset game….
 
-**What moves.** Nothing moves at rest. Animation runs only for a short time after an event: the needs-you pulse, new-work spins, the crane's glide and bob, the boat, storm stripes, an envelope landing, the first-run hint and floating "+N" numbers. Calm mode removes all of it and keeps every earning the same.
+**What moves.** Nothing moves at rest. Animation runs only for a short time after an event: the needs-you pulse, new-work spins, the crane's glide and bob, the boat, Confetti stripes, an envelope landing, the first-run hint and floating "+N" numbers. Calm mode removes all of it and keeps every earning the same.
 
 ## Built from
 

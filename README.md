@@ -11,11 +11,11 @@ A paper workshop on the corner of your desk, built for [herdr](https://herdr.dev
 
 | | |
 |---|---|
-| ![The Flock tab with 34 origami helper tiles in four groups: 3 needing you with red dashed outlines, 2 finished with blue checks and envelopes, 15 working with spinners and 14 resting with moons.](docs/screenshots/flock.png) | ![A hatched storm mat with a dashed crease line zigzagging across it ending at a +41.7K pop, a gold crane, two paper scraps, the streak meter reading In step, and Storm ×7 and Rush ×3 timers.](docs/screenshots/frenzy.png) |
+| ![The Flock tab with 34 origami helper tiles in four groups: 3 needing you with red dashed outlines, 2 finished with blue checks and envelopes, 15 working with spinners and 14 resting with moons.](docs/screenshots/flock.png) | ![A hatched mat with dashed crease lines zigzagging across it, one ending at a +48.1K pop, a gold crane, two paper scraps, the streak meter reading In step, and Confetti ×6 and Rush ×3 timers.](docs/screenshots/confetti.png) |
 | **Every agent is a helper.** Needs you, finished, working or resting, readable at a glance. | **Clicking stays fun.** Open a Rush and a Confetti, chain the nodes, catch the gilded crane. |
-| ![The Shop tab: Paper Stack, Bone Folder, Scissor Stand, Glue Pot and Fold Bench with buy buttons, and a greyed Washi Vat.](docs/screenshots/shop.png) | ![The String tab: 1,000 / 1,000 cranes strung on a green card and a Make the wish (+10 Wishes) button.](docs/screenshots/string.png) |
+| ![The Shop tab: Paper Stack, Bone Folder, Scissor Stand, Glue Pot and Fold Bench with buy buttons, and a greyed Washi Vat.](docs/screenshots/shop.png) | ![The String tab: 1,000 / 1,000 cranes strung on a green card and a Make the wish (+13 Wishes) button.](docs/screenshots/string.png) |
 | **Spend your folds** on workshops, tools, folk, charms, curios and automations. | **String the Thousand.** Trade 1,000 cranes for Wishes, a permanent bonus. |
-| ![A While you were away card: 7 h, +11.0M folds, 9 envelopes waiting, 3 helpers need you with an Open button, 19 helpers rested, and a Collect button.](docs/screenshots/away.png) | ![A zsh terminal and a Codex terminal beside a narrow rail showing the fold total, the paper, 3 needing you, 4 envelopes and 34 status marks.](docs/screenshots/rail.png) |
+| ![A While you were away card: 7 h, +15.1M folds, 9 envelopes waiting, 3 helpers need you with an Open button, 19 helpers rested, and a Collect button.](docs/screenshots/away.png) | ![A zsh terminal and a Codex terminal beside a narrow rail showing the fold total, the paper, 3 needing you, 4 envelopes and 34 status marks.](docs/screenshots/rail.png) |
 | **While you were away.** Helpers keep folding for up to 8 hours. | **Fold it to a rail** and your terminals get the room back. |
 
 ![Two frames: the Creaseworks panel with a needs-you tile clicked, then herdr showing that agent's terminal, where Claude Code asks whether to edit shop.js.](docs/screenshots/jump.png)

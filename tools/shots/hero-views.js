@@ -250,8 +250,8 @@ const RUN2_BUYS = [
   ["scissor-stand", 12], ["soft-brushes", 1], ["scrap-basket", 1], ["long-ribbon", 1], ["quick-creases", 1],
   ["long-streak", 1], ["fold-bench", 6], ["glue-pot", 4], ["grand-crease", 1], ["paper-stack", 15], ["bone-folder", 5],
 ];
-/** Folds run 2 has made: what RUN2_BUYS cost plus the ~1.3M in the bank now. */
-const RUN2_FOLDS = 9.4e6;
+/** Folds run 2 has made: what RUN2_BUYS cost (about 10.4M) plus the ~1.3M in the bank now. */
+const RUN2_FOLDS = 1.17e7;
 
 /**
  * THE moment every view starts from: the first wish made, a second run two
