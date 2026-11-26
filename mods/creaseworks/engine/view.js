@@ -324,7 +324,7 @@ function budget(state, E, t, c) {
     out.chipPulse = !c.tilesShown;
   }
   const sp = state.spawn;
-  // 2. Gilded crane bob, 3. storm stripes (on the mat).
+  // 2. Gilded crane bob, 3. Confetti flecks (on the mat; internal id "storm").
   if (c.matShown && sp.crane) out.crane = take(1) === 1;
   if (c.matShown && state.boosts.stormEnd > t) out.storm = take(1) === 1;
   // 4. The newest drawn tray envelope bobs for 10 s after it lands.

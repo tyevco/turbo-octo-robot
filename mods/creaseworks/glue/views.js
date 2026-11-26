@@ -268,7 +268,7 @@ add("tray-full", { roster: { working: 5, resting: 3, finished: 2 } }, async (v, 
 });
 // Fractional stack counts (r5-15, r6-17): a finish pays the share of its
 // helper's 12-minute unit budget refilled since the last one, so t1 ends at
-// 1 + 1 + 0.8 = ×2.8 and t2 at ×2.4 (50 s live ticks: never an absence).
+// 1 + 1 + 0.8 = ×2.8 and t2 at ×2.4 (48 s live ticks: never an absence).
 add("tray-fraction", { roster: { working: 4, resting: 1 } }, async (v, tools) => {
   midGame(v);
   await finish(tools, ["t1", "t2", "t3"]);

@@ -762,7 +762,8 @@ more than 5 min with no rest is the one start it misses).
 **Mat coordinates.** Nodes, scraps, the ream and the crease line are slot **centres**; the crane
 (48×36) and boat (48×30) are the **left/top** of their hit box, gliding by `left` from `x` to
 `x1` (crane: towards the far side; boat: 8 → 248; calm: `x1 === x`). The boat's vm has no `y`:
-the mat puts it in its own lane above the bottom band (`ui/mat.js` boatBox, review r6-06). `nodes[].i` is the
+the mat puts it in its own lane above the bottom band and paints it right after the Sheet, under
+the play pieces of the bottom slot row it shares (`ui/mat.js` boatBox, review r6-06). `nodes[].i` is the
 **1-based number drawn** on the node; `nodes[].id` is the engine click id (`nodeId`, 0-based).
 Short variant: y is scaled into 28–152 and the middle four columns of the top and bottom rows
 move beside the 96 px Sheet, so nothing overlaps it.
@@ -1149,8 +1150,9 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   is clipped at its end. So with `cw-panel` `{px: 320}` and Files `{px: 368}`, only `main` could
   give way and, with `main`'s `min: 360`, the last node (the game) was pushed off-screen.
 * **The layout now** (`tools/layout/build.mjs`). `cw-panel` is `{"weight": 0.39}`, `min: 64`, no
-  `max`; herdr's Files column (`panel`) is `{"weight": 0.66}` (its `min: 280`, `max: 900` and every
-  other field kept); `main` is herdr's weight 1 with **`min: 80`** (`MAIN_MIN`; was 360).
+  `max`; herdr's Files column (`panel`) is `{"weight": 0.66}` with **`min: 160`** (`FILES_MIN`;
+  herdr ships 280, review r6-07; its `max: 900` and every other field kept); `main` is herdr's
+  weight 1 with **`min: 80`** (`MAIN_MIN`; was 360).
   `work-body` is **`main | cw-panel | panel`**: the game sits right after the terminals and the
   optional Files column ends the row (r2-15, below), so herdr clips Files first.
 * **Why main's min is 80.** herdr's own `main` has no min; the 360 was ours, and it was what
@@ -1158,7 +1160,11 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   it on screen, Files 133 of 420 px; 1440×900: 41 of the rail's 96 px). The tightest window we
   support, 1100×700 at zoom 1.5 with Files open, has 649 px for main + Files (280 × 1.5) + the
   rail (64 × 1.5), so main gets 133 px (88 design px; herdr's own layout gives it about 108 there). Any
-  min above 88 makes main hold it and clip the game; 80 leaves slack. At zoom 1 the terminals
+  min above 88 makes main hold it and clip the game; 80 leaves slack. **Since r6-07** Files' min
+  is 160, not 280: a min is held as min × zoom (src/window.rs sized()), so at zoom 1.5 the 280 held
+  420 px of a 1100 px window and left the terminals 1 to 2 columns a pane. With 160 Files gives way
+  by its weight like the game: main gets 294 px (196 design px), Files 240, the game 115 (76
+  design px, the rail), and any main min above 208 would cut something there. At zoom 1 the terminals
   never come near it (≥ 360 in every state from 1100 px up, `test/layout`); the min now only
   stops a drag (drag_to clamps to the left node's min). Cost: at 1100×700 zoom 1.5 with Files
   closed, the terminals get 475 px (was 540) and the game 185 (124 design px, drawn as the rail).
@@ -1166,26 +1172,27 @@ the Perks heading and the garland stripes it is named for were below the fold (r
 
   | Window | Files closed | Files open | Folded, Files open |
   |---|---|---|---|
-  | 1100×700 | 581 / – / 226 (Narrow) | 373 / 280 / 146 (drawn as the rail: below 200) | 443 / 292 / 64 |
+  | 1100×700 | 581 / – / 226 (Narrow) | 390 / 257 / 152 (drawn as the rail: below 200) | 443 / 292 / 64 |
   | 1440×900 | 825 / – / 322 (Standard) | 556 / 367 / 217 (Narrow) | 648 / 427 / 64 |
   | 1920×1080 | 1171 / – / 456 (Wide) | 790 / 521 / 308 (Standard) | 937 / 618 / 64 |
   | 2560×1440 | 1631 / – / 636 (Wide) | 1102 / 727 / 430 (Wide) | 1322 / 873 / 64 |
-  | 1100×700 zoom 1.5 | 475 / – / 185 (124 design px: rail) | 133 / 420 / 96 (64: rail) | 133 / 420 / 96 |
-  | 1440×900 zoom 1.5 | 720 / – / 281 (187: Narrow) | 409 / 420 / 160 (106: rail) | 473 / 420 / 96 |
+  | 1100×700 zoom 1.5 | 475 / – / 185 (124 design px: rail) | 294 / 240 / 115 (76: rail) | 313 / 240 / 96 |
+  | 1440×900 zoom 1.5 | 720 / – / 281 (187: Narrow) | 482 / 318 / 188 (125: rail) | 538 / 355 / 96 |
 
   Every node is on screen in every row (no clipping, no empty strip); the envelope is zoom ≤ 1.5
-  (zoom 1.5 with Files open needs 724 × 1.5 + 1 = 1087 px; the rail itself is whole from about
-  1076). Past it, see the next point. **This changes the default
+  (zoom 1.5 with Files open needs 604 × 1.5 + 1 = 907 px since r6-07; with the 280 min it was
+  724 × 1.5 + 1 = 1087). Past it, see the next point. **This changes the default
   look:** the designed panel was 320 px everywhere (DESIGN §2.1–§2.2); now the 1100×700 default
   is the **Narrow** state (mat at full width, Flock dense, Shop icons only) and so is 1440×900
   with Files open; big windows are Wide with no cap (the old max was 560; 2560 gives 636). The
   terminals gain what the game gives up (1100×700: 581 instead of 488). Shots: `narrow` 226,
-  `narrow-files` 146, `wide-2560` 636 and `window-1920x1080-*` (456) cover these widths.
+  `narrow-files` 146 (152 since r6-07), `wide-2560` 636 and `window-1920x1080-*` (456) cover these widths.
 * **Past zoom 1.5: Files is clipped, never the game (r2-15).** herdr's zoom runs 0.5–3.0 in 0.1
   steps (settings.rs), `render_node` makes every container `overflow_hidden` (src/window.rs
   ~4624) and a row never wraps, so once the mins do not fit, the row's END is cut. With Files
   open the row needs 268z (sidebar) + 1 + 16z (padding) + 16z (gaps) + (80 + 280 + 64)z =
-  724z + 1 px: 1100 px from zoom 1.6, 1280 from 1.8, 1440 from 2.0. With `cw-panel` last (as built
+  724z + 1 px with the 280 min: 1100 px from zoom 1.6, 1280 from 1.8, 1440 from 2.0 (since r6-07,
+  with Files' min 160, 604z + 1: 1100 px from zoom 1.83, 1440 from 2.4). With `cw-panel` last (as built
   until r2-15) that cut the game: 1100×700 zoom 1.6 lost 47 of the rail's 102 px, zoom 2 put all of
   it off-screen, and so did 1440×900 zoom 2.5. B15 used to say "every node is on screen" without
   naming its zoom ≤ 1.5 envelope. Now `cw-panel` comes before Files, so the same windows cut Files
@@ -1215,8 +1222,12 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   "tight", measured wider than 72 px) and either `mainEst < 600` or the panel is tight (under 200
   px, drawn as a rail in its whole column, r2-14); in those states folding always widens the
   terminals (`test/layout` "folding gives the terminals room"). It reads "Terminals are narrow:
-  fold Creaseworks?". Where the panel is already at its 64 px min (zoom 1.5 with Files open) no
-  hint is offered: folding changes nothing.
+  fold Creaseworks?". Where the panel is folded or within `FOLD_GAIN_MIN` (24) of its 64 px rail
+  (zoom 1.5 with Files open), folding changes nothing; since r6-07 the chip then offers "Terminals
+  are narrow: hide Creaseworks?" while `railMainEstimate` gives the terminals under `HIDE_BELOW`
+  (360 design px), and Hide runs `layout.hide {id: "cw-panel"}`. Fold, Hide and Not now all answer
+  the chip (`answerNarrow`: once per Files opening, else per day), so the chip's Fold never turns
+  straight into the Hide offer.
   `session.js` still computes `mainEst` with `layoutInfo().filesPx`, which for the weight Files
   column is the 368 fallback; the real Files width is 280 at 1100 px (so `mainEst` is about 88 px
   low there; the hint shows either way, real main is 373) and 367 at 1440. `filesEstimate(info,
@@ -1243,7 +1254,7 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   `layouts/Creaseworks.json` as built (`test/layout` "is exactly the layout in DESIGN §2.5").
 * **Dragging the game | Files divider (r2-15 side effect).** herdr's `drag_to` clamps only the
   LEFT child's min and max. With Files now right of the game, dragging that divider right takes
-  weight from Files below its 280 px min, which herdr then holds at 280 by shrinking `main`
+  weight from Files below its min (280 then, 160 since r6-07), which herdr then holds by shrinking `main`
   (1440×900 with Files open, a 250 px drag: the game 217 → 392, `main` 556 → 467). `main` never
   goes below its 80 min, and the stored weights mean the game is wider (524 instead of 405) once
   Files closes; Fold and Unfold reset the game's weight. RECIPE's Watch out names it.

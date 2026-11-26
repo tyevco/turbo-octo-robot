@@ -19,6 +19,7 @@ import { engine, seeded, T0 } from "../engine/_util.mjs";
 import { graphemes } from "../../mods/creaseworks/engine/index.js";
 import { FREE_SLOTS, PERKS, AUTOMATIONS } from "../../mods/creaseworks/engine/content.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
+import { slotPos } from "../../mods/creaseworks/engine/view.js";
 import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks } from "../../mods/creaseworks/ui/mat.js";
 import { renderShop, rowText, rowTextWidth, SHOP_CLIP } from "../../mods/creaseworks/ui/shop.js";
 import { renderString } from "../../mods/creaseworks/ui/string.js";
@@ -307,7 +308,7 @@ test("r5-13: the confirm card says an uncollected away pot is collected first", 
 // ---------------------------------------------------------------------------
 // r6-06
 
-test("r6-06: the Paper Boat glides in its own lane above the bottom band: never under the tray or the streak label, never on the Sheet", () => {
+test("r6-06: the Paper Boat glides in its own lane above the bottom band (under it only in the short mat's dip, with the band on top), never on the Sheet", () => {
   let dips = 0;
   for (const width of [240, 320, 420]) {
     for (const calm of [false, true]) {
@@ -341,15 +342,93 @@ test("r6-06: the Paper Boat glides in its own lane above the bottom band: never 
         } else {
           dips++;
         }
-        // painted after the band: the envelopes never take its clicks
+        // painted after the Sheet and under the band: the envelopes and the label stay whole
         const order = json.children.map((c) => c && c.id);
-        assert.ok(order.indexOf("cw-boat") > order.indexOf("cw-mat-bottom"), `${at}: the boat paints over the band`);
+        assert.ok(order.indexOf("cw-boat") > order.indexOf("cw-sheet"), `${at}: the boat paints over the mat`);
+        assert.ok(order.indexOf("cw-boat") < order.indexOf("cw-mat-bottom"), `${at}: the band paints over the boat`);
         assert.ok(findById(json, "cw-tray").children.length >= 2, `${at}: the tray is full`);
         if (calm) assert.equal(box.x, g.w - 48 - 8, `${at}: calm parks it at the lane's far end`);
       }
     }
   }
   assert.ok(dips > 0, "on the short mat it dips below the Sheet while crossing its columns");
+});
+
+test("r6-06: the boat's lane is the bottom slot row, so every play piece there paints over the boat and keeps its clicks", () => {
+  for (const width of [240, 320, 420]) {
+    for (const calm of [false, true]) {
+      for (const age of [0, 6000, 12000, 19000]) {
+        const s = seeded(11);
+        s.ui.hints.fold = true;
+        s.stats.hits = 10;
+        s.settings.calm = calm;
+        s.spawn.boat = { id: "b7", born: s.spawn.shownMs - age };
+        const vm = engine.view(s, T0, { role: "panel", width });
+        const short = Boolean(vm.sheet && vm.sheet.short);
+        // a scrap in every bottom-row slot, a node and the ream there too
+        vm.mat.scraps = [40, 41, 42, 43, 44, 45, 46, 47, 48].map((sl) => ({ id: `s${sl}`, ...slotPos(sl, short) }));
+        vm.mat.nodes = [{ id: "n49", i: 1, due: true, ...slotPos(49, short) }];
+        const ctx = makeCtx({ width, calm });
+        const json = renderMat(vm, { tab: "flock" }, ctx).toJSON();
+        const at = `width ${width}, age ${age}${calm ? ", calm" : ""}`;
+        const order = json.children.map((c) => c && c.id);
+        const boatAt = order.indexOf("cw-boat");
+        assert.ok(boatAt > 0, `${at}: the boat is drawn`);
+        const boat = json.children[boatAt];
+        const bb = { x: styleVal(boat, "left"), y: styleVal(boat, "top"), w: styleVal(boat, "w"), h: styleVal(boat, "h") };
+        let under = 0;
+        json.children.forEach((c, i) => {
+          if (!c || !/^cw-(scrap|node)-/.test(c.id || "")) return;
+          const r = { x: styleVal(c, "left"), y: styleVal(c, "top"), w: styleVal(c, "w"), h: styleVal(c, "h") };
+          if (overlap(r, bb) > 0) under++;
+          assert.ok(i > boatAt, `${at}: ${c.id} paints over the boat`);
+        });
+        assert.ok(under > 0, `${at}: the lane does cross the bottom slot row`);
+        // the boat is still caught around them: some of its box is not under a piece
+        const free = [];
+        for (let x = bb.x + 1; x < bb.x + bb.w; x += 2) {
+          for (let y = bb.y + 1; y < bb.y + bb.h; y += 2) {
+            const hit = json.children.some((c, i) => i > boatAt && c && /^cw-(scrap|node)-/.test(c.id || "") &&
+              x >= styleVal(c, "left") && x < styleVal(c, "left") + styleVal(c, "w") && y >= styleVal(c, "top") && y < styleVal(c, "top") + styleVal(c, "h"));
+            if (!hit) free.push([x, y]);
+          }
+        }
+        assert.ok(free.length > 0, `${at}: part of the boat is clear of every piece`);
+      }
+    }
+  }
+});
+
+test("r6-06: on the short mat the gliding boat's eased box never touches the Sheet, and its dip eases with it", () => {
+  for (const width of [240, 260]) {
+    const s = seeded(11);
+    s.ui.hints.fold = true;
+    s.stats.hits = 10;
+    const boxes = [];
+    for (let age = 0; age <= 20000; age += 1000) {
+      s.spawn.boat = { id: "b7", born: s.spawn.shownMs - age };
+      const vm = engine.view(s, T0, { role: "panel", width });
+      if (!vm.mat.boat) continue;
+      const moving = vm.mat.boat.x !== vm.mat.boat.x1;
+      const ctx = makeCtx({ width });
+      const g = matGeometry(vm, ctx);
+      assert.ok(g.short, `width ${width}: the short mat`);
+      const el = findById(renderMat(vm, { tab: "flock" }, ctx).toJSON(), "cw-boat");
+      const props = (el.transitions || []).filter((t) => t.kind === "transition" && t.duration === 1000 && t.easing === "linear").map((t) => t.property);
+      if (moving) assert.ok(props.includes("left") && props.includes("top"), `width ${width}, age ${age}: left and top ease over the tick`);
+      boxes.push({ g, box: boatBox(vm.mat.boat, g) });
+    }
+    assert.ok(boxes.length >= 15, `width ${width}: the boat glides`);
+    for (let i = 1; i < boxes.length; i++) {
+      const { g } = boxes[i];
+      const [x0, y0] = boxes[i - 1].box;
+      const [x1, y1] = boxes[i].box;
+      for (let t = 0; t <= 1.0001; t += 0.05) {
+        const b = { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, w: 48, h: 30 };
+        assert.equal(overlap(b, { x: g.sx, y: g.sy, w: g.sheet, h: g.sheet }), 0, `width ${width}, tick ${i}, t ${t.toFixed(2)}: ${JSON.stringify(b)} clear of the Sheet`);
+      }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -66,7 +66,7 @@ function makeCtx(themeName, s, over = {}) {
   const dark = isDark(themeName);
   const calls = [];
   const names = [
-    "click", "open", "openHelper", "buy", "setting", "switchAuto", "wish", "collect", "dismiss", "fold", "show", "tab",
+    "click", "open", "openHelper", "buy", "setting", "switchAuto", "wish", "collect", "dismiss", "fold", "foldHint", "show", "tab",
     "segment", "select", "toggleGroup", "showGroup", "details", "confirm", "cancel", "retrySave", "checkSave", "hide",
     "restoreBackup", "sharePath",
   ];
@@ -712,8 +712,13 @@ test("r6-07: at the rail the narrow hint offers Hide panel instead of Fold", () 
     assert.deepEqual(ctx.calls, [["hide"]], "hides, never folds");
   }
   // Without narrowHide it is the fold offer as before.
-  const json = renderRibbon(vm, {}, makeCtx("graphite", { width: 700, height: 30 }, { narrowHint: true })).toJSON();
+  const fctx = makeCtx("graphite", { width: 700, height: 30 }, { narrowHint: true });
+  const ftree = renderRibbon(vm, {}, fctx);
+  const json = ftree.toJSON();
   assert.ok(ids(json).includes("cw-rib-hint-fold") && !ids(json).includes("cw-rib-hint-hide"));
+  // The chip's Fold answers the chip too (foldHint), unlike the ribbon's fold button.
+  fire(ftree, "cw-rib-hint-fold", "on_click", {}, fakeCx());
+  assert.deepEqual(fctx.calls, [["foldHint"]]);
 });
 
 test("r4-07: the engine's level C and the ribbon's fit agree (no lead), at every width and mix", async () => {

@@ -331,7 +331,7 @@ function leadElement(sp, T, S, h) {
   const foldTip = sp.label ? undefined : sp.hide ? HIDE_TEXT : HINT_TEXT;
   const id = sp.hide ? "cw-rib-hint-hide" : "cw-rib-hint-fold";
   return row
-    .child(button(id, sp.label ? act.full : act.compact, { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => (sp.hide ? h.hide(cx) : h.fold(cx)) }, T))
+    .child(button(id, sp.label ? act.full : act.compact, { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => (sp.hide ? h.hide(cx) : h.foldHint(cx)) }, T))
     .child(button("cw-rib-hint-later", "Not now", { variant: "ghost", h: 28, w: sp.later, size: 11, px: 6, onClick: (e, cx) => h.dismiss("narrow", cx) }, T));
 }
 
@@ -551,6 +551,7 @@ export function renderRibbon(vm, ui, ctx) {
     showGroup: handler(ctx, "showGroup"),
     show: handler(ctx, "show"),
     fold: handler(ctx, "fold"),
+    foldHint: handler(ctx, "foldHint"),
     hide: handler(ctx, "hide"),
     dismiss: handler(ctx, "dismiss"),
     click: handler(ctx, "click"),

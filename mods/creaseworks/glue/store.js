@@ -91,30 +91,35 @@ const CAS_RE = /the file changed outside herdr|the file changed while saving|fil
 export const FILE_LIMIT = 1024 * 1024;
 
 /**
- * The UTF-8 size of `text` in bytes when it is over FILE_LIMIT, else 0
+ * The exact UTF-8 size of `text` in bytes when it is over FILE_LIMIT, else 0
  * (r6-16). The engine holds the save under K.saveBudget by archiving Album
  * records (helpers.js albumKeepFor), but a roster that alone passes it (about
  * 1,300 helpers present at once, DESIGN R13) cannot shrink: the write is not
- * sent, and fail() says why in words, retrying as the roster changes. Most
- * saves are decided by their length alone (one to three bytes a UTF-16 unit);
- * the rest count their non-ASCII units with two regex replaces (no script
- * loop over the text: about 900 KiB of save in one task step).
+ * sent, and fail() says why in words, retrying as the roster changes. This
+ * only stops a write herdr would refuse anyway (mod_files.rs write: "Text file
+ * exceeds 1 MiB"); it does not make the save smaller. Most saves are decided by
+ * their length alone (one to three bytes a UTF-16 unit); the rest count their
+ * non-ASCII units with two regex replaces (no script loop over the text: about
+ * 900 KiB of save in one task step), also when the length alone is over the
+ * limit, so the KiB said is the real size of a non-ASCII save.
  */
 export function oversize(text) {
   const n = text.length;
   if (n * 3 <= FILE_LIMIT) return 0;
-  let bytes = n;
-  if (n <= FILE_LIMIT) {
-    // +1 for each non-ASCII unit, +1 more for each from U+0800 outside the surrogates (3 bytes; a pair is 4 bytes for 2 units)
-    const wide = text.replace(/[\x00-\x7f]+/g, "");
-    bytes += wide.length + wide.replace(/[\u0080-\u07ff\ud800-\udfff]+/g, "").length;
-  }
+  // +1 for each non-ASCII unit, +1 more for each from U+0800 outside the surrogates (3 bytes; a pair is 4 bytes for 2 units)
+  const wide = text.replace(/[\x00-\x7f]+/g, "");
+  const bytes = n + wide.length + wide.replace(/[\u0080-\u07ff\ud800-\udfff]+/g, "").length;
   return bytes > FILE_LIMIT ? bytes : 0;
 }
 
-/** The fail() message of a save too big for herdr (≤ 60 graphemes: view.js CLIP.error). */
-export function oversizeText(bytes) {
-  return `save is ${Math.ceil(bytes / 1024)} KiB, over herdr's 1 MiB cap: too many helpers`;
+/**
+ * The fail() message of a save too big for herdr (≤ 60 graphemes: view.js
+ * CLIP.error, so it is shown whole). `recovery`: the write was to
+ * save.recovery.json (save.json can't be read), which the text names itself.
+ */
+export function oversizeText(bytes, recovery = false) {
+  const kib = Math.ceil(bytes / 1024);
+  return recovery ? `recovery file is ${kib} KiB, over 1 MiB: too many helpers` : `save is ${kib} KiB, over herdr's 1 MiB cap: too many helpers`;
 }
 
 /** The paths for app home `home`, or for a shared save file `shared` (backups live next to it). */
@@ -621,6 +626,8 @@ export async function load(slot, opts) {
   // UTF-8, no permission: r6-04) still holds progress: never taken for "no
   // backup". Its host message is shown in Details (saveInfo).
   S.bakUnreadable = bak.error;
+  S.bakHeld = null;
+  S.bakProbeAt = null;
   slot.readOnly = false;
   S.unreadable = null;
   S.recoveryText = null;
@@ -957,6 +964,8 @@ async function leaveMissingShared(slot, env, stale) {
   slot.paths = next;
   slot.bakText = own.error === null ? own.text : null;
   S.bakUnreadable = own.error;
+  S.bakHeld = null;
+  S.bakProbeAt = null;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -1401,7 +1410,7 @@ async function recoveryWrite(slot, env, stale) {
     const text = serialize(slot.state);
     const big = oversize(text);
     if (big) {
-      fail(slot, `${oversizeText(big)} (writing ${baseName(rec)})`, env.now()); // never sent (r6-16)
+      fail(slot, oversizeText(big, true), env.now()); // never sent (r6-16); ≤ 60 graphemes, the file named in the text
       return false;
     }
     try {
@@ -1437,6 +1446,68 @@ async function recoveryWrite(slot, env, stale) {
   }
   S.retryAt = env.now() + 1000;
   return false;
+}
+
+/**
+ * While save.bak.json was there but could not be read (r6-04: a folder, over
+ * 1 MiB, invalid UTF-8, no permission), it is never rotated: herdr's write
+ * reads the file first (mod_files.rs write), so the rotation would fail with
+ * the same host error and its "the save itself is fine" notice would cover
+ * the fresh-start one, while the player's progress is in that backup, not in
+ * the save. It is read again on the rotation's cadence instead, quietly (the
+ * fresh-start notice and Details already say it). Once it can be read, its
+ * text is kept aside (save.damaged-<n>.json, listed in Details with what it
+ * holds) and the player is told where it went before any rotation may
+ * replace it; until that copy is written it is not rotated over (S.bakHeld).
+ * Gone (moved away by the player): nothing left to keep, it is rotated as
+ * usual. Returns false when superseded.
+ */
+async function probeBackup(slot, env, stale, t) {
+  const S = slot.save;
+  const P = slot.paths;
+  S.bakProbeAt = t;
+  const r = await readOrError(P.bak);
+  if (stale()) return false;
+  if (r.error !== null) {
+    S.bakUnreadable = r.error;
+    S.bakHeld = null;
+    return true;
+  }
+  if (r.text === null) {
+    S.bakUnreadable = null;
+    S.bakHeld = null;
+    slot.bakText = null;
+    slot.bakState = null;
+    slot.bakAt = null;
+    return true;
+  }
+  await pause(env); // the parse in task steps of its own (r3-01)
+  if (stale()) return false;
+  progress(slot, env);
+  const parsed = await parseIn(slot, r.text, env, stale);
+  if (parsed === null || stale()) return false;
+  const what = parsed.ok ? `the unreadable backup, from ${localTime(parsed.state.clock)}` : parsed.reason === "newer" ? "the unreadable backup, from a newer version" : "the unreadable backup, damaged";
+  const kept = await keepAsideListed(slot, P, r.text, what);
+  if (stale()) return false;
+  if (!kept) {
+    // Still left in place, never rotated over: tried again on the next probe.
+    S.bakUnreadable = null;
+    S.bakHeld = "could not be kept aside yet";
+    return true;
+  }
+  S.bakUnreadable = null;
+  S.bakHeld = null;
+  slot.bakText = r.text;
+  slot.bakState = parsed.ok ? "ok" : "damaged";
+  slot.bakAt = null; // rotated on the next cycle: the old game is safe in the kept copy
+  const from = parsed.ok ? ` (game from ${localTime(parsed.state.clock)})` : "";
+  setNotice(slot, "load", { kind: "recovered", text: backupKeptText(kept, from), at: t });
+  return true;
+}
+
+/** The notice when an unreadable backup turns readable and is kept aside (≤ NOTICE_MAX graphemes). */
+export function backupKeptText(kept, from = "") {
+  return `The backup can be read again: kept as ${kept}${from} (Details). This game started fresh.`;
 }
 
 /** Rotates save.bak.json (≤ every 5 min). A failure other than another writer's rotation is shown and retried. */
@@ -1555,8 +1626,15 @@ export async function cycle(slot, env) {
         progress(slot, env);
       }
       const t = env.now();
-      // 2. rotate the backup so it trails the main save
-      if (S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
+      // 2. rotate the backup so it trails the main save; never one that
+      // could not be read and holds progress not yet kept aside (r6-04)
+      if ((S.bakUnreadable || S.bakHeld) && (S.bakProbeAt === null || S.bakProbeAt === undefined || t - S.bakProbeAt >= BACKUP_EVERY_MS)) {
+        if (!(await probeBackup(slot, env, stale, t))) return false; // superseded
+        await pause(env); // the serialisation in a task step of its own
+        if (stale()) return false;
+        progress(slot, env);
+      }
+      if (!S.bakUnreadable && !S.bakHeld && S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
         if (!(await rotateBackup(slot, env, stale, t))) return false; // superseded
       }
       // 1. + 3. serialise and write
@@ -1700,6 +1778,8 @@ async function settleShare(slot, env, stale) {
   slot.paths = next;
   slot.bakText = bak.error === null ? bak.text : null;
   S.bakUnreadable = bak.error;
+  S.bakHeld = null;
+  S.bakProbeAt = null;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -1956,6 +2036,8 @@ export async function sharePath(slot, env, path) {
     if (stale()) return "stale";
     slot.bakText = bak.error === null ? bak.text : null;
     S.bakUnreadable = bak.error;
+    S.bakHeld = null;
+    S.bakProbeAt = null;
     slot.bakAt = null;
     slot.bakState = null;
     S.unreadable = null;
@@ -2014,8 +2096,10 @@ export function saveInfo(slot, t) {
     if (lead) text = `${lead} · ${text[0].toLowerCase()}${text.slice(1)}`;
   } else text = "Not saved yet";
   let backup = false;
-  if (S.bakError) backup = `not updated (${S.bakError})`;
-  else if (S.bakUnreadable) backup = `can't be read, left in place (${S.bakUnreadable}): ${slot.paths.bak}`;
+  // (an unreadable backup first: it holds progress, and the path says where: r6-04)
+  if (S.bakUnreadable) backup = `can't be read, left in place (${S.bakUnreadable}): ${slot.paths.bak}`;
+  else if (S.bakHeld) backup = `readable again, left in place (${S.bakHeld}): ${slot.paths.bak}`;
+  else if (S.bakError) backup = `not updated (${S.bakError})`;
   else if (slot.bakText !== null) backup = slot.bakState === "damaged" ? "damaged" : slot.bakAt !== null ? `rotated ${localTime(slot.bakAt)}` : "present";
   return {
     state: problem ? "problem" : S.status === "saving" ? "saving" : "saved",

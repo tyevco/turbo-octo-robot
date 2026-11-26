@@ -1675,10 +1675,24 @@ test("r6-04: save.json missing beside an unreadable backup: a fresh start that s
     await w.advance(3000);
     assert.ok(parsed(w.ctl).ok, `${what}: the fresh game is saved`);
     assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: the backup is left as it was`);
-    // The rotation later can't replace it either, and says so; the progress in it is never written over.
-    await w.advance(6 * 60000);
-    assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: still left as it was`);
-    assert.ok(w.slot.notices.load, `${what}: the load notice stays until dismissed`);
+    // The rotation is never tried over it (herdr's write would fail reading it
+    // and say "the save itself is fine" over this notice): the fresh-start
+    // notice, the banner and the Details row stay as they were, rotation after
+    // rotation, and the progress in it is never written over.
+    const text = n.text;
+    for (const dt of [20000, 60000, 6 * 60000, 30 * 60000]) {
+      await w.advance(dt);
+      assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what} +${dt}: still left as it was`);
+      assert.equal(w.slot.notices.bak, null, `${what} +${dt}: no backup error`);
+      assert.equal(w.slot.notice && w.slot.notice.kind, "fresh", `${what} +${dt}: the fresh-start notice is on show`);
+      assert.equal(w.slot.notice.text, text, `${what} +${dt}`);
+      const b = v.session.vm().notices.find((x) => x.save);
+      assert.equal(b && b.text, text, `${what} +${dt}: the banner`);
+      assert.doesNotMatch(b.text, /save itself is fine/, `${what} +${dt}`);
+      assert.equal(v.session.ctx().save.backup, `can't be read, left in place (${msg}): ${BAK}`, `${what} +${dt}: the Details row keeps the message and path`);
+    }
+    assert.deepEqual(w.ctl.writes.filter((x) => x.path === BAK), [], `${what}: no write to the backup was tried`);
+    assert.ok(parsed(w.ctl).ok, `${what}: the fresh game keeps saving`);
     w.dispose();
     w = null;
   }
@@ -1696,6 +1710,12 @@ test("r6-04: a damaged save.json beside an unreadable backup never says there wa
     assert.equal(n.message, msg, what);
     assert.equal(w.ctl.readFile(damaged(1)), "{not json", `${what}: the damaged save kept aside`);
     assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: the backup is not kept aside or touched`);
+    await w.advance(6 * 60000);
+    assert.equal(w.slot.notice && w.slot.notice.kind, "fresh", `${what}: still the fresh-start notice after rotations`);
+    assert.equal(w.slot.notice.text, n.text, what);
+    assert.equal(w.slot.notices.bak, null, what);
+    assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: still left as it was`);
+    assert.deepEqual(w.ctl.writes.filter((x) => x.path === BAK), [], `${what}: no write to the backup was tried`);
     w.dispose();
     w = null;
   }
@@ -1729,14 +1749,70 @@ test("r6-04: a missing shared save beside an unreadable local backup says both",
   assert.equal(w.ctl.readFile(shared), null);
 });
 
-test("r6-04: a backup that turns readable again is shown as present once rotated", async () => {
+test("r6-04: a backup that turns readable again is kept aside, and said, before any rotation replaces it", async () => {
+  for (const [what, make, , files] of BAK_CASES) {
+    w = win({ files });
+    make(w.ctl);
+    const v = await w.copy("panel");
+    await w.advance(3000);
+    // The player fixes it (the folder moved away and the old game put back, permissions fixed).
+    const old = freshState(2);
+    const oldText = saveText(old);
+    if (what === "a folder") w.ctl.dirs.delete(BAK); // (the mock has no rmdir)
+    w.ctl.externalWrite(BAK, oldText);
+    await w.advance(6 * 60000);
+    assert.equal(w.ctl.readFile(damaged(1)), oldText, `${what}: the old game is kept aside before the backup rotates`);
+    const info = v.session.ctx().save;
+    assert.ok(info.damaged.some((d) => d.startsWith("save.damaged-1.json (the unreadable backup, from ")), `${what}: listed in Details: ${info.damaged}`);
+    const n = w.slot.notices.load;
+    assert.equal(n && n.kind, "recovered", what);
+    assert.match(n.text, /^The backup can be read again: kept as save\.damaged-1\.json \(game from .+\) \(Details\)\. This game started fresh\.$/, what);
+    assert.doesNotMatch(String(info.backup), /can't be read/, String(info.backup));
+    // Then the backup trails this game as usual; the old game stays in the kept copy.
+    await w.advance(6 * 60000);
+    const bak = w.ctl.readFile(BAK);
+    assert.notEqual(bak, oldText, `${what}: rotated once kept`);
+    assert.equal(w.ctl.readFile(damaged(1)), oldText, `${what}: the kept copy stays`);
+    w.dispose();
+    w = null;
+  }
+});
+
+test("r6-04: a backup readable again that can't be kept aside is never rotated over", async () => {
   w = win({ files: { [BAK]: BIG_BAK } });
   const v = await w.copy("panel");
   await w.advance(3000);
-  w.ctl.externalWrite(BAK, saveText(freshState(2)));
+  const oldText = saveText(freshState(2));
+  w.ctl.externalWrite(BAK, oldText);
+  w.ctl.failNextWrite("No space left on device (os error 28)", damaged(1));
   await w.advance(6 * 60000);
-  const info = v.session.ctx().save;
-  assert.doesNotMatch(String(info.backup), /can't be read/, String(info.backup));
+  assert.equal(w.ctl.readFile(damaged(1)), null, "the keep-aside write failed");
+  assert.equal(w.ctl.readFile(BAK), oldText, "not rotated over");
+  assert.equal(v.session.ctx().save.backup, `readable again, left in place (could not be kept aside yet): ${BAK}`);
+  assert.equal(w.slot.notice && w.slot.notice.kind, "fresh", "the fresh-start notice stays");
+  // The next try keeps it, then the backup rotates.
+  await w.advance(6 * 60000);
+  assert.equal(w.ctl.readFile(damaged(1)), oldText, "kept on the next try");
+  await w.advance(6 * 60000);
+  assert.notEqual(w.ctl.readFile(BAK), oldText, "rotated once kept");
+  assert.equal(w.ctl.readFile(damaged(1)), oldText);
+});
+
+test("r6-04: a backup that can't be read and is then moved away is rotated as usual", async () => {
+  w = win({ files: { [BAK]: BIG_BAK } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.externalWrite(BAK, null); // (deletes it)
+  await w.advance(12 * 60000);
+  assert.notEqual(w.ctl.readFile(BAK), null, "a new backup was written");
+  assert.match(String(v.session.ctx().save.backup), /^rotated /);
+  assert.equal(w.ctl.readFile(damaged(1)), null, "nothing to keep aside");
+});
+
+test("r6-04: the kept-aside notice fits the banner", () => {
+  const t = store.backupKeptText("save.damaged-5.json", " (game from 23:59)");
+  assert.ok(engine.graphemes(t).length <= store.NOTICE_MAX, t);
+  assert.doesNotMatch(t, /save itself is fine/);
 });
 
 test("r6-04: every unreadable-backup fresh-start notice fits the banner, alone and after a missing shared save", () => {
@@ -1795,6 +1871,8 @@ test("r6-16: oversize measures UTF-8 bytes exactly around herdr's 1 MiB limit", 
     "x".repeat(L), "x".repeat(L + 1), "x".repeat(349525), "é".repeat(L / 2), "é".repeat(L / 2) + "x",
     "漢".repeat(349525), "漢".repeat(349525) + "x", "漢".repeat(349525) + "xy", "🐦".repeat(L / 4), "🐦".repeat(L / 4) + "é",
     `${"a".repeat(500000)}${"支払い".repeat(60000)}`, `${"a".repeat(600000)}${"é🐦漢".repeat(50000)}`,
+    // over the limit in UTF-16 units alone: still the exact byte count, not the length
+    "é".repeat(L + 1), "漢".repeat(L), "🐦".repeat(L / 2 + 1), `${"x".repeat(L)}${"支払い".repeat(1000)}`,
   ];
   for (const t of cases) {
     const bytes = Buffer.byteLength(t, "utf8");
@@ -1808,7 +1886,30 @@ test("r6-16: the too-big message fits the banner's error clip whole", () => {
     const m = store.oversizeText(kib * 1024);
     assert.ok(engine.graphemes(m).length <= 60, m);
     assert.match(m, new RegExp(`^save is ${kib} KiB, over herdr's 1 MiB cap: too many helpers$`));
+    const r = store.oversizeText(kib * 1024, true);
+    assert.ok(engine.graphemes(r).length <= 60, r);
+    assert.match(r, new RegExp(`^recovery file is ${kib} KiB, over 1 MiB: too many helpers$`));
   }
+  // a non-ASCII save over the limit in length alone says its real size
+  assert.equal(store.oversizeText(store.oversize("漢".repeat(store.FILE_LIMIT))), "save is 3072 KiB, over herdr's 1 MiB cap: too many helpers");
+});
+
+test("r6-16: a recovery write over 1 MiB is never sent, and its message is shown whole", async () => {
+  const agents = [];
+  const terminals = [];
+  for (let i = 1; i <= 2000; i++) {
+    agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `agent ${i} 支払い照合サービスのテスト ${"漢".repeat(20)}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
+    terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: 1000 + i * 997 });
+  }
+  w = win({ files: { [SAVE]: HUGE }, agents, terminals });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  assert.equal(w.ctl.readFile(RECOVERY), null, "nothing written");
+  assert.deepEqual(w.ctl.writes.filter((x) => x.path === RECOVERY), [], "the recovery write was not sent to herdr");
+  const m = w.slot.notices.write.message;
+  assert.match(m, /^recovery file is \d+ KiB, over 1 MiB: too many helpers$/);
+  const banner = v.session.vm().notices.find((x) => x.save);
+  assert.ok(banner.text.includes(`Can't save: ${m}.`), banner.text);
 });
 
 test("r6-16: a save over 1 MiB is never sent, is said in words, and saves again once the roster shrinks", async () => {

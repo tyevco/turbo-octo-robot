@@ -26,7 +26,8 @@ const awayOf = (ev) => ev.filter((e) => e.kind === "away");
 /** DESIGN §10.2 away rate per second at `s` (every present pane helper counts as seen). */
 function awayRate(s, awayF) {
   const E = engine.effects(s);
-  const panes = Object.values(s.helpers).filter((h) => !h.gone && h.kind === "pane");
+  // A helper waiting on the player earns nothing away (review r6-05, DESIGN §10.2).
+  const panes = Object.values(s.helpers).filter((h) => !h.gone && h.kind === "pane" && h.status !== "blocked");
   const N = panes.length;
   const base = (K.helperFlat * E.G + K.helperRw * E.Rw) * E.folk;
   return (awayF ?? E.awayF) * (E.Rw + (E.gather ? engine.crowd(N) * N * base : 0));

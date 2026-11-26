@@ -400,6 +400,34 @@ test("r6-07: at the rail with narrow terminals (1100 x 700, zoom 1.5, Files open
   await w.handler(ribbon, "fold");
   assert.deepEqual(w.ctl.runs.slice(-2).map((r) => r.name), ["layout.show", "layout.resize"]);
   assert.equal(w.ctl.runErrors().length, 0);
+  // Hide answered the chip: back at the rail it does not ask again (review of r6-07).
+  measure(w.ctl.layoutValue, 1100, 700, 1.5);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, false, "Hide holds for this Files opening");
+});
+
+test("r6-07: the chip's Fold answers the chip, so it never turns straight into the Hide offer", async () => {
+  let tree = JSON.parse(JSON.stringify(SHIPPED));
+  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  const { panel, ribbon } = await game({ layout: tree });
+  const measure = (t, width, height, zoom) => {
+    const b = layoutBoxes(t, { width, height, zoom });
+    sizeOf(panel, Math.round(b["cw-panel"].width / zoom), 584);
+    sizeOf(ribbon, Math.round(b["cw-ribbon"].width / zoom), 30);
+  };
+  measure(tree, 1280, 800, 1.5);
+  await w.advance(1000);
+  const before = ribbon.session.ctx();
+  assert.equal(before.narrowHint, true, "unfolded with narrow terminals: offered");
+  assert.equal(before.narrowHide, false, "as Fold");
+  await w.handler(ribbon, "foldHint");
+  assert.deepEqual(runsOf(w.ctl, "layout.resize").map((r) => r.args.weight), [RAIL_WEIGHT]);
+  measure(w.ctl.layoutValue, 1280, 800, 1.5);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, false, "folded from the chip: no Hide chip right after");
+  // The ribbon's own fold button does not answer it.
+  await w.handler(ribbon, "fold");
+  assert.equal(w.ctl.runErrors().length, 0);
 });
 
 test("r6-07: no hide offer where the terminals have room, or once dismissed", async () => {

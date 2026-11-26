@@ -187,9 +187,9 @@ separate copy of the same mod; both render one live game through the handover sl
 | State | Width taken from terminals | Height taken | Terminal width at 1440×900 | at 1100×700 |
 |---|---|---|---|---|
 | Expanded (weight 0.39: 322 px at 1440, 226 at 1100) | panel + 8 gap | 30 px | **825 px** (~100 cols) | **581 px** |
-| Expanded, Files open (Files 367 / 280) | panel 217 / 146 + 8 | 30 px | 556 px | 373 px |
+| Expanded, Files open (Files 367 / 257) | panel 217 / 152 + 8 | 30 px | 556 px | 390 px |
 | Rail (64) | 72 px | 30 px | 1083 px | 743 px |
-| Panel hidden (palette only) | 0 | 30 px | 1155 px | 815 px |
+| Panel hidden (palette, or the narrow chip's Hide) | 0 | 30 px | 1155 px | 815 px |
 
 Terminal height at 1440×900 is 900 − 42 − 28 − 30 − 16 = **784 px**; at 1100×700, **584 px**.
 
@@ -212,7 +212,7 @@ slot. Estimated terminal width:
 mainEst = Wr − 16 − (Wp + 8) − (filesShown ? filesPx + 8 : 0)
 filesShown = layout() reports node "panel" not hidden
 filesPx    = its px size if layout() gives it; for the shipped {weight} Files column
-             commands.js filesEstimate(info, Wp) = Wp × filesWeight / panelWeight, held to 280 … 900
+             commands.js filesEstimate(info, Wp) = Wp × filesWeight / panelWeight, held to 160 … 900
 ```
 
 * If the panel is expanded (wider than 72 px) and `mainEst < 600`, or it is tight (under 200: drawn
@@ -222,10 +222,16 @@ filesPx    = its px size if layout() gives it; for the shipped {weight} Files co
   (zoom 1.5) it shows the two buttons alone, and the first reads **[Fold panel]**, since a bare
   "Fold" reads as the game's own action (review r3-23). It appears at most once per Files-panel opening and
   once per day otherwise (`ui.narrowHintDay` in the save). The game never resizes on its own.
-* With the Files panel open at 1100 px wide the panel is 146 px (Narrow) and the terminals 373 px,
-  so the hint appears; folding gives the terminals 443 px (Files 292). The hint is never shown
-  for a panel already at its 64 px min (zoom 1.5 with Files open at 1100–1440 px), where folding
-  would change nothing.
+* With the Files panel open at 1100 px wide the panel is 152 px (Narrow, drawn as the rail) and
+  the terminals 390 px, so the hint appears; folding gives the terminals 443 px (Files 292).
+* Where folding would gain nothing (the panel folded, or unfolded within 24 px of its 64 px rail:
+  zoom 1.5 with Files open, 76 design px at 1100×700) and the terminals still have under 360 design
+  px (`HIDE_BELOW`; 196 at 1100×700 zoom 1.5 with Files open), the chip asks instead "Terminals
+  are narrow: hide Creaseworks?" with **[Hide]** (**[Hide panel]** without the question) and
+  **[Not now]** (review r6-07). Hide runs `layout.hide {id:"cw-panel"}` and flashes "Panel hidden:
+  the ribbon's fold button brings it back"; the ribbon's fold button shows it again, unfolded.
+* Any answer (Fold, Hide or Not now) holds for that Files opening, else for the day, so a fold
+  that still leaves the terminals narrow never turns straight into the Hide offer.
 * Panel height `H` = window height − 42 − 28 − 30 − 16. When `H < 640` (1100×700 gives 584) the
   panel uses the **short** variant: mat 304×184 with a 96 px Sheet (§3.2).
 * Screenshots of whole windows at **1440×900 and 1100×700**, each expanded, folded and hidden,
@@ -236,15 +242,15 @@ filesPx    = its px size if layout() gives it; for the shipped {weight} Files co
 | State | `Wp` | What renders |
 |---|---|---|
 | Rail | < 140 (default 64) | §3.9 |
-| Narrow | 140–279 | mat at 100 % width × 184; Flock tiles 4 across (dense); Shop shows icons only. Below 200 (the mat's minimum width) the unfolded panel is drawn as the rail, with no mat (no pieces spawn), and its chevron folds it to 64 (1100×700 with Files open: 146) |
+| Narrow | 140–279 | mat at 100 % width × 184; Flock tiles 4 across (dense); Shop shows icons only. Below 200 (the mat's minimum width) the unfolded panel is drawn as the rail, with no mat (no pieces spawn), and its chevron folds it to 64 (1100×700 with Files open: 152) |
 | Standard | 280–399 (320 as designed; 322 at 1440×900) | every view as drawn in §3 |
 | Wide | ≥ 400 | mat 260 tall; Flock up to 8 columns; Shop rows add effect and payback columns |
 
 Which state a window gets by default (shipped weights, ARCHITECTURE B15): 1100×700 **Narrow**
-(226; 146 with Files open), 1440×900 **Standard** (322; Narrow 217 with Files open), 1920×1080
+(226; 152 with Files open), 1440×900 **Standard** (322; Narrow 217 with Files open), 1920×1080
 **Wide** (456), 2560×1440 **Wide** (636; no maximum: a capped weight node would leave an empty
-strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the rail); past zoom
-1.5 Files, not the panel, is what herdr clips (§2.5).
+strip). At zoom 1.5 the panel is the first to give way (1100×700: drawn as the rail), then Files
+down to its 160 min; past about zoom 1.8 at 1100 px Files, not the panel, is what herdr clips (§2.5).
 
 **Folded, tight or full** (ARCHITECTURE B16) comes from the layout, not from `Wp` alone: the panel
 is **folded** when its weight is at most 0.01 of main's or it measures 72 px or less (a dragged
@@ -288,7 +294,7 @@ while Files is open) and resizes nothing.
         {"id": "cw-panel", "type": "block", "size": {"weight": 0.39}, "min": 64,
          "radius": 10, "border": {"width": 1, "color": "border"}, "background": "chrome",
          "content": {"mod": "creaseworks", "props": {"role": "panel"}}},
-        {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 280, "max": 900,
+        {"id": "panel", "type": "column", "hidden": true, "size": {"weight": 0.66}, "min": 160, "max": 900,
          "children": [{"id": "panel-body", "type": "stack", "active": "files", "children": [
            {"id": "files", "type": "block", "content": {"mod": "files"}},
            {"id": "changes", "type": "block", "content": {"mod": "changes"}}]}]}]},
@@ -442,10 +448,18 @@ Layering is sibling order (later paints on top; no z-index, gpui §11):
    `S.gold`, `S.goldShade`, in a 48×36 hit `div#cw-crane`. Motion §13.5.
 9. **Paper Boat** (curio): `boat-{hull,sail}.svg` tinted `S.sheet`/`S.sheetShade` in a 48×30 hit
    `div#cw-boat`, gliding in **its own lane**: the bottom strip of the play field, just above the
-   bottom band (y 170–200), never under the tray's envelopes or the streak meter. Where the Sheet
-   reaches into that lane (the short mat) it dips just below the Sheet while it crosses the
-   Sheet's columns. It is drawn **after** the bottom band (so where it dips it stays on top and
-   catchable); the list order here is the design order, not the paint order (review r6-06).
+   bottom band (y 170–200), never under the tray's envelopes or the streak meter. That strip is
+   also the bottom row of spawn slots (40–49, hit boxes y 168.8–196.8), so the boat is drawn
+   **right after the Sheet**, under the nodes, scraps, ream and crane: a piece over it stays
+   whole and keeps its clicks (each stops propagation), and the boat, 48 px wide against 28 px
+   pieces, is still caught around it (calm parks it under slots 48–49; a piece there is caught
+   first, then the boat). Where the Sheet reaches into the lane (the short mat, 14 px under the
+   Sheet) it dips just below the Sheet while it crosses the Sheet's columns: its lower 16 px pass
+   under the bottom band, whose envelopes, `+N` and label stay whole and on top (the band has no
+   handler, so the boat takes clicks between them and in the 14 px strip). The dip starts one
+   data tick before the boat reaches the Sheet's columns and ends one tick after it leaves them,
+   and `top` eases with `left` over the tick, so the eased box never touches the Sheet's corners
+   and never jumps. The list order here is the design order, not the paint order (review r6-06).
 10. **Needs-you chips** (top band): height 22, `rounded(11)`, `px(8)`, background `T.popover`,
     1 px border `S.sheet` (separates the chip from the mat in dark themes, where popover vs mat is
     1.21:1), `status/needs.svg` 12 px in the guarded status colour, name 11/600 `T.foreground`.
@@ -745,7 +759,11 @@ x:0  8           126                                            W−108        W
 
 * **Left block 118 px**: fold icon 14, count 12/600, rate 11 `T.muted` (two lines). A save chip,
   a "Welcome back" pill or the narrow-window hint takes the first place of the middle area when
-  present.
+  present. When the middle does not fit beside the blocks' full 118 and 100 px, the blocks lend it
+  the room their contents leave unused (`blockNeeds`: the left block's wider line, the right
+  block's envelope count and mini Sheet) before the narrow hint is dropped (review r6-08: at
+  1100×700 zoom 1.5, ribbon 464 px, the hint now stays with 13 marks). Whenever everything fits
+  the blocks keep 118 and 100.
 * **Right block 100 px**: `✉ n` envelope count (opens the oldest), the **mini Sheet** `[◇]` 26×26
   (shown only while the panel is folded or hidden), and `[⇔]` (`creaseworks.fold`).
 * **Middle: one mark per helper, never capped.** Pip area `w = W − 16 − 118 − 100 − 16`. Density:
@@ -1503,6 +1521,11 @@ calm profile reaches every milestone within 3 % of the typical profile, BALANCE.
   counter `{day: "YYYY-MM-DD", sent}` lives in the save (merge takes the max per day). The glue
   computes the local day from `Date` and the timezone offset and passes it in.
 * Nothing is sent while the panel is shown and the window is active.
+* **Held while the window is away** (review r6-02). herdr's `notify` is a toast inside the window
+  that expires on the wall clock whether or not anyone looks, so while the window is hidden or
+  inactive nothing is claimed, counted or sent: a wanted notification waits and is sent once the
+  window is active again. The once-per-run wish notice and the daily slots are used only by a
+  toast that can be seen.
 * **Never** for agent status ("needs you", "finished"): herdr already does that.
 * **Save problems never depend on notifications.** They are always visible in the ribbon chip,
   the rail glyph, the footer glyph and the banner (§3.8). If both the ribbon and the panel are
@@ -1795,7 +1818,7 @@ because a bad one there fails silently (gpui §5).
 Total: 120 SVG + 1 PNG in the mod (121 files), plus repo `preview.png`. If the facet split is not needed the
 36 `-a/-b/-c` files are still generated but unused (they cost nothing at run time). Runtime vector
 art (no files): mat grid (2 elements), mat edge, crease lines, streak track, progress and countdown
-bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
+bars, confetti flecks, garland stripes, all `PathBuilder` in `%` coordinates.
 
 ### 13.4 Rendering rules
 
@@ -1813,7 +1836,7 @@ bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
 | In step spin | `.spin(600)` on visible working badges | while In step (active play only); ≤ 6 per copy; replaces new-work spins | static |
 | Gilded crane glide | rendered at x0; the next data tick sets x1 with `.transition("left", {duration: remainingMs, easing: "linear"})` — one-way, no shared-clock loop | crane life | sits still |
 | Gilded crane bob | inner `.loop("top", {from: 0, to: −4·z, period: 1300})` | crane life (≤ 26 s) | none |
-| Paper Boat | one-way `.transition("left", …)` in its lane above the bottom band | boat life | sits at the lane's far end, above the streak meter (clear of its label) |
+| Paper Boat | one-way `.transition("left", …)` in its lane above the bottom band, under the play pieces (short mat: `top` eases too, for the dip below the Sheet) | boat life | sits at the lane's far end, above the streak meter (clear of its label) |
 | Confetti flecks | paint_path ×4 in `div#cw-storm` + `.loop("opacity", {0.55 → 0.9, 1200})` | Confetti duration (≤ 30 s) | none |
 | Envelope landing | newest tray envelope `.loop("top", {from: 0, to: −2·z, period: 1600})` | 10 s after it lands, mat shown | none |
 | First-run hint | `.loop("top", {0 → 4·z, 900})` | until the 3rd fold | static |

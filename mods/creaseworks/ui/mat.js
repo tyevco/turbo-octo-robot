@@ -1,9 +1,9 @@
 // The mat, the main scene (DESIGN §3.2, §4, §13.5): `renderMat(vm, ui, ctx)`
 // (ARCHITECTURE B11). Layering is sibling order (later paints on top): grid
 // and edge (paint_path), confetti flecks, crease line, the Sheet and its fold
-// ticks, crease nodes, scraps, the ream, the gilded crane, the top band
-// (needs-you chips or the figure shelf), the bottom band (tray and streak
-// meter), the boat (in its lane above the band, r6-06), floating numbers, the
+// ticks, the boat (in its lane above the band, r6-06), crease nodes, scraps,
+// the ream, the gilded crane, the top band (needs-you chips or the figure
+// shelf), the bottom band (tray and streak meter), floating numbers, the
 // first-run hint.
 //
 // Positions in the vm are logical px in the 304×232 mat (304×184 with
@@ -491,19 +491,39 @@ function crane(c, g, S, click, calm, zoom) {
 }
 
 /**
+ * How far the drawn boat moves in one data tick, in mat px: the vm moves `x`
+ * linearly to the lane's end over `msLeft`, and the mat eases `left` over
+ * the 1 s tick between two targets. 0 when it does not move (calm, parked).
+ */
+function boatStep(b, g) {
+  const end = g.w - BOAT.w - BOAT.x0;
+  const left = lin(num(b && b.x, BOAT.x0), BOAT.x0, BOAT.x1, BOAT.x0, end);
+  const ms = num(b && b.msLeft, 0);
+  if (!(ms > 0) || num(b.x1, b.x) === num(b.x)) return 0;
+  return Math.max(0, Math.min(BOAT.w, ((end - left) * 1000) / Math.max(1000, ms)));
+}
+
+/**
  * Where the Paper Boat's hit box goes: `[left, top]` in mat px (review r6-06).
  * It glides in its own lane, the bottom strip of the play field just above the
  * bottom band, so it never sits under the tray's envelopes or the streak
- * meter (both are later siblings that would paint over it and, the envelopes,
- * take its clicks). Where the Sheet reaches into that lane (the short mat,
- * whose strip under the Sheet is 14 px) the boat dips just below the Sheet
- * while it crosses the Sheet's columns: it is drawn after the bottom band, so
- * it stays on top and catchable there too, and never covers the Sheet.
+ * meter. That strip is also the bottom row of spawn slots (40-49), so the
+ * boat is drawn right after the Sheet, under the crease nodes, scraps, ream
+ * and crane: a piece over it stays whole and keeps its clicks (each stops
+ * propagation), and the 48 × 30 boat is still caught around it (r6-06
+ * follow-up). Where the Sheet reaches into the lane (the short mat, whose
+ * strip under the Sheet is 14 px) the boat dips just below the Sheet while it
+ * crosses the Sheet's columns: there its lower 16 px pass under the band,
+ * whose envelopes and label stay whole and on top (the band itself has no
+ * handler, so the boat takes clicks between them and in the 14 px strip). The
+ * dip starts one tick early and ends one tick late, and `top` eases with
+ * `left`, so the eased box never touches the Sheet's corners.
  */
 export function boatBox(b, g) {
   const left = r1(Math.max(0, lin(num(b && b.x, BOAT.x0), BOAT.x0, BOAT.x1, BOAT.x0, g.w - BOAT.w - BOAT.x0)));
   let top = g.h - BOTTOM_BAND - BOAT.h;
-  const crossing = left < g.sx + g.sheet && left + BOAT.w > g.sx;
+  const pad = Math.ceil(boatStep(b, g));
+  const crossing = left - pad < g.sx + g.sheet && left + BOAT.w + pad > g.sx;
   if (crossing && top < g.sy + g.sheet) top = Math.min(g.h - BOAT.h, g.sy + g.sheet);
   return [left, r1(top)];
 }
@@ -525,7 +545,11 @@ function boat(b, g, S, click, calm) {
     })
     .child(svg(spritePath("scene", "boat-hull")).absolute().left(4).top(1).w(40).h(28).text_color(S.sheet))
     .child(svg(spritePath("scene", "boat-sail")).absolute().left(4).top(1).w(40).h(28).text_color(S.sheetShade));
-  if (!calm && num(b.x1, b.x) !== num(b.x)) el.transition("left", { duration: 1000, easing: "linear" });
+  if (!calm && num(b.x1, b.x) !== num(b.x)) {
+    el.transition("left", { duration: 1000, easing: "linear" });
+    // the short mat's dip eases over the same tick (no 16 px jump)
+    if (g.short) el.transition("top", { duration: 1000, easing: "linear" });
+  }
   return el;
 }
 
@@ -735,14 +759,14 @@ export function renderMat(vm, ui, ctx) {
   const line = creaseLine(mat.creaseLine, g, S);
   if (line) root.child(line);
   for (const el of theSheet(vm, g, S, click, zoom)) root.child(el);
+  // The boat under the play pieces (r6-06): its lane is the bottom slot row.
+  if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
   for (const n of Array.isArray(mat.nodes) ? mat.nodes : []) root.child(node(n, g, S, click, calm));
   for (const s of Array.isArray(mat.scraps) ? mat.scraps : []) root.child(scrap(s, g, S, click));
   if (mat.ream) root.child(ream(mat.ream, g, S, click));
   if (mat.crane) root.child(crane(mat.crane, g, S, click, calm, zoom));
   root.child(topBand(vm, g, T, S, openHelper, calm));
   root.child(bottomBand(vm, g, T, S, open, calm, zoom));
-  // The boat after the band (r6-06): where it dips below a short Sheet it is on top.
-  if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
   for (const p of pops(vm, ui, S, calm)) root.child(p);
   const hint = firstRunHint(vm, g, T, calm, zoom);
   if (hint) root.child(hint);

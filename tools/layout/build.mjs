@@ -142,7 +142,7 @@ export function buildLayout(main, { mod }) {
   if (!workBody.children.includes(files)) throw new Error("main.json changed shape: panel is no longer in work-body");
   if (!files.size || typeof files.size.px !== "number") throw new Error("main.json changed shape: panel is no longer {px}-sized");
   files.size = { weight: FILES_WEIGHT };
-  if (typeof files.min !== "number" || files.min < FILES_MIN) throw new Error("main.json changed shape: panel's min is no longer above FILES_MIN");
+  if (typeof files.min !== "number" || files.min < FILES_MIN) throw new Error("main.json changed shape: panel's min is below FILES_MIN");
   files.min = FILES_MIN;
 
   // The game goes right after main, before Files: a too-tight row is clipped at

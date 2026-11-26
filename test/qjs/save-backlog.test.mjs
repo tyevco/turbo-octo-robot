@@ -199,6 +199,22 @@ test("r6-16: serialising and measuring a 900 KiB-1 MiB save stays inside the 500
       assert.ok(worstMeasure < 60, `the size check adds little to the write step (${worstMeasure.toFixed(1)} ms)`);
       assert.ok(worstSer + worstMeasure < 400, `the write step's work stays inside 500 ms (${(worstSer + worstMeasure).toFixed(1)} ms)`);
     }
+    // A save over the limit in UTF-16 units alone (2,000+ helpers) is measured
+    // exactly too, so the KiB said is its real size: the measure of a text of
+    // 2.1 million units (about 3.2 MiB, a third of it CJK titles) still adds
+    // little to the step (about 55 ms here).
+    host.evalInVm(`globalThis.__text = "x".repeat(1400000) + ${JSON.stringify(title)}.repeat(14000); export const ok = true;`, { module: true, name: `${MOD}/r6-16-long.js?v=1` });
+    const long = host.evalInVm("globalThis.__text");
+    let worst = 0;
+    let got = null;
+    for (let k = 0; k < 3; k++) {
+      got = host.evalInVm(`import { oversize } from "./glue/store.js"; export const big = oversize(globalThis.__text);`, { module: true, name: `${MOD}/r6-16-long-measure-${k}.js?v=1` }).big;
+      worst = Math.max(worst, host.lastMs().detached);
+    }
+    console.log(`# r6-16: ${long.length} units, ${(Buffer.byteLength(long, "utf8") / 1024).toFixed(0)} KiB: measure ${worst.toFixed(1)} ms (worst of 3)`);
+    assert.ok(long.length > 1024 * 1024);
+    assert.equal(got, Buffer.byteLength(long, "utf8"), "the exact UTF-8 byte count, not the length");
+    assert.ok(worst < 100, `measuring a 3 MiB save stays small (${worst.toFixed(1)} ms)`);
     host.evalInVm("delete globalThis.__big; delete globalThis.__text");
   } finally {
     host.dispose();

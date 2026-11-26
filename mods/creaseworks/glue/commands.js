@@ -100,9 +100,9 @@ const weightOf = (node) => {
 
 const goodWeight = (w) => typeof w === "number" && Number.isFinite(w) && w >= WEIGHT_MIN && w <= WEIGHT_MAX;
 
-/** Files' width when layout() gives no px for it: its width at 1440 x 900 (as a weight it is 280 at 1100). */
+/** Files' width when layout() gives no px for it: its width at 1440 x 900 (as a weight it is 257 at 1100). */
 export const FILES_PX_FALLBACK = 368;
-const FILES_MIN = 280;
+const FILES_MIN = 160; // the shipped layout's (tools/layout/build.mjs FILES_MIN, r6-07)
 const FILES_MAX = 900;
 
 const numberOr = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);

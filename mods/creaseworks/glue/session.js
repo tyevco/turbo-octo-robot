@@ -1005,6 +1005,14 @@ export class Session {
   makeHandlers() {
     const self = this;
     const ui = () => self.ui;
+    // The narrow chip answered (Not now, its Fold or its Hide): not again for
+    // this Files opening, else today.
+    const answerNarrow = () => {
+      const slot = self.slot;
+      if (slot.layout.filesShown) slot.narrow.dismissed = slot.narrow.filesEpoch;
+      self.dispatch({ type: "hint", key: "narrow" }, undefined);
+      touch(slot);
+    };
     return {
       click(target, id, event, cx) {
         const a = { type: "click", target: String(target) };
@@ -1056,9 +1064,7 @@ export class Session {
         const kind = String(notice);
         if (!slot || self.demo) return;
         if (kind === "narrow") {
-          if (slot.layout.filesShown) slot.narrow.dismissed = slot.narrow.filesEpoch;
-          self.dispatch({ type: "hint", key: "narrow" }, undefined);
-          touch(slot);
+          answerNarrow();
         } else if (SAVE_KINDS[kind] === 1) {
           store.dismiss(slot, kind);
         } else {
@@ -1068,6 +1074,16 @@ export class Session {
       },
       fold(cx) {
         if (self.slot && !self.demo) foldPanel(self.slot, undefined, clockNow());
+        self.changed(cx);
+      },
+      foldHint(cx) {
+        // The narrow chip's "Fold": answers the chip like "Not now", so a
+        // fold that still leaves the terminals narrow does not turn it
+        // straight into the Hide offer (r6-07 review).
+        if (self.slot && !self.demo) {
+          answerNarrow();
+          foldPanel(self.slot, undefined, clockNow());
+        }
         self.changed(cx);
       },
       show(cx) {
@@ -1086,6 +1102,7 @@ export class Session {
             ok = false; // a refused run arrives as a herdr toast
           }
           if (ok) {
+            answerNarrow(); // the chip is answered: unhiding does not ask again
             slot.layout = { ...slot.layout, panelHidden: true };
             flash(slot, HIDDEN_TEXT, clockNow());
           }
