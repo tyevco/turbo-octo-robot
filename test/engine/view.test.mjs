@@ -423,7 +423,7 @@ test("calm mode: every loop flag is false; the crane and boat sit still", () => 
   s.helpers[id(0)].blockedAt = T0 - 1000;
   s.helpers[id(1)].joined = T0 - 2000;
   s.envelopes[id(2)] = { type: "bundle", units: 1, landedAt: T0 - 1000, lastAt: T0 - 1000 };
-  s.spawn.crane = { id: "g9", slot: 9, born: s.spawn.shownMs - 4000, outcome: "lucky" };
+  s.spawn.crane = { id: "g9", slot: 9, born: s.spawn.shownMs - 4000, outcome: "gift" };
   s.spawn.boat = { id: "b9", born: s.spawn.shownMs - 4000 };
   s.boosts.stormEnd = T0 + 5000;
   s.ui.hints.fold = false;
@@ -445,7 +445,7 @@ test("priority: needs-you > crane > storm > envelope > In step > new work > hint
   const { s } = withAgents(statuses);
   for (let i = 0; i < 6; i++) s.helpers[id(i)].blockedAt = T0 - 500 * (i + 1);
   s.envelopes[id(6)] = { type: "bundle", units: 1, landedAt: T0 - 1000, lastAt: T0 - 1000 };
-  s.spawn.crane = { id: "g9", slot: 9, born: s.spawn.shownMs, outcome: "lucky" };
+  s.spawn.crane = { id: "g9", slot: 9, born: s.spawn.shownMs, outcome: "gift" };
   s.boosts.stormEnd = T0 + 10000;
   s.ui.hints.fold = false;
   s.stats.hits = 1;
@@ -497,6 +497,13 @@ test("header, streak and boost bar are pre-formatted", () => {
   assert.deepEqual(vm.boosts.map((b) => [b.type, b.label, b.msLeft, b.msTotal]), [
     ["rush", "Rush ×3", 52000, 90000], ["chorus", "Chorus ×2", 90000, 240000],
   ]);
+  // Confetti (internal id "storm", review r6) hand hits ×6, ×9 with Gale Charm.
+  s.boosts.stormEnd = T0 + 10000;
+  assert.deepEqual(v(s).boosts.find((b) => b.type === "storm").label, "Confetti ×6");
+  s.bought["gale-charm"] = true;
+  assert.deepEqual(v(s).boosts.find((b) => b.type === "storm").label, "Confetti ×9");
+  delete s.bought["gale-charm"];
+  s.boosts.stormEnd = 0;
   assert.equal(v(s, T0, { style: "sci" }).header.folds, "1.25e4");
 });
 
@@ -665,7 +672,7 @@ test("mat: nodes at slot centres (due, fading), scraps, ream, crane glide, boat,
   sp.chain = { id: "c4", k: 3, next: 1, born: 100000 - 8500, nodes: [{ i: 0, slot: 11, done: true }, { i: 1, slot: 21, done: false }, { i: 2, slot: 38, done: false }] };
   sp.scraps = [{ id: "s5", slot: 42, born: 100000 }];
   sp.ream = { id: "r6", day: s.day, slot: 0 };
-  sp.crane = { id: "g7", slot: 9, born: 100000 - 6500, outcome: "lucky" };
+  sp.crane = { id: "g7", slot: 9, born: 100000 - 5500, outcome: "gift" };
   sp.lastChain = { result: "done", slots: [8, 18, 29], at: T0 - 1000 };
   const vm = v(s);
   const at = (slot) => {
@@ -680,9 +687,9 @@ test("mat: nodes at slot centres (due, fading), scraps, ream, crane glide, boat,
   assert.deepEqual(vm.mat.ream, { id: "r6", ...at(0) });
   assert.deepEqual(vm.mat.creaseLine, [8, 18, 29].map((x) => [at(x).x, at(x).y]));
   assert.equal(v(s, T0 + 2500).mat.creaseLine, null);
-  // Crane at slot 9 (right edge): hit box left/top, flying to the far side, half its 13 s life gone.
+  // Crane at slot 9 (right edge): hit box left/top, flying to the far side, half its 11 s life gone.
   const c = vm.mat.crane;
-  assert.equal(c.msLeft, 6500);
+  assert.equal(c.msLeft, 5500);
   assert.equal(c.x1, 8);
   assert.equal(c.y, Math.round((at(9).y - 18) * 10) / 10);
   assert.ok(c.x < 248 && c.x > 8);
@@ -751,7 +758,7 @@ test("shape parity with the UI fixtures (test/fixtures/vm-fixtures.mjs)", () => 
   const sp = s.spawn;
   sp.chain = { id: "c4", k: 3, next: 0, born: sp.shownMs, nodes: [{ i: 0, slot: 11, done: false }, { i: 1, slot: 21, done: false }, { i: 2, slot: 38, done: false }] };
   sp.scraps = [{ id: "s5", slot: 42, born: sp.shownMs }];
-  sp.crane = { id: "g7", slot: 9, born: sp.shownMs, outcome: "lucky" };
+  sp.crane = { id: "g7", slot: 9, born: sp.shownMs, outcome: "gift" };
   sp.boat = { id: "b8", born: sp.shownMs };
   sp.ream = { id: "r6", day: s.day, slot: 0 };
   sp.lastChain = { result: "done", slots: [8, 18, 29], at: T0 + 500 };

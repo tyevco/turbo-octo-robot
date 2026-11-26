@@ -19,7 +19,7 @@ export { newGame, cloneState, migrate, VERSION, MAP_FIELDS };
 export { effects, itemInfo, workshopCost, maxAffordable, tierOf, eff, crowd, CLICK_SOURCES } from "./economy.js";
 export { cranes, lifetimeFor, wishInfo, stringInfo } from "./prestige.js";
 export { groupFor, helperId, lookOf } from "./helpers.js";
-export { nodeId, slotXY, lifeLeft, inStep, combo, rhythmAt, hitBoost } from "./clicking.js";
+export { nodeId, slotXY, lifeLeft, inStep, combo, rhythmAt, hitBoost, giftFolds } from "./clicking.js";
 export { stackFactor, envelopeDef } from "./envelopes.js";
 export { isOn } from "./automations.js";
 export { fnv1a32, fnv1a32n } from "./hash.js";
@@ -115,7 +115,7 @@ function spawnOwner(state, writer) {
 
 /**
  * Spawn clocks over [t, t + dt), split where active time ends (30 s after the
- * last hand input) and where a Paper Storm ends (boosts.stormEnd, wall time).
+ * last hand input) and where Confetti ends (boosts.stormEnd, wall time).
  */
 function spawnSpan(state, ctx, t, dt, ev) {
   const p = state.presence;

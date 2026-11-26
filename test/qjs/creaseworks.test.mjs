@@ -419,7 +419,7 @@ test.after(() => {
 /**
  * The save text after `days` days of 20 agents a day (3 fledglings each), and
  * the pane helper count. Mail Sorter opens the Bundles; the timed boosts
- * (Rush, Storm, Chorus) are left on the tray the whole time and opened only at
+ * (Rush, Confetti, Chorus) are left on the tray the whole time and opened only at
  * the end, after their helpers were compacted (review r2-02: they used to pile
  * up for ever, and opening them un-compacted their Album records).
  */

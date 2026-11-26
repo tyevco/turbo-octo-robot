@@ -7,21 +7,21 @@ import { collect } from "./away.js";
 import { makeMap, newSpawn } from "./state.js";
 
 /**
- * cranes(L) = floor(100 · cbrt(L / Lw)), computed exactly: the largest c with
- * (c/100)³ · Lw ≤ L, so L = 6e9 gives exactly 1,000.
+ * cranes(L) = floor(1000 · (L / Lw)^0.4) (firstCranes, stringExp): the
+ * largest c with lifetimeFor(c) ≤ L, so cranes(lifetimeFor(c)) is exactly c
+ * and L = Lw (6e9) gives exactly 1,000.
  */
 export function cranes(L) {
   if (!(L > 0)) return 0;
-  const lw = PRESTIGE.Lw / 1e6; // (c/100)³·Lw = c³·Lw/1e6
-  let c = Math.floor(100 * Math.cbrt(L / PRESTIGE.Lw));
-  while (c > 0 && c * c * c * lw > L) c--;
-  while ((c + 1) * (c + 1) * (c + 1) * lw <= L) c++;
+  let c = Math.floor(PRESTIGE.firstCranes * Math.pow(L / PRESTIGE.Lw, PRESTIGE.stringExp));
+  while (c > 0 && lifetimeFor(c) > L) c--;
+  while (lifetimeFor(c + 1) <= L) c++;
   return c;
 }
 
-/** Lifetime folds at which crane `c` is strung. */
+/** Lifetime folds at which crane `c` is strung: Lw · (c / 1000)^(1 / 0.4). */
 export function lifetimeFor(c) {
-  return c * c * c * (PRESTIGE.Lw / 1e6);
+  return c > 0 ? PRESTIGE.Lw * Math.pow(c / PRESTIGE.firstCranes, 1 / PRESTIGE.stringExp) : 0;
 }
 
 /** Wishes a wish would give now, and whether the gate is open. */
@@ -132,10 +132,16 @@ export function wish(state, ctx, t, ev) {
   }
   if (W >= 100) for (const a of AUTOMATIONS) if (state.bought[a.id] === true) keep[a.id] = true;
   state.bought = keep;
+  const last = state.owned;
   state.owned = makeMap();
+  // 25-Wish perk "Spare parts": a tenth (rounded down) of the last run's
+  // workshops of the three cheapest kinds carries over (§9).
   if (W >= 25) {
-    state.owned[WORKSHOPS[0].id] = 10;
-    state.owned[WORKSHOPS[1].id] = 5;
+    for (let k = 0; k < K.spareKinds; k++) {
+      const id = WORKSHOPS[k].id;
+      const n = Math.floor((last[id] ?? 0) / K.spareDiv);
+      if (n > 0) state.owned[id] = n;
+    }
   }
   state.bank = 0;
   state.runFolds = 0;

@@ -72,14 +72,33 @@ test("the first wish: opens Bundles, resets the run, keeps helpers, boosts envel
   assert.ok(g.stripes.some((x) => /^hue:[0-7]$/.test(x[0])));
 });
 
-test("perks: 25 starts with 10 Paper Stacks and 5 Bone Folders; 100 keeps automations", () => {
+test("perks: 25 carries a tenth of the last run's three cheapest workshops; 100 keeps automations", () => {
   {
     const { s, me } = ready(20);
+    s.owned["paper-stack"] = 30;
+    s.owned["bone-folder"] = 19;
+    s.owned["scissor-stand"] = 29;
+    s.owned["glue-pot"] = 40; // not one of the three cheapest kinds
     me.act({ t: T0 + 60000, type: "wish" });
     assert.ok(s.wishes >= 25);
-    assert.equal(s.owned["paper-stack"], 10);
-    assert.equal(s.owned["bone-folder"], 5);
+    assert.deepEqual({ ...s.owned }, { "paper-stack": 3, "bone-folder": 1, "scissor-stand": 2 });
+    assert.equal(Object.getPrototypeOf(s.owned), null);
     assert.equal(s.bought["thrifty-fox"], undefined);
+  }
+  {
+    // below a tenth nothing carries over (no zero entries)
+    const { s, me } = ready(20);
+    s.owned["paper-stack"] = 9;
+    s.owned["bone-folder"] = 0;
+    me.act({ t: T0 + 60000, type: "wish" });
+    assert.deepEqual(Object.keys(s.owned), []);
+  }
+  {
+    // under 25 Wishes nothing carries over
+    const { s, me } = ready(5);
+    me.act({ t: T0 + 60000, type: "wish" });
+    assert.ok(s.wishes < 25);
+    assert.deepEqual(Object.keys(s.owned), []);
   }
   {
     const { s, me } = ready(95);
@@ -91,11 +110,11 @@ test("perks: 25 starts with 10 Paper Stacks and 5 Bone Folders; 100 keeps automa
 
 test("perks: 50 makes gilded cranes 20 % sooner; 250 lets envelopes stack to 15", () => {
   const s = seeded();
-  assert.equal(engine.effects(s).craneLo, 300);
+  assert.equal(engine.effects(s).craneLo, 340);
   s.wishes = 50;
-  assert.equal(engine.effects(s).craneLo, 240);
+  assert.equal(engine.effects(s).craneLo, 340 * 0.8);
   s.bought["crane-bait"] = true;
-  assert.equal(engine.effects(s).craneLo, 210 * 0.8);
+  assert.equal(engine.effects(s).craneLo, 240 * 0.8);
   assert.equal(engine.effects(s).envCap, 9);
   s.wishes = 250;
   assert.equal(engine.effects(s).envCap, 15);

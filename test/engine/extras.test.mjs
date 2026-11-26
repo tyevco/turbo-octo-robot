@@ -191,7 +191,7 @@ test("checkin counts a visit; dismiss removes notices; unknown actions are ignor
   assert.equal(engine.apply(s, { w: 3, s: 1, type: "click" })[0].reason, "shape");
 });
 
-// Review r2-02: Mail Sorter and the wish open only Bundles, so Rush, Storm and
+// Review r2-02: Mail Sorter and the wish open only Bundles, so Rush, Confetti and
 // Chorus envelopes of helpers long gone piled up for ever (≈ 88 B each), and
 // opening one un-compacted its Album record for good. Now an envelope whose
 // helper's record is compact (or no longer in the save) is cashed in, and a

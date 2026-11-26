@@ -55,6 +55,13 @@ nothing in common with them beyond paper as a material: it uses no character, ar
 any of them. The name also avoids the `-fold` suffix of the research notes' example name. Before publishing,
 we search Steam, itch.io and the app stores again.
 
+> **Correction (review r6).** The check above covered names and themes and the origami games; it did not
+> check mechanics against the clicker games it lists. The shipped design's first gilded crane did borrow
+> Cookie Clicker's golden cookie (the Lucky payout `min(15 % of the bank, 900 s of output) + 13`, 13 s lives,
+> 5–10 minute gaps, a ×7 storm) and its cube-root prestige. Those were replaced by Creaseworks' own rules,
+> and every engine table was checked against the well-known incremental games: DESIGN.md §1 "Mechanics".
+> This proposal's own Foil Crane and Paper Storm are history, not the shipped rules.
+
 ---
 
 ## 2. Placement in the herdr window

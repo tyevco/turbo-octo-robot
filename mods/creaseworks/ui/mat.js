@@ -129,7 +129,7 @@ function background(g, S, calm, zoom, storm) {
   out.push(layer(paint(gridPath(g.w, g.h, 64), Background.solid(validateBackgroundColor(S.gridMajor)))));
   const edge = PathBuilder.fill().add_polygon([["0%", pct(g.h - 4, g.h)], ["100%", pct(g.h - 4, g.h)], ["100%", "100%"], ["0%", "100%"]]).build();
   out.push(layer(paint(edge, Background.solid(validateBackgroundColor(S.matEdge)))));
-  // 2. Storm stripes, under the play pieces.
+  // 2. Confetti stripes (internal id "storm"), under the play pieces.
   if (storm && !calm) {
     const rect = PathBuilder.fill().add_polygon([["0%", "0%"], ["100%", "0%"], ["100%", "100%"], ["0%", "100%"]]).build();
     const stripes = layer(paint(rect, Background.pattern_slash(validateBackgroundColor(S.onMat), 2 * zoom, 12 * zoom)));
@@ -522,7 +522,7 @@ function envelope(env, S, open, calm, zoom) {
       : div().absolute().left(2).top(6).text_size(11).font_weight(600).text_color(S.ink).child(label));
   }
   if (env.bob && !calm) art.loop("top", { from: 4, to: 4 - 2 * zoom, period: 1600 });
-  const word = type === "bundle" ? "Bundle" : type === "rush" ? "Rush" : type === "storm" ? "Paper Storm" : "Chorus";
+  const word = type === "bundle" ? "Bundle" : type === "rush" ? "Rush" : type === "storm" ? "Confetti" : "Chorus";
   return div()
     .id(`cw-env-${id}`)
     .relative()

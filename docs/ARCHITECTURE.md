@@ -632,7 +632,7 @@ nodeLifeMs scrapLifeMs boatLifeMs boat envCap life gather Rw`), `itemInfo(state,
 `stringInfo` (`{cranes, of, nextIn, lifetime, gain, needed, can}` for the String tab),
 `groupFor(h, writerId)`, `helperId`, `lookOf`, `nodeId(chain, i)`, `slotXY(slot)` (mat px of a
 slot centre), `lifeLeft(state, E, what, item)`, `rhythmAt(state, E, now)`, `inStep`, `combo`,
-`hitBoost(state, E, t)`, `stackFactor`, `envelopeDef`, `isOn(state, automationId)`,
+`hitBoost(state, E, t)`, `giftFolds(state, E, rates, t)` (the Crane's Gift, DESIGN §4.5), `stackFactor`, `envelopeDef`, `isOn(state, automationId)`,
 `fnv1a32`, `fnv1a32n`, `canonicalState`, `validateState`, `CLICK_SOURCES`, `MAP_FIELDS`.
 `engine/view.js` is a placeholder that throws until the view builder replaces it.
 
@@ -697,7 +697,13 @@ banner lists refunds from these).
 slot centres on the Sheet (cols 3–6 × rows 1–3), so `content.js FREE_SLOTS` leaves out those
 twelve plus the ream slot (37 slots). The Crease Helper completes the whole chain at 80 % of its
 life, paying half of `V` (no combo or boost) per remaining node and for the finish. The first
-wish's gain is `floor(cranes/100) − W` (exactly 10 at L = 6e9). The notification counter counts
+wish's gain is `floor(cranes/100) − W` (exactly 10 at L = 6e9). Crane outcomes (review r6,
+originality) are `gift`, `storm` (shown as Confetti) and `song`, rolled 40 / 35 / 25 % from
+`crane:<cranesSeen>`; a saved crane whose outcome is anything else (an older build's `lucky`)
+pays the Gift, so no save migration is needed. `cranes(L)` is
+`floor(firstCranes · (L / Lw)^stringExp)` (1,000, 6e9, 0.4) corrected to the largest `c` with
+`lifetimeFor(c) = Lw · (c / 1000)^(1 / 0.4) ≤ L`, so `cranes(lifetimeFor(c)) === c` for every `c`
+and L = 6e9 gives exactly 1,000. The notification counter counts
 each `notified` action of the current day and keeps the later day (`max`). Spawn catch-up is
 skipped for lags over 120 s (`K.spawnCatchUpMs`).
 

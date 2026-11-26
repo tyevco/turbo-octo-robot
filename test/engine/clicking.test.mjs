@@ -143,29 +143,89 @@ test("the first gilded crane spawns at exactly 390 active seconds (M5)", () => {
   assert.ok(spawned);
   assert.equal(spawned.i, 390);
   assert.equal(spawned.e.n, 1);
-  assert.ok(["lucky", "storm", "song"].includes(s.spawn.crane.outcome));
-  assert.equal(engine.lifeLeft(s, engine.effects(s), "crane", s.spawn.crane), 13000);
+  assert.ok(["gift", "storm", "song"].includes(s.spawn.crane.outcome));
+  assert.equal(engine.lifeLeft(s, engine.effects(s), "crane", s.spawn.crane), 11000);
 });
 
-test("crane outcomes: Lucky Fold, Paper Storm (chains every 4 s), Flock Song", () => {
+test("crane outcomes: Crane's Gift (rhythm and folk at work, not the bank), Confetti (chains every 4 s), Flock Song", () => {
   const s = seeded(11);
   const me = writer(s);
-  s.bank = 1000;
-  s.spawn.crane = { id: "gX", slot: 1, born: 0, outcome: "lucky" };
+  s.bank = 1e9; // the Gift never looks at the bank
+  // No rhythm yet: the Gift pays its floor of giftMinBeats beats.
+  s.spawn.crane = { id: "gX", slot: 1, born: 0, outcome: "gift" };
   let ev = me.act({ t: T0 + 10, type: "click", target: "crane", id: "gX" });
-  const r = engine.rates(s);
-  close(ev.find((e) => e.kind === "earn").amount, Math.min(900 * r.Rp, 150) + 13 * r.V);
-  s.spawn.crane = { id: "gY", slot: 1, born: 0, outcome: "storm" };
-  ev = me.act({ t: T0 + 20, type: "click", target: "crane", id: "gY" });
+  let r = engine.rates(s);
+  assert.equal(engine.CONTENT.K.giftMinBeats, 4);
+  close(ev.find((e) => e.kind === "earn").amount, 25 * 4 * r.V + 90 * r.Hs0);
+  // In rhythm: 25·V per beat, so a full rhythm of 40 is a thousand hand folds.
+  let t = T0 + 1000;
+  for (let k = 0; k < 45; k++, t += 500) me.act({ t, type: "click", target: "sheet" });
+  assert.equal(s.hand.r, 40);
+  r = engine.rates(s);
+  s.spawn.crane = { id: "gW", slot: 1, born: s.spawn.shownMs, outcome: "gift" };
+  ev = me.act({ t: t + 100, type: "click", target: "crane", id: "gW" });
+  close(ev.find((e) => e.kind === "earn").amount, 1000 * r.V + 90 * r.Hs0);
+  // A crane saved before the redesign as "lucky" pays the Gift too.
+  t += 5000;
+  s.spawn.crane = { id: "gL", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  ev = me.act({ t, type: "click", target: "crane", id: "gL" });
+  r = engine.rates(s);
+  close(ev.find((e) => e.kind === "earn").amount, 100 * r.V + 90 * r.Hs0);
+  t += 1000;
+  s.spawn.crane = { id: "gY", slot: 1, born: s.spawn.shownMs, outcome: "storm" };
+  ev = me.act({ t, type: "click", target: "crane", id: "gY" });
   assert.equal(s.boosts.storm, 15000);
   assert.ok(s.spawn.nextChainAt <= s.spawn.activeMs + 4000);
-  // Storm multiplies hand hits ×7.
+  // Confetti multiplies hand hits ×6.
   const before = s.bank;
-  me.act({ t: T0 + 200, type: "click", target: "sheet" });
-  close(s.bank - before, 7 * (1 + 0.5 / 40));
-  s.spawn.crane = { id: "gZ", slot: 1, born: 0, outcome: "song" };
-  me.act({ t: T0 + 300, type: "click", target: "crane" });
+  me.act({ t: t + 200, type: "click", target: "sheet" });
+  close(s.bank - before, 6 * (1 + 0.5 / 40), 1e-6);
+  s.spawn.crane = { id: "gZ", slot: 1, born: s.spawn.shownMs, outcome: "song" };
+  me.act({ t: t + 300, type: "click", target: "crane" });
   assert.equal(s.boosts.song, 60000);
+});
+
+test("Crane's Gift grows with the folk at work and drops their part while Helpers gather is off", () => {
+  const E = { gather: true };
+  const state = { hand: { r: 0, lastHitAt: 0 } };
+  const r = { V: 2, Hs0: 10 };
+  close(engine.giftFolds(state, { ...E, gapMs: 1000 }, r, 5000), 25 * 4 * 2 + 90 * 10);
+  close(engine.giftFolds(state, { gather: false, gapMs: 1000 }, r, 5000), 25 * 4 * 2);
+  const inBeat = { hand: { r: 30, lastHitAt: 4500 } };
+  close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 5000), 25 * 30 * 2 + 90 * 10);
+  close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 6000), 25 * 4 * 2 + 90 * 10, 1e-9, "the rhythm lapsed");
+});
+
+test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait 240-360, Crane Song 170-255); outcomes 40 / 35 / 25 %", () => {
+  const s = seeded(21);
+  const me = writer(s);
+  let t = T0;
+  const gaps = [];
+  const outcomes = { gift: 0, storm: 0, song: 0 };
+  let last = null;
+  s.settings.nodes = false;
+  for (let i = 0; i < 40000 && gaps.length < 60; i++) {
+    t += 1000;
+    const ev = me.act({ t, type: "click", target: "sheet" });
+    const e = ev.find((x) => x.kind === "spawn" && x.what === "crane");
+    if (!e) continue;
+    outcomes[s.spawn.crane.outcome]++;
+    if (last !== null) gaps.push(s.spawn.activeMs - last);
+    last = s.spawn.activeMs;
+    s.spawn.crane = null; // gone, so the next one is never blocked
+  }
+  assert.ok(gaps.length >= 50);
+  for (const g of gaps) assert.ok(g >= 339000 && g <= 511000, `gap ${g}`);
+  assert.ok(Math.max(...gaps) - Math.min(...gaps) > 100000, "the gaps spread over the range");
+  const n = outcomes.gift + outcomes.storm + outcomes.song;
+  assert.ok(outcomes.gift > 0 && outcomes.storm > 0 && outcomes.song > 0, JSON.stringify(outcomes));
+  assert.ok(outcomes.gift / n > 0.2 && outcomes.song / n < 0.45, JSON.stringify(outcomes));
+  const E = engine.effects(s);
+  assert.equal(E.craneLo, 340);
+  s.bought["crane-bait"] = true;
+  assert.equal(engine.effects(s).craneLo, 240);
+  s.bought["crane-song"] = true;
+  assert.equal(engine.effects(s).craneLo, 170);
 });
 
 test("Fresh Ream: from the second day, once a day, gone when the day ends", () => {
@@ -188,7 +248,7 @@ test("r1-19: the first gilded crane carries its one-time line until a crane is c
   const s = seeded(11);
   const me = writer(s);
   s.ui.hints.fold = true;
-  s.spawn.crane = { id: "gX", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  s.spawn.crane = { id: "gX", slot: 1, born: s.spawn.shownMs, outcome: "gift" };
   const vm = engine.view(s, T0, { role: "panel", width: 320 });
   assert.equal(vm.mat.crane.hint, "A gilded crane! Click it before it flies off.");
   me.act({ t: T0 + 10, type: "click", target: "crane", id: "gX" });
@@ -202,11 +262,11 @@ test("r1-19: a missed first crane does not bring the line back on later cranes",
   s.ui.hints.fold = true;
   // The first crane as the spawn clock makes it (cranesSeen counts it in).
   s.spawn.cranesSeen = 1;
-  s.spawn.crane = { id: "g1", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  s.spawn.crane = { id: "g1", slot: 1, born: s.spawn.shownMs, outcome: "gift" };
   assert.equal(engine.view(s, T0, { role: "panel", width: 320 }).mat.crane.hint, "A gilded crane! Click it before it flies off.");
   // It flies off uncaught; the second crane appears.
   s.spawn.cranesSeen = 2;
-  s.spawn.crane = { id: "g2", slot: 1, born: s.spawn.shownMs, outcome: "lucky" };
+  s.spawn.crane = { id: "g2", slot: 1, born: s.spawn.shownMs, outcome: "gift" };
   assert.equal(s.ui.hints.crane, false);
   assert.equal(engine.view(s, T0 + 20, { role: "panel", width: 320 }).mat.crane.hint, null);
 });

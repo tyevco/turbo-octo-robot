@@ -102,6 +102,40 @@ search below.
   thousand-crane wish is a folk tradition, not a game. No name, character, art or map is borrowed.
 - Re-run this search right before publishing and record the date in `RECIPE.md` Watch out.
 
+**Mechanics (originality sweep, review r6, owner decision).** The first build's gilded crane was
+Cookie Clicker's golden cookie: Lucky Fold paid `min(900·Rp, 0.15·bank) + 13·V` (Lucky!:
+`min(15 % of the bank, 900 s of CpS) + 13`), cranes lived 13 s with 5–10 minute gaps (the golden
+cookie's 13 s and 5–15 minutes), Paper Storm was ×7 (Frenzy) and named like Cookie Storm, and the
+String was the cube root of lifetime folds (heavenly chips). These were replaced by Creaseworks' own
+rules (§4.5 Crane's Gift from the rhythm and the folk at work; 11 s lives, `lo · (1 + 0.5·u)`
+gaps of 340–510 s; Confetti ×6; §9 the 0.4 power), and the sweep of `content.js`, `economy.js`,
+`clicking.js`, `envelopes.js`, `prestige.js` and `helpers.js` against Cookie Clicker, AdVenture
+Capitalist, Clicker Heroes, Realm Grinder, Antimatter Dimensions, Egg, Inc., Kittens Game, Tap
+Titans and NGU Idle changed three small numbers and checked the rest. A second review (r7) found
+two more matches the sweep had kept, the 25-Wish perk and the workshop ladder's ×12 cost step, and
+both were replaced (rows below):
+
+| Checked | Verdict |
+|---|---|
+| Paper Stack base 15 (Cookie Clicker's Cursor costs 15) | changed to 12 |
+| Crisp Corners 100 for hand ×2 (Cookie Clicker's first click upgrade: 100, ×2) | changed to 120 |
+| Tier upgrades ×2 at 25 and 50 owned (AdVenture Capitalist's first ×2 milestones are 25 and 50) | changed to 24 and 48 (a quire, two quires); ×2 per tier and the 10 kept as the genre's doubling convention; costs ×20/×200/×4,000 match no game (Cookie Clicker ×10/×50/×500) |
+| Cost growth 1.16 | kept: the genre's 1.07–1.15 convention (Cookie Clicker 1.15), not that number |
+| Workshop ladder (r6: cost about ×12 a step from 180 to 6.5e9, output ×6) | changed (r7): a constant ×12 cost step is AdVenture Capitalist's (exactly ×12 from 60/720/8,640/103,680). The ladder now has no constant step: cost steps shrink as it climbs (×15, ×14, ×12.9, ×12.0, ×11.0, ×8.6, ×8.6 from the Bone Folder to the Kite Tower; bases 180 … 4.8e9) and output steps shrink with them (×7.3 down to ×4.3; outputs 0.3 … 60,000), so each workshop's payback is about twice the last one's (§7.2). Cookie Clicker's table (15/100/1,100/12,000 …, 0.1/1/8/47 …) is not matched either |
+| Echo (clicks gain 3–40 % of `Rp`) | kept: "clicks gain a share of passive output" is a genre convention; Cookie Clicker's mice add 1 % each at 50,000 / 5e6 / 5e8 …, ours 3 % base and 6/10/18/28/40 % at 2,000 / 80,000 / 4e6 / 3e8 / 2e10 |
+| Hand ×2 chain 1,500 / 40,000 / 1.2e6 / 4e7 / 1.5e9 / 6e10, names (fold techniques) | kept: no game's prices; "Thousandth Fold" is not Cookie Clicker's "Thousand fingers" (a different effect) and names the String's thousand |
+| Rhythm, combo ×1.5 → ×3 at a 40 streak, In step, afterglow, figures every 8th fold ×5 | kept: Egg, Inc.'s running-chicken bonus and Clicker Heroes' Clickstorm are other rules with other numbers |
+| Crease chains (2·Vc a node, 3·k·Vc finish), scraps, Fresh Ream, Paper Boat and Tailwind | kept: our own pickups |
+| Envelopes (Bundle 55 %, Rush ×3 30 s, Chorus ×2 120 s, stacking, token-bucket units) and Flock Song ×3 60 s | kept: Cookie Clicker's boosts are ×7 77 s, ×777 13 s, ×666 6 s, ×1,111 10 s, ×15 60 s; none match |
+| Helpers (`0.3·G + 0.04·Rw`, bench pace, rest, warm, thanks, fledglings) | kept: our own |
+| Wishes `G = 1 + 0.05·W`, the gate `max(5, ceil(0.25·W))` | kept: 5 % a Wish matches no game (Cookie Clicker 1 % a level, AdVenture Capitalist angels 2 %, Clicker Heroes hero souls and Egg, Inc. soul eggs 10 %, Realm Grinder gems 2 %, Kittens Game paragon 1 %) |
+| Perks by Wishes held | the r6 sweep wrongly kept them all. The 25-Wish perk "start each run with 10 Paper Stacks and 5 Bone Folders" was Cookie Clicker's heavenly upgrades Starter kit (10 Cursors) and Starter kitchen (5 Grandmas) on our first two workshops; changed (r7) to **Spare parts**, which keeps a tenth (rounded down) of the last run's Paper Stacks, Bone Folders and Scissor Stands, so it grows with the run you had. The others (10: keep Crisp Corners and Mail Sorter; 50: cranes 20 % sooner; 100: automations stay bought; 250: envelopes stack to 15) were checked against Cookie Clicker's heavenly upgrades, AdVenture Capitalist's angel upgrades and Realm Grinder's reincarnation perks and match none |
+| Away 25 / 35 / 45 % up to the brief's 8 h | kept: Cookie Clicker 5 %, AdVenture Capitalist 100 %; not theirs |
+| Automations (Mail Sorter, Thrifty Fox, Boost Keeper, Crease Helper) | kept: autobuyers are a convention; ours have their own rules |
+| Crane outcomes and Confetti (r7 review) | **open, for the owner**: the three outcomes still have the golden cookie's three shapes (an instant payout, a hand-hit boost, a whole-income boost), and Confetti ×6 (×9 with Gale Charm, +3 a charm, 15 s from a crane and 12 s from an envelope, a 30 s cap, chains every 4 s) is Paper Storm ×7 → ×10 lowered by one with its durations kept. No number is a known game's, so it was left as it is; the owner decides whether it reads as a cosmetic change and wants a different boost |
+| Names "gilded", "Lucky", "Storm", "Frenzy" | "Lucky Fold" became Crane's Gift and "Paper Storm" Confetti (the internal ids stay `storm`, and an old save's `lucky` crane pays the Gift); "gilded" is the brief's golden special, a common word (Clicker Heroes' gilds are a hero upgrade, not a clickable); "Frenzy" is not used |
+| mulberry32 PRNG, FNV-1a ids | public algorithms, not game content |
+
 ---
 
 ## 2. Placement in the window, and keys
@@ -383,7 +417,7 @@ Layering is sibling order (later paints on top; no z-index, gpui §11):
    (one path and one `Background` per element, gpui §8): minor lines every 16 px at 1 px in
    `S.grid`, then major lines every 64 px at 1 px in `S.gridMajor`, both in `%` coordinates,
    `absolute().inset_0()`. Bottom edge: a third paint_path rectangle, 4 px, `S.matEdge`.
-2. **Storm stripes** (only during Paper Storm): paint_path rect with
+2. **Confetti stripes** (only during Confetti; internal id `storm`): paint_path rect with
    `Background.pattern_slash(S.onMat, 2·zoom, 12·zoom)`, `.loop("opacity", {from: 0.06, to: 0.16, period: 1200})`.
    It is drawn before the play pieces so it paints under them.
 3. **Crease line** of a finished chain: paint_path stroke 2 px `S.sheet`, `dash_array([6,4])`
@@ -522,8 +556,8 @@ Segment control 40 px tall, six equal cells (~50 px at 320): 14 px icon over an 
 
 ```
 ┌ row 52 ─────────────────────────────────────────────────────────────────┐
-│ [icon 28]  Glue Pot  ×17            13/600 T.foreground  •  [ 31.2K ]   │
-│            +11/s each · 187/s total   11 T.muted           in 2m 10s 11  │
+│ [icon 28]  Glue Pot  ×17            13/600 T.foreground  •  [ 474K ]    │
+│            +15/s each · 255/s total   11 T.muted           in 2m 10s 11  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -558,7 +592,7 @@ Segment control 40 px tall, six equal cells (~50 px at 320): 14 px icon over an 
 │ envelopes, settings, switches, garlands.                         │
 ├ Perks ───────────────────────────────────────────────────────────┤
 │ 10 ✓ Keep Crisp Corners and Mail Sorter between runs             │
-│ 25 · Start each run with 10 Paper Stacks and 5 Bone Folders      │
+│ 25 · Keep a tenth of your three cheapest workshops between runs  │
 │ 50 · Gilded cranes come 20 % sooner                              │
 │ 100 · Automations stay bought                                    │
 │ 250 · Envelopes stack to ×15                                     │
@@ -748,7 +782,7 @@ hit credited  : a hand hit ≥ 80 ms after the previous credited hand hit (≤ 1
 rhythm r      : +1 per credited hand hit if the gap since the previous one ≤ g, else r = 1
                 g = 1.0 s; 1.4 s with Steady Rhythm
 combo         = 1 + comboMax · min(r, 40) / 40      comboMax 0.5 → 1.0 (Long Streak) → 2.0 (Endless Streak)
-boost         = 7 during Paper Storm (10 with Gale Charm), else 3 during Rush (4 with Brisk Charm), else 1
+boost         = 6 during Confetti (9 with Gale Charm), else 3 during Rush (4 with Brisk Charm), else 1
 Vc            = V · combo · boost
 fold          : the hit pays Vc and advances the frame f = (f + 1) mod 8
 figure        : the hit that wraps f to 0 pays 5 · Vc instead of Vc, and a figure (PRNG species) hops onto the shelf
@@ -772,7 +806,7 @@ trusts `t`, not counts per tick. A 100-clicks-per-second script earns at most 12
 ### 4.4 Crease nodes (chains)
 
 * A chain spawns every **20 s of active time** (12 s with Quick Creases); every 4 s during a
-  Paper Storm. At most one chain on the mat (two during a Storm). Setting "Crease nodes appear"
+  Confetti. At most one chain on the mat (two during Confetti). Setting "Crease nodes appear"
   can turn them off.
 * **Active time** = the panel copy's mat is shown (standard, narrow or wide state), `window()?.active`
   is true, and a hand input happened within the last 30 s. Spawn clocks advance only in active
@@ -790,7 +824,7 @@ trusts `t`, not counts per tick. A 100-clicks-per-second script earns at most 12
 |---|---|---|---|
 | **Scrap** | every 45 active s | 12 s (24 calm) | `max(30·Rp, 50·V) · scrapMult` (scrapMult 2 with Scrap Basket) |
 | **Fresh Ream** (daily welcome) | first active moment of each local day, from the second day ever | until clicked or the day ends | `max(300·Rp, 100·V)` |
-| **Gilded crane** (golden) | first at 390 active s; then every `300 + 300·u` active s (Crane Bait `210 + 210·u`; Crane Song `150 + 150·u`; ×0.8 with the 50-Wish perk), `u` from the PRNG | 13 s (20 Slow Wings; ×2 calm) | outcome table below |
+| **Gilded crane** (golden) | first at 390 active s; then every `lo · (1 + 0.5·u)` active s with `lo` 340 (340–510 s; Crane Bait 240: 240–360; Crane Song 170: 170–255; `lo` ×0.8 with the 50-Wish perk), `u` from the PRNG | 11 s (18 Slow Wings; ×2 calm) | outcome table below |
 | **Paper Boat** (limited time, Harbour Ribbon curio) | every `1800 + 900·u` active s | 20 s (40 calm), sails along the bottom band | **Tailwind**: the next 3 envelopes opened within 10 min pay ×2, plus `120·Rp` at once |
 | **Envelope** | helper finishes (§6) | until opened; cashed in once its helper's Album record is compacted (§6.1) | §6 |
 
@@ -798,9 +832,20 @@ Gilded crane outcomes (engine PRNG):
 
 | Outcome | Chance | Effect |
 |---|---|---|
-| Lucky Fold | 50 % | `min(900·Rp, 0.15·bank) + 13·V` |
-| Paper Storm | 30 % | hand hits ×7 (×10 Gale Charm) for 15 s; chains every 4 s |
-| Flock Song | 20 % | every working helper ×3 for 60 s |
+| Crane's Gift | 40 % | `25 · max(r, 4) · V + 90 · Hs0`: folded back from your rhythm and the folk at work |
+| Confetti | 35 % | hand hits ×6 (×9 Gale Charm) for 15 s; chains every 4 s |
+| Flock Song | 25 % | every working helper ×3 for 60 s |
+
+**Crane's Gift** (review r6, originality): the crane is folded back from what the player and the
+flock are doing at that moment, never from the bank. Every beat of the rhythm `r` the player sees
+at the catch (§4.2) is worth 25 hand folds (`V`, no combo or boost), with a floor of 4 beats, so a
+full rhythm of 40 is a **thousand** hand folds, the String's number; the folk at work add 90 s of
+their gathering `Hs0` (boost-free, 0 while "Helpers gather" is off), so a crane caught while
+agents work pays more than one caught at an empty bench. Catching it in step pays about ten
+times a cold catch, which keeps the crane a clicking reward. The crane click is not a hand hit
+(it does not move the rhythm). A crane saved as `lucky` by an older version pays the Gift.
+(It replaced "Lucky Fold", `min(900·Rp, 0.15·bank) + 13·V` with 13 s lives, 300–600 s gaps and a
+×7 storm, which was Cookie Clicker's golden cookie; see §1 "Mechanics".)
 
 Cranes and boats only spawn during active time (fit.md: golden targets only while the player is
 present), so the player never misses one while coding. A missed one leaves silently; no
@@ -818,7 +863,7 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 2. **Rhythm** raises clicks to ×1.5 / ×2 / ×3, and **In step** multiplies the whole flock ×1.5–2
    while the player keeps the beat; **afterglow** carries ×1.25–1.5 into the coding time after.
 3. **Chains** are ordered skill payouts (35·Vc for a full k = 7 chain every 12 s).
-4. **Boosts need hands**: Rush and Storm multiply only hand hits; agents earn them, the player
+4. **Boosts need hands**: Rush and Confetti multiply only hand hits; agents earn them, the player
    spends them (and chooses when, §6.2).
 5. Measured in the calibration prototype (BALANCE.md): every session after the first 10 minutes
    earns at least **2.2×** its passive rate per active second (1.8× is asserted), a 2½-minute
@@ -980,7 +1025,7 @@ wall time, `visible`/`active`/`matShown` flags, hand-hit timestamps and the loca
 ```
 b_i     = (0.3·G + 0.04·Rw) · folk · warm_i · kids_i · thanks_i        per working pane helper
 eff(n)  = n                         for n ≤ 4
-        = 4 · (n / 4)^0.07          for n > 4        (eff(8) 4.20 · eff(30) 4.61 · eff(64) 4.86)
+        = 4 · (n / 4)^0.06          for n > 4        (eff(8) 4.17 · eff(30) 4.51 · eff(64) 4.72)
 crowd(n)= eff(n) / n                n = working pane helpers
 Hs0     = Σ_k (eff(k) − eff(k−1)) · b_(k)    b_(1) ≥ b_(2) ≥ … the working b_i, largest first
         (= crowd(n) · Σ b_i when every b_i is equal; = Σ b_i for n ≤ 4)
@@ -1011,12 +1056,13 @@ k_p     = (0.3·G + 0.04·Rw) · folk · kidBonus · min(4, working fledglings o
   never dilutes a warm one), and an agent that stops working (Needs you, Finished, Resting) never
   raises it (BALANCE inv. 6). The Flock header says "9 working · bench pace 47 %" (`crowd(n)` as a
   percentage: the pace of a bench of equal helpers). Per-helper credit (Flock card, garland) is
-  each `b_i` times the bench's effective pace `Hs0 / Σ b_i`. The exponent 0.07 and the fixed knee
+  each `b_i` times the bench's effective pace `Hs0 / Σ b_i`. The exponent 0.06 and the fixed knee
   of 4 were calibrated so 30 and 64 agents reach the first wish on day 2 of open time, not on
   day 1 (BALANCE.md P6, P7); the exponent was 0.15 while the pace scaled the whole sum, which let
-  a fresh agent lower a warm bench's output. The same `crowd(N)` scales Bundles and the overflow
+  a fresh agent lower a warm bench's output, then 0.07 until the r7 workshop ladder sped up the
+  64-agent profile (P7 median 10:49 at 0.07, 12:00 at 0.06). The same `crowd(N)` scales Bundles and the overflow
   conversion (§6.1), Elsewhere credit (§12.5) and away gathering (§10.2), so the retune also made
-  those about 15 % smaller at 30 agents and 20 % smaller at 64 (BALANCE.md §8, knob 2). There are
+  those about 16 % smaller at 30 agents and 22 % smaller at 64 than at 0.15 (BALANCE.md §8, knob 2). There are
   **no** bench-room upgrades or perks (they broke big-flock pacing in calibration).
 * **Thanks** stays in calm mode (calm changes no earnings). It needs no click on our cue: answering
   from herdr's own sidebar or toast counts.
@@ -1131,7 +1177,7 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
 |---|---|---|---|
 | Bundle | 55 % | stacked sheets | `unit · u · envMult · crowd(N)` folds (envMult 1 → 1.5 Wax Seal → 2 Ribbon Tie) |
 | Rush | 25 % | double chevron | hand hits ×3 (×4 Brisk Charm) for `30 · f · durMult` s |
-| Paper Storm | 10 % | zigzag | hand hits ×7 (×10 Gale Charm), chains every 4 s, for `12 · f · durMult` s |
+| Confetti | 10 % | zigzag | hand hits ×6 (×9 Gale Charm), chains every 4 s, for `12 · f · durMult` s |
 | Chorus | 10 % | three dots | working helpers ×2 for `120 · f · durMult` s |
 
 `durMult` 1 → 1.5 (Long Ribbon) → 2 (Longer Ribbon).
@@ -1149,10 +1195,10 @@ old mail cashed in.
   **timed boosts are opened by the player** (or by Boost Keeper, only while the player is active).
 * The seal shows the type before opening, so the player chooses the moment: open a Rush right
   before a clicking session. A boost envelope's tooltip says "Rush ×3 for 52 s · open when you're
-  ready to click" (Rush, Storm: they multiply hand hits), and a Chorus's "Chorus ×2 for 2m · open
+  ready to click" (Rush, Confetti: they multiply hand hits), and a Chorus's "Chorus ×2 for 2m · open
   while your helpers are working" (it multiplies working helpers, §6.3; review r3-15).
 * Opening a boost of a type already running **extends** it by 25 % of the new envelope's
-  duration; remaining time is capped at **90 s (Rush), 30 s (Storm), 240 s (Chorus)**. The tooltip
+  duration; remaining time is capped at **90 s (Rush), 30 s (Confetti), 240 s (Chorus)**. The tooltip
   warns "Rush is running: opening now adds only 13 s".
 * **Boost bar** (26 px under the mat): one chip per running boost (seal glyph 12 + "Rush ×3"
   11/600 + a countdown bar 48×3). The bar's width targets 0 with one native
@@ -1166,7 +1212,7 @@ old mail cashed in.
 ### 6.3 Other rewards
 
 Fresh Ream, scraps, gilded crane outcomes and the Paper Boat's Tailwind are in §4.5; Flock Song
-and Chorus multiply working helpers; Storm and Rush multiply hand hits. Boosts never multiply
+and Chorus multiply working helpers; Confetti and Rush multiply hand hits. Boosts never multiply
 each other's "N seconds of production" payouts because those use `Rp`.
 
 ---
@@ -1188,17 +1234,25 @@ the order to turn them); any retune updates this file and BALANCE.md together.
 
 | # | Workshop | Base cost | Output/s each | Icon |
 |---|---|---|---|---|
-| 0 | Paper Stack | 15 | 0.05 | stack of 3 sheets |
+| 0 | Paper Stack | 12 | 0.05 | stack of 3 sheets |
 | 1 | Bone Folder | 180 | 0.3 | flat tool |
-| 2 | Scissor Stand | 2,200 | 1.8 | scissors in a cup |
-| 3 | Glue Pot | 26,000 | 11 | pot with a brush |
-| 4 | Fold Bench | 310,000 | 65 | trestle table |
-| 5 | Washi Vat | 3,700,000 | 390 | tub with a screen |
-| 6 | Flower Press | 45,000,000 | 2,300 | press with a screw |
-| 7 | Crane Loft | 540,000,000 | 14,000 | loft with a hanging crane string |
-| 8 | Kite Tower | 6,500,000,000 | 84,000 | tower with a kite |
+| 2 | Scissor Stand | 2,700 | 2.2 | scissors in a cup |
+| 3 | Glue Pot | 38,000 | 15 | pot with a brush |
+| 4 | Fold Bench | 490,000 | 95 | trestle table |
+| 5 | Washi Vat | 5,900,000 | 560 | tub with a screen |
+| 6 | Flower Press | 65,000,000 | 3,000 | press with a screw |
+| 7 | Crane Loft | 560,000,000 | 14,000 | loft with a hanging crane string |
+| 8 | Kite Tower | 4,800,000,000 | 60,000 | tower with a kite |
 
-**Tier upgrades** (27): for each workshop at 10, 25 and 50 owned, cost `base × 20`, `× 200`,
+The ladder has no constant step (review r7: the first table's constant ×12 is AdVenture
+Capitalist's). From the Bone Folder up, each cost step is no larger than the one below it (×15,
+×14, ×12.9, ×12.0, ×11.0, ×8.6, ×8.6) and each output step shrinks with it (×7.3, ×6.8, ×6.3,
+×5.9, ×5.4, ×4.7, ×4.3), so each workshop pays back in about twice the time of the one below
+(cost / output 600, 1,227, 2,533, 5,158, 10,536, 21,667, 40,000, 80,000 s): early rungs come
+quickly and the top rungs are not walls (BALANCE inv. 2). No simulated profile buys a Kite Tower
+before the first wish.
+
+**Tier upgrades** (27): for each workshop at 10, 24 (a quire) and 48 (two quires) owned, cost `base × 20`, `× 200`,
 `× 4,000`, each **×2** that workshop's output. Names: "<Workshop>: Neat Edges / True Corners /
 Master's Touch". A workshop row appears once the previous one is owned (silhouette before).
 
@@ -1208,7 +1262,7 @@ Master's Touch". A workshop row appears once the previous one is owned (silhouet
 
 | Upgrade | Cost | Effect |
 |---|---|---|
-| Crisp Corners | 100 | hand ×2 |
+| Crisp Corners | 120 | hand ×2 |
 | Bone-tip Nail | 1,500 | hand ×2 |
 | Valley Fold | 40,000 | hand ×2 |
 | Mountain Fold | 1,200,000 | hand ×2 |
@@ -1244,7 +1298,7 @@ Master's Touch". A workshop row appears once the previous one is owned (silhouet
 | Long Ribbon | 100,000 | durMult 1.5 |
 | Longer Ribbon | 1e7 | durMult 2.0 |
 | Brisk Charm | 3e6 | Rush ×3 → ×4 |
-| Gale Charm | 1e8 | Storm ×7 → ×10 |
+| Gale Charm | 1e8 | Confetti ×6 → ×9 |
 
 **Curios (special clickables)**
 
@@ -1253,8 +1307,8 @@ Master's Touch". A workshop row appears once the previous one is owned (silhouet
 | Long Crease / Grand Crease | 20,000 / 2e6 | chain k 3 → 5 → 7 |
 | Quick Creases | 200,000 | a chain every 20 → 12 active s |
 | Scrap Basket | 100,000 | scrapMult 2 |
-| Crane Bait / Crane Song | 50,000 / 5e6 | crane interval 300–600 → 210–420 → 150–300 active s |
-| Slow Wings | 500,000 | crane life 13 → 20 s |
+| Crane Bait / Crane Song | 50,000 / 5e6 | crane interval 340–510 → 240–360 → 170–255 active s |
+| Slow Wings | 500,000 | crane life 11 → 18 s |
 | Harbour Ribbon | 1e6 | unlocks the Paper Boat (§4.5) |
 
 ### 7.4 Purchases
@@ -1287,7 +1341,8 @@ auto-wish and no auto-catch of cranes or boats.
 ## 9. Prestige: String the Thousand
 
 ```
-cranes(L)  = floor( 100 · cbrt( L / Lw ) )        Lw = 6e6 †      (L = lifetime folds, all runs)
+cranes(L)  = floor( 1000 · (L / Lw)^0.4 )         Lw = 6e9 †      (L = lifetime folds, all runs)
+           = the largest c with L ≥ Lw · (c / 1000)^2.5
 Wtotal(L)  = floor( cranes(L) / 100 )
 gain       = Wtotal − W
 first wish : allowed when cranes ≥ 1000 (L ≥ 6e9), giving exactly 10 Wishes (G = 1.5)
@@ -1296,16 +1351,23 @@ string     : shows cranes(L) − 100·W  out of 100·max(10, needed gain)
 bonus      : G = 1 + 0.05 · W on all folds; perks by Wishes held (§3.5)
 ```
 
-* Cube root: early cranes come quickly (fun), later ones slowly; waiting past the gate still pays
-  but is never compulsory.
+* The 0.4 power: early cranes come quickly (fun), later ones slowly; waiting past the gate still
+  pays but is never compulsory. `Lw` is the lifetime that strings the first 1,000 cranes. (It was
+  `floor(100 · cbrt(L / 6e6))`, the same numbers at the first wish, but the cube root of lifetime
+  earnings is Cookie Clicker's prestige formula, review r6. With 0.4 the second wish needs 2.76× the
+  first wish's lifetime instead of 3.375×; M17 moved from M15 + 18:02 to M15 + 17:13 and still
+  passes, so the later-wish gate was not retuned.)
 * **Making a wish** first collects an uncollected away pot (r5-13; the confirm card says so) and
   opens every Bundle on the tray at current value, then resets folds, workshops, tiers, upgrades
   (except perk-kept), running boosts, rhythm, afterglow, spawns and the shelf. It keeps helpers (identity, stats, rest), the Album, Wishes, perks,
   **timed boost envelopes** (they carry into the next run), settings, switches, notification
   counters, lifetime totals and the garlands.
-* Perks (by Wishes held): 10 keep Crisp Corners and Mail Sorter; 25 start with 10 Paper Stacks and
-  5 Bone Folders; 50 gilded crane intervals ×0.8; 100 automations stay bought; 250 envelopes stack
-  to 15.
+* Perks (by Wishes held): 10 keep Crisp Corners and Mail Sorter; 25 **Spare parts**, a tenth
+  (rounded down) of the last run's Paper Stacks, Bone Folders and Scissor Stands carries into the
+  next run (`K.spareKinds` 3, `K.spareDiv` 10: 47 Paper Stacks keep 4, 9 keep none); 50 gilded
+  crane intervals ×0.8; 100 automations stay bought; 250 envelopes stack to 15. (25 was "start
+  with 10 Paper Stacks and 5 Bone Folders", Cookie Clicker's Starter kit and Starter kitchen,
+  review r7.)
 * Targets: first wish for the typical player on **day 3 of open time** (BALANCE.md M15); second
   wish 9–22 h of open time after the first (provisional, tuned by the later-wish gate).
 
@@ -1718,7 +1780,7 @@ bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
 | Gilded crane glide | rendered at x0; the next data tick sets x1 with `.transition("left", {duration: remainingMs, easing: "linear"})` — one-way, no shared-clock loop | crane life | sits still |
 | Gilded crane bob | inner `.loop("top", {from: 0, to: −4·z, period: 1300})` | crane life (≤ 26 s) | none |
 | Paper Boat | one-way `.transition("left", …)` along the bottom band | boat life | sits at the tray end |
-| Storm stripes | paint_path + `.loop("opacity", {0.06 → 0.16, 1200})` | Storm duration (≤ 30 s) | none |
+| Confetti stripes | paint_path + `.loop("opacity", {0.06 → 0.16, 1200})` | Confetti duration (≤ 30 s) | none |
 | Envelope landing | newest tray envelope `.loop("top", {from: 0, to: −2·z, period: 1600})` | 10 s after it lands, mat shown | none |
 | First-run hint | `.loop("top", {0 → 4·z, 900})` | until the 3rd fold | static |
 | Sheet fold | frame swap on each click (data) + `.active(s => s.opacity(0.88))` | — | same |
@@ -1876,7 +1938,7 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R10 | `on_mouse_down` `local_position` absent before first paint | known (gpui §7) | `?.` with the element centre as fallback |
 | R11 | Rem-based ramps and zoom (gpui open question 1) | open | use numeric px everywhere in our UI |
 | R12 | `.active()` opacity on a stateful div is the only press feedback | verified API, unwatched | if invisible, swap the Sheet frame one tick early as feedback |
-| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left and their terminal key (≈ 45 B packed; §5.1), never dropped; beyond 10,000 compact records (checked in batches of 1,000) the oldest are merged into one archive entry per 30 days (§5.1, review r3-04), still counted and shown in the Album, so the Album stops growing (100 new agents a day for 300 days: largest save on any day ≈ 475 KiB, BALANCE inv. 7; ≈ 640 KiB when each agent also runs 3 fledglings; before: 1,124 KiB by day 300, past herdr's 1 MiB write limit, after which every save failed). **The whole save is bounded too** (review r5-07): present helpers (≈ 600 B each) came on top of that count bound, so 130 agents with 4 sub-agents each over a full Album wrote 1.2 MB and every save cycle failed; each observation now estimates the save's bytes (`saveBytes`, no stringify, never below the real size in the tests) and archives more compact records when it would pass `K.saveBudget` = 896 KiB (that case now ≈ 760–800 KiB; §5.1). The count rule and the estimate are both deterministic functions of the state, so every window archives the same records. Residual: a roster that alone passes the budget (about 1,300 present helpers) still cannot save, and says so (§12). Folds added to a compact record later keep its 4 significant digits (review r5-08). Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Storm and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 4 (packed entries since 2; the chunked check of §12.1 since 3; terminal keys and archive entries since 4, read as newer by a format-3 build; review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 422 KiB (format 4: every compact record carries its terminal key, review r3-18; slowest save-cycle step ≈ 105–146 ms); two years ≈ 561 KiB (10,320 compact records and 4,080 helpers in archive entries, r3-04; slowest save-cycle step ≈ 138–215 ms; the whole parse in 25 steps, the slowest ≈ 60 ms, ≈ 375 ms in all), budget 500 ms. (Format 3 measured 347 KiB and 585 KiB; the year is larger in format 4 by the keys, the two years smaller by the archives.) Residual (before archives, review r3-04): at ≈ 40 B per compacted helper, 512 KiB was reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000; archives now cap the compact records at 11,000. A save from an older build with more compact records is archived down to 10,000 at its first observation (25,000 records: every step in budget, `test/qjs/album-open.test.mjs`). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB, which the Album archives now keep the save well below. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 25 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load, merge, overwrite, check, restore and share paths drive it with a task yield between steps for any save of 64 KiB or more (`glue/store.js` `parseIn`), so no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. Bisected (review r3-25): it shows when the engine's automatic cycle collector runs while one of the glue's async functions is executing again after an `await` resumes it (`store.cycle` after its pause, `store.parseIn` between parse steps); collections at task-step boundaries, inside synchronous engine code, or none at all leave nothing behind. The save size only decides whether a collection lands there (a save cycle allocates about twice the save text). This is consistent with a collector-timing fault in that wasm build, not a handle the harness or mod keeps alive, but it is an inference: there is no reduced repro, and the same await-plus-collection pattern frees cleanly in a minimal mod. `npm run test:qjs` keeps a strict 120-day run (188 KiB); the natural year and two-year runs accept only that exact leak check at teardown (`cleanOrEngineFault`), and strict replays of the same saves and play with the collector held back (`createHost` `gcHeadroom`, which changes only when garbage is collected) must free cleanly, which catches any leak that does not depend on collector timing (a VM handle left alive fails there, `test/qjs/harness.test.mjs`) but not a refcount error that does. herdr runs a different engine (vendor/quickjs-jit-runtime), so this result says nothing about how a window close or a VM restart frees the runtime there; if it shared the fault, it would show then. |
-| R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:39, day 3 13:39) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3; P6 12:42, P7 11:21); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
-| R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 18:02 median, inside its window); retune the gate, not `Lw` |
+| R13 | Save size and save cost with years of Album entries | bounded | fledglings fold into parents after 30 days or beyond the 200 most recently gone; Album pane helpers beyond the 200 most recently gone are compacted to `{id, name, species, hue, folds, tasks}` plus the minute they left and their terminal key (≈ 45 B packed; §5.1), never dropped; beyond 10,000 compact records (checked in batches of 1,000) the oldest are merged into one archive entry per 30 days (§5.1, review r3-04), still counted and shown in the Album, so the Album stops growing (100 new agents a day for 300 days: largest save on any day ≈ 475 KiB, BALANCE inv. 7; ≈ 640 KiB when each agent also runs 3 fledglings; before: 1,124 KiB by day 300, past herdr's 1 MiB write limit, after which every save failed). **The whole save is bounded too** (review r5-07): present helpers (≈ 600 B each) came on top of that count bound, so 130 agents with 4 sub-agents each over a full Album wrote 1.2 MB and every save cycle failed; each observation now estimates the save's bytes (`saveBytes`, no stringify, never below the real size in the tests) and archives more compact records when it would pass `K.saveBudget` = 896 KiB (that case now ≈ 760–800 KiB; §5.1). The count rule and the estimate are both deterministic functions of the state, so every window archives the same records. Residual: a roster that alone passes the budget (about 1,300 present helpers) still cannot save, and says so (§12). Folds added to a compact record later keep its 4 significant digits (review r5-08). Records that cannot be packed (§5.1) and salted ones (R6) stay whole. A compact record changed after compaction (a check-in, an envelope opened for it) is compacted again at the next observation, and the envelope of a helper whose record is compact or gone is cashed in then (§6.1; review r2-02: Mail Sorter and the wish open only Bundles, so before this a year of unopened Rush, Confetti and Chorus envelopes, ≈ 3,200, made a 622 KiB save, and opening them un-compacted their records to 1,169 KiB, past herdr's 1 MiB write limit). The save file format is 4 (packed entries since 2; the chunked check of §12.1 since 3; terminal keys and archive entries since 4, read as newer by a format-3 build; review r2-01: every cycle used to stringify and hash the whole Album one character at a time, ≈ 0.8 ms per KiB in the QuickJS harness, so a save near 600 KiB passed the 500 ms budget and stopped saving). A format-1 build reads a format-2 file as newer (read-only), but builds of formats 1 and 2 read a format-3 file as damaged, and in a shared save a window still on one overwrites the other's progress at its next merge (kept in a damaged copy; development builds only, §12.1). Measured in the QuickJS harness (`npm run test:qjs`, Mail Sorter on, timed boosts opened only at the end): 5,000 lifetime pane helpers ≈ 220 KB; a year of 20 agents a day with 3 fledglings each ≈ 422 KiB (format 4: every compact record carries its terminal key, review r3-18; slowest save-cycle step ≈ 105–146 ms); two years ≈ 561 KiB (10,320 compact records and 4,080 helpers in archive entries, r3-04; slowest save-cycle step ≈ 138–215 ms; the whole parse in 25 steps, the slowest ≈ 60 ms, ≈ 375 ms in all), budget 500 ms. (Format 3 measured 347 KiB and 585 KiB; the year is larger in format 4 by the keys, the two years smaller by the archives.) Residual (before archives, review r3-04): at ≈ 40 B per compacted helper, 512 KiB was reached near 12,000 lifetime pane helpers and herdr's 1 MiB write limit near 25,000; archives now cap the compact records at 11,000. A save from an older build with more compact records is archived down to 10,000 at its first observation (25,000 records: every step in budget, `test/qjs/album-open.test.mjs`). A whole parse (check, unpack, validation) costs ≈ 0.6–0.7 ms per KiB in the wasm harness, and both the load and a CAS merge (another window's file) parse the whole save: in one task step that is ≈ 375 ms at 600 days, ≈ 390–480 ms at two years, and 500 ms near 800 KiB, which the Album archives now keep the save well below. The engine therefore splits it (`parseSaveSteps`, §12.1: at two years 25 steps, the slowest ≈ 60 ms, `test/qjs/creaseworks.test.mjs`); the glue's load, merge, overwrite, check, restore and share paths drive it with a task yield between steps for any save of 64 KiB or more (`glue/store.js` `parseIn`), so no parse step grows with the save. herdr's native quickjs-jit is expected to be faster than the wasm harness. **Open risk**: the QuickJS-ng wasm build the harness uses (0.12.1) can fail to free its runtime (`JS_FreeRuntime`: `list_empty(&rt->gc_obj_list)`) after a save cycle once the save is about 300 KiB; every step stays in budget and the game is unaffected. Bisected (review r3-25): it shows when the engine's automatic cycle collector runs while one of the glue's async functions is executing again after an `await` resumes it (`store.cycle` after its pause, `store.parseIn` between parse steps); collections at task-step boundaries, inside synchronous engine code, or none at all leave nothing behind. The save size only decides whether a collection lands there (a save cycle allocates about twice the save text). This is consistent with a collector-timing fault in that wasm build, not a handle the harness or mod keeps alive, but it is an inference: there is no reduced repro, and the same await-plus-collection pattern frees cleanly in a minimal mod. `npm run test:qjs` keeps a strict 120-day run (188 KiB); the natural year and two-year runs accept only that exact leak check at teardown (`cleanOrEngineFault`), and strict replays of the same saves and play with the collector held back (`createHost` `gcHeadroom`, which changes only when garbage is collected) must free cleanly, which catches any leak that does not depend on collector timing (a VM handle left alive fails there, `test/qjs/harness.test.mjs`) but not a refcount error that does. herdr runs a different engine (vendor/quickjs-jit-runtime), so this result says nothing about how a window close or a VM restart frees the runtime there; if it shared the fault, it would show then. |
+| R14 | The pacing targets come from a calibration prototype, not the engine | checked | the shipped simulator (real engine, 12 profiles × 20 seeds) passes every BALANCE.md row (P1 first wish median 21:21, day 3 13:21) with the † constants unchanged except the bench-pace exponent, retuned 0.15 → 0.07 when the bench pace became marginal (§5.3) and 0.07 → 0.06 with the r7 workshop ladder (P6 12:59, P7 12:00); it keeps asserting them (`npm run sim -- --assert`, `test/pacing/`); † constants are the retune knobs, in the order BALANCE.md lists |
+| R15 | Second-wish pacing (gate `max(5, ceil(0.25·W))`) not calibrated | provisional | BALANCE.md marks M17 provisional (simulated: M15 + 16:52 median, inside its window); retune the gate, not `Lw` |
 | R16 | IME/ chord conflicts beyond IBus `ctrl-shift-u` (e.g. Fcitx) | low | chords are only in `layout:Creaseworks`; RECIPE tells people how to rebind |

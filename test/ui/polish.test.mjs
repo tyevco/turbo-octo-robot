@@ -74,7 +74,7 @@ test("r2-22: the first crane's hint chip stays off the Sheet and the crane, insi
           s.ui.hints.fold = true;
           s.stats.hits = 10;
           s.settings.calm = calm;
-          s.spawn.crane = { id: "gX", slot, born: s.spawn.shownMs - age, outcome: "lucky" };
+          s.spawn.crane = { id: "gX", slot, born: s.spawn.shownMs - age, outcome: "gift" };
           const vm = engine.view(s, T0, { role: "panel", width });
           if (!vm.mat.crane) continue;
           const ctx = makeCtx({ width, calm });
@@ -116,7 +116,7 @@ test("r2-22: the chip only glides with the crane when it sits over or under it",
   const s = seeded(11);
   s.ui.hints.fold = true;
   s.stats.hits = 10;
-  s.spawn.crane = { id: "gX", slot: 1, born: s.spawn.shownMs - 3000, outcome: "lucky" };
+  s.spawn.crane = { id: "gX", slot: 1, born: s.spawn.shownMs - 3000, outcome: "gift" };
   const motion = (width) => {
     const vm = engine.view(s, T0, { role: "panel", width });
     const g = matGeometry(vm, { width });
@@ -213,7 +213,7 @@ test("r2-24: perks wrap instead of losing their ends (§3.5 lists them in full)"
     assert.ok(style(el, "whitespace_normal"), `wraps: ${p.text}`);
   }
   assert.ok(shown.includes("Keep Crisp Corners and Mail Sorter between runs"));
-  assert.ok(shown.includes("Start each run with 10 Paper Stacks and 5 Bone Folders"));
+  assert.ok(shown.includes("Keep a tenth of your three cheapest workshops between runs"));
 });
 
 // ---------------------------------------------------------------------------

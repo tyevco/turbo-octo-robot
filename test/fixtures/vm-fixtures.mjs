@@ -553,7 +553,7 @@ const BUILDERS = {
       creaseLine: [at(8), at(18), at(29)].map((p) => [p.x, p.y]),
     }),
     streak: { fill: 0.9, label: "×1.4" },
-    boosts: [boost("storm", "Storm ×7", 18400, 30000), boost("rush", "Rush ×3", 52000, 90000)],
+    boosts: [boost("storm", "Confetti ×6", 18400, 30000), boost("rush", "Rush ×3", 52000, 90000)],
   })],
 
   crane: () => [PANEL, ui(), base("crane", {

@@ -109,6 +109,10 @@ test("inv. 4: one away second never credits more than the bound with the top awa
 test("inv. 5: a scripted 100 hits/s earns exactly the value of 12.5 hits/s", () => {
   const a = fresh();
   const b = fresh();
+  // Thrifty Fox buys on the first action that finds the bank ≥ 4× a cost, so
+  // 8× more apply calls can buy up to 80 ms sooner; switch automations off so
+  // only the click cap is compared.
+  for (const s of [a, b]) for (const id of Object.keys(s.auto)) s.auto[id] = false;
   const t0 = a.clock + 1000;
   const sheet0 = a.stats.bySource.sheet;
   for (let ms = 0; ms < 20000; ms += 10) act(a, { t: t0 + ms, type: "click", target: "sheet" });

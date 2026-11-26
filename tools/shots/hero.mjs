@@ -2,7 +2,7 @@
 //
 //   node --import ./tools/node/register.mjs tools/shots/hero.mjs [--only name,...]
 //
-// Names: hero-dark, hero-light, flock, frenzy, shop, string, away, ribbon,
+// Names: hero-dark, hero-light, flock, confetti, shop, string, away, ribbon,
 // themes, rail, jump (default: all). Captions: docs/screenshots/CAPTIONS.md.
 //
 // Every image is a real render through the screenshot rig: the shipped mod
@@ -48,7 +48,7 @@ import { createController } from "../mock/controller.js";
 import { beginRender, renderRoot, constructView, createMockWindow, serialize, handlersOf } from "../mock/gpui-kit.js";
 import { renderToHtml } from "../render/html.mjs";
 import { renderWindow, parseLayout, contentNodes, layoutBoxes, REPO_ROOT, THEMES } from "../render/window.mjs";
-import { HERO, RAIL, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP, NOTES, rosterRoles } from "./hero-views.js";
+import { HERO, RAIL, CONFETTI, FLOCK, SHOP, STRING, AWAY, JUMP, NOTES, rosterRoles } from "./hero-views.js";
 
 const OUT = resolve(REPO_ROOT, "docs/screenshots");
 const SCALE = 2;
@@ -684,7 +684,7 @@ const SHOTS = {
   "hero-light": (b, base) => shotWindow(b, base, "hero-light", HERO, { theme: "paper" }),
   // The tab bar down to the last Resting row: 34 tiles fill the frame.
   flock: (b, base) => shotCrop(b, base, "flock", FLOCK, { theme: "graphite" }, fromTabs(`${PANEL} [data-id^="cw-flock-sec-"]`)),
-  frenzy: (b, base) => shotCrop(b, base, "frenzy", FRENZY, { theme: "graphite" }, matSlice),
+  confetti: (b, base) => shotCrop(b, base, "confetti", CONFETTI, { theme: "graphite" }, matSlice),
   // The Works list down to the Washi Vat (the tiers after it are still hidden), inside the panel's border.
   shop: (b, base) => shotCrop(b, base, "shop", SHOP, { theme: "graphite" }, async (page, size) => {
     const tabs = await box(page, inPanel("cw-tabs"));

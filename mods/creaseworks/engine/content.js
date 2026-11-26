@@ -9,29 +9,30 @@ export const SAVE_FORMAT = "creaseworks-save";
 // §7.2 workshops: cost_n = base · GROWTH^n.
 export const GROWTH = 1.16; // †
 export const WORKSHOPS = f([
-  f({ id: "paper-stack", name: "Paper Stack", base: 15, out: 0.05, icon: "stack" }),
+  f({ id: "paper-stack", name: "Paper Stack", base: 12, out: 0.05, icon: "stack" }),
   f({ id: "bone-folder", name: "Bone Folder", base: 180, out: 0.3, icon: "folder" }),
-  f({ id: "scissor-stand", name: "Scissor Stand", base: 2200, out: 1.8, icon: "scissors" }),
-  f({ id: "glue-pot", name: "Glue Pot", base: 26000, out: 11, icon: "pot" }),
-  f({ id: "fold-bench", name: "Fold Bench", base: 310000, out: 65, icon: "bench" }),
-  f({ id: "washi-vat", name: "Washi Vat", base: 3.7e6, out: 390, icon: "vat" }),
-  f({ id: "flower-press", name: "Flower Press", base: 4.5e7, out: 2300, icon: "press" }),
-  f({ id: "crane-loft", name: "Crane Loft", base: 5.4e8, out: 14000, icon: "loft" }),
-  f({ id: "kite-tower", name: "Kite Tower", base: 6.5e9, out: 84000, icon: "tower" }),
+  f({ id: "scissor-stand", name: "Scissor Stand", base: 2700, out: 2.2, icon: "scissors" }),
+  f({ id: "glue-pot", name: "Glue Pot", base: 38000, out: 15, icon: "pot" }),
+  f({ id: "fold-bench", name: "Fold Bench", base: 490000, out: 95, icon: "bench" }),
+  f({ id: "washi-vat", name: "Washi Vat", base: 5.9e6, out: 560, icon: "vat" }),
+  f({ id: "flower-press", name: "Flower Press", base: 6.5e7, out: 3000, icon: "press" }),
+  f({ id: "crane-loft", name: "Crane Loft", base: 5.6e8, out: 14000, icon: "loft" }),
+  f({ id: "kite-tower", name: "Kite Tower", base: 4.8e9, out: 60000, icon: "tower" }),
 ]);
 
-// Tier upgrades: at 10/25/50 owned, cost base × 20/200/4000, each ×2 output.
+// Tier upgrades: at 10 owned, a quire (24) and two quires (48), cost base ×
+// 20/200/4000, each ×2 output.
 export const TIERS = f([
   f({ n: 1, at: 10, mult: 20, name: "Neat Edges" }),
-  f({ n: 2, at: 25, mult: 200, name: "True Corners" }),
-  f({ n: 3, at: 50, mult: 4000, name: "Master's Touch" }),
+  f({ n: 2, at: 24, mult: 200, name: "True Corners" }),
+  f({ n: 3, at: 48, mult: 4000, name: "Master's Touch" }),
 ]);
 
 // §7.3 upgrades. `fx` names the effect family; `v` its value; `req` a
 // predecessor that must be bought first (chained levels).
 export const UPGRADES = f([
   // Tools (hand)
-  f({ id: "crisp-corners", seg: "tools", name: "Crisp Corners", cost: 100, fx: "hand", text: "hand ×2" }),
+  f({ id: "crisp-corners", seg: "tools", name: "Crisp Corners", cost: 120, fx: "hand", text: "hand ×2" }),
   f({ id: "bone-tip-nail", seg: "tools", name: "Bone-tip Nail", cost: 1500, fx: "hand", text: "hand ×2" }),
   f({ id: "valley-fold", seg: "tools", name: "Valley Fold", cost: 40000, fx: "hand", text: "hand ×2" }),
   f({ id: "mountain-fold", seg: "tools", name: "Mountain Fold", cost: 1.2e6, fx: "hand", text: "hand ×2" }),
@@ -66,15 +67,15 @@ export const UPGRADES = f([
   f({ id: "long-ribbon", seg: "charms", name: "Long Ribbon", cost: 100000, fx: "dur", v: 1.5, text: "boosts last ×1.5" }),
   f({ id: "longer-ribbon", seg: "charms", name: "Longer Ribbon", cost: 1e7, fx: "dur", v: 2.0, req: "long-ribbon", text: "boosts last ×2" }),
   f({ id: "brisk-charm", seg: "charms", name: "Brisk Charm", cost: 3e6, fx: "rush", v: 4, text: "Rush ×3 → ×4" }),
-  f({ id: "gale-charm", seg: "charms", name: "Gale Charm", cost: 1e8, fx: "storm", v: 10, text: "Storm ×7 → ×10" }),
+  f({ id: "gale-charm", seg: "charms", name: "Gale Charm", cost: 1e8, fx: "storm", v: 9, text: "Confetti ×6 → ×9" }),
   // Curios (special clickables)
   f({ id: "long-crease", seg: "curios", name: "Long Crease", cost: 20000, fx: "chainK", v: 5, text: "chains of 5" }),
   f({ id: "grand-crease", seg: "curios", name: "Grand Crease", cost: 2e6, fx: "chainK", v: 7, req: "long-crease", text: "chains of 7" }),
   f({ id: "quick-creases", seg: "curios", name: "Quick Creases", cost: 200000, fx: "chainEvery", v: 12000, text: "a chain every 12 s" }),
   f({ id: "scrap-basket", seg: "curios", name: "Scrap Basket", cost: 100000, fx: "scrap", v: 2, text: "scraps ×2" }),
-  f({ id: "crane-bait", seg: "curios", name: "Crane Bait", cost: 50000, fx: "crane", v: 210, text: "cranes every 210-420 s" }),
-  f({ id: "crane-song", seg: "curios", name: "Crane Song", cost: 5e6, fx: "crane", v: 150, req: "crane-bait", text: "cranes every 150-300 s" }),
-  f({ id: "slow-wings", seg: "curios", name: "Slow Wings", cost: 500000, fx: "craneLife", v: 20000, text: "cranes stay 20 s" }),
+  f({ id: "crane-bait", seg: "curios", name: "Crane Bait", cost: 50000, fx: "crane", v: 240, text: "cranes every 240-360 s" }),
+  f({ id: "crane-song", seg: "curios", name: "Crane Song", cost: 5e6, fx: "crane", v: 170, req: "crane-bait", text: "cranes every 170-255 s" }),
+  f({ id: "slow-wings", seg: "curios", name: "Slow Wings", cost: 500000, fx: "craneLife", v: 18000, text: "cranes stay 18 s" }),
   f({ id: "harbour-ribbon", seg: "curios", name: "Harbour Ribbon", cost: 1e6, fx: "boat", text: "the Paper Boat sails" }),
 ]);
 
@@ -89,13 +90,15 @@ export const AUTOMATIONS = f([
 // §9 perks by Wishes held.
 export const PERKS = f([
   f({ at: 10, id: "keep-basics", text: "Keep Crisp Corners and Mail Sorter between runs" }),
-  f({ at: 25, id: "head-start", text: "Start each run with 10 Paper Stacks and 5 Bone Folders" }),
+  f({ at: 25, id: "spare-parts", text: "Keep a tenth of your three cheapest workshops between runs" }),
   f({ at: 50, id: "crane-call", text: "Gilded cranes come 20 % sooner" }),
   f({ at: 100, id: "keep-auto", text: "Automations stay bought" }),
   f({ at: 250, id: "deep-tray", text: "Envelopes stack to ×15" }),
 ]);
 
-export const PRESTIGE = f({ Lw: 6e6, firstCranes: 1000, minGain: 5, gateShare: 0.25, perWish: 0.05 }); // Lw †
+// §9: cranes(L) = floor(firstCranes · (L / Lw)^stringExp); Lw is the lifetime
+// that strings the first 1,000 cranes.
+export const PRESTIGE = f({ Lw: 6e9, stringExp: 0.4, firstCranes: 1000, minGain: 5, gateShare: 0.25, perWish: 0.05 }); // Lw †
 
 export const SPECIES = f(["crane", "frog", "fox", "koi", "rabbit", "turtle", "butterfly", "whale", "owl", "boat", "mouse", "snail"]);
 export const HUES = f(["vermilion", "saffron", "leaf", "teal", "sky", "violet", "plum", "slate"]);
@@ -136,7 +139,7 @@ export const NAMES = f([
 export const ENVELOPES = f([
   f({ type: "bundle", chance: 0.55, name: "Bundle" }),
   f({ type: "rush", chance: 0.25, name: "Rush", baseMs: 30000, capMs: 90000 }),
-  f({ type: "storm", chance: 0.10, name: "Paper Storm", baseMs: 12000, capMs: 30000 }),
+  f({ type: "storm", chance: 0.10, name: "Confetti", baseMs: 12000, capMs: 30000 }),
   f({ type: "chorus", chance: 0.10, name: "Chorus", baseMs: 120000, capMs: 240000 }),
 ]);
 export const BOOST_KINDS = f(["rush", "storm", "chorus", "song", "tailwind"]);
@@ -167,18 +170,21 @@ export const K = f({
   glowPerHitMs: 6000, glowMaxMs: 20 * 60000,
   figureEvery: 8, figureMult: 5, shelfMax: 12,
   echoBase: 0.03,
-  rushMult: 3, stormMult: 7,
+  rushMult: 3, stormMult: 6, // stormMult: Confetti (internal id "storm")
   activeWindowMs: 30000, spawnCatchUpMs: 120000,
   chainEveryMs: 20000, chainStormMs: 4000, chainK: 3, nodeLifeMs: 10000,
   nodePay: 2, nodeWrongPay: 1, chainFinishPerNode: 3,
   scrapEveryMs: 45000, scrapLifeMs: 12000, scrapMaxLive: 3, scrapRp: 30, scrapV: 50,
   reamRp: 300, reamV: 100,
-  craneFirstMs: 390000, craneLo: 300, craneLifeMs: 13000, cranePerk: 0.8,
-  luckyRp: 900, luckyBank: 0.15, luckyV: 13,
+  // Gilded crane (§4.5): gaps craneLo · (1 + craneSpread · u) active s; outcome
+  // odds Crane's Gift / Confetti / Flock Song 40 / 35 / 25 %; the Gift pays
+  // giftPerBeat · max(r, giftMinBeats) · V + giftFolk · Hs0.
+  craneFirstMs: 390000, craneLo: 340, craneSpread: 0.5, craneLifeMs: 11000, cranePerk: 0.8,
+  craneGiftOdds: 0.4, craneConfettiOdds: 0.35, giftPerBeat: 25, giftMinBeats: 4, giftFolk: 90,
   stormFromCraneMs: 15000, songMs: 60000, songCapMs: 120000,
   boatLo: 1800, boatSpread: 900, boatLifeMs: 20000, boatRp: 120, tailwindOpens: 3, tailwindMs: 10 * 60000,
   calmLife: 2,
-  helperFlat: 0.3, helperRw: 0.04, folkMult: 1.5, knee: 4, crowdExp: 0.07, // exponent †
+  helperFlat: 0.3, helperRw: 0.04, folkMult: 1.5, knee: 4, crowdExp: 0.06, // exponent †
   restFullMin: 30, restMax: 1, warmMs: 20 * 60000, kidBonus: 0.25, kidMax: 4,
   thanksMs: 5 * 60000, thanksWindowMs: 5 * 60000, thanksMult: 1.5,
   songMult: 3, chorusMult: 2,
@@ -204,6 +210,7 @@ export const K = f({
   saveBytesCompact: 42, saveBytesCompactKids: 14, saveBytesEnvelope: 80, saveBytesRest: 16 * 1024,
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,
+  spareKinds: 3, spareDiv: 10, // §9 25-Wish perk: a tenth of the last run's three cheapest workshops
   noticesMax: 12, noteLifeMs: 60000,
   titleMax: 80,
 });

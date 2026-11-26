@@ -49,9 +49,10 @@ export function songMult(state) {
 }
 
 /**
- * Hand-hit multiplier from Storm / Rush at the hit's time `t`. Rush and Storm
- * run on the hand-input timeline (boosts.rushEnd / stormEnd, wall ms), so a
- * hit merged in late from another window gets the boost it had there.
+ * Hand-hit multiplier from Confetti (internal id "storm") / Rush at the hit's
+ * time `t`. Rush and Confetti run on the hand-input timeline (boosts.rushEnd /
+ * stormEnd, wall ms), so a hit merged in late from another window gets the
+ * boost it had there.
  */
 export function hitBoost(state, E, t) {
   const b = state.boosts;
@@ -172,12 +173,14 @@ export function click(state, ctx, action, t, ev) {
       state.ui.hints.crane = true;
       const r = ctx.rates(state.clock);
       ev.push({ kind: "crane", outcome: c.outcome });
-      if (c.outcome === "lucky") {
-        earn(state, ev, "crane", Math.min(K.luckyRp * r.Rp, K.luckyBank * state.bank) + K.luckyV * r.V);
-      } else if (c.outcome === "storm") {
+      if (c.outcome === "storm") {
         addBoost(state, "storm", K.stormFromCraneMs, 30000, 1, ev, Math.min(t, state.clock));
-      } else {
+      } else if (c.outcome === "song") {
         addBoost(state, "song", K.songMs, K.songCapMs, 1, ev);
+      } else {
+        // Crane's Gift ("gift"; a crane saved before the redesign as "lucky"
+        // pays it too): folded back from your rhythm and the folk at work.
+        earn(state, ev, "crane", giftFolds(state, E, r, t));
       }
       return ev;
     }
@@ -237,9 +240,23 @@ function pickSlots(state, sp, k) {
   return out;
 }
 
+/**
+ * Crane's Gift (§4.5): the crane is folded back from your rhythm and the folk
+ * at work: `giftPerBeat · max(r, giftMinBeats) · V` (a full rhythm of 40 is a
+ * thousand hand folds) plus `giftFolk · Hs0`, the folk's boost-free gathering
+ * (0 while "Helpers gather" is off). It grows with your beat and the flock at
+ * work, never with the bank. `r` is the rhythm the player sees at `t`.
+ */
+export function giftFolds(state, E, r, t) {
+  const beats = Math.max(rhythmAt(state, E, t), K.giftMinBeats);
+  return K.giftPerBeat * beats * r.V + K.giftFolk * (E.gather ? r.Hs0 : 0);
+}
+
+/** Active ms to the next crane: craneLo · (1 + craneSpread · u) s (§4.5). */
 function craneInterval(state, E) {
   const sp = state.spawn;
-  return (E.craneLo + E.craneLo * keyed(state, `crane-gap:${sp.cranesSeen}:${Math.round(sp.activeMs)}`)) * 1000;
+  const u = keyed(state, `crane-gap:${sp.cranesSeen}:${Math.round(sp.activeMs)}`);
+  return E.craneLo * (1 + K.craneSpread * u) * 1000;
 }
 
 function creaseHelperOn(state) {
@@ -338,7 +355,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         const slots = pickSlots(state, sp, 1);
         if (!slots) { sp.nextCraneAt = sp.activeMs + craneInterval(state, E); break; }
         const u = keyed(state, `crane:${sp.cranesSeen}`);
-        const outcome = u < 0.5 ? "lucky" : u < 0.8 ? "storm" : "song";
+        const outcome = u < K.craneGiftOdds ? "gift" : u < K.craneGiftOdds + K.craneConfettiOdds ? "storm" : "song";
         const id = `g${sp.seq++}`;
         sp.crane = { id, slot: slots[0], born: sp.shownMs, outcome };
         sp.cranesSeen++;

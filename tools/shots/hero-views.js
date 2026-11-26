@@ -7,14 +7,14 @@
 // the REAL mod loaded under the mock herdr, played into shape by dispatching
 // engine actions through the session (Sheet clicks, buys, a wish, finished
 // turns) or by firing the rendered elements' own click handlers. Where a
-// moment needs luck or hours (a storm, a crane's spawn time) setup moves the
+// moment needs luck or hours (a Confetti boost, a crane's spawn time) setup moves the
 // one engine field that decides it and lets the engine do the rest, exactly as
 // views.js does. Nothing here draws pixels.
 //
 // One save, one moment: every view starts from MOMENT (seed, herd and play
 // are identical), a second run after the first wish (10 Wishes), so the
 // close-ups and the hero show the same game. A view then adds only what it is
-// about (a tab, a storm, seven hours away, a click).
+// about (a tab, Confetti, seven hours away, a click).
 //
 // The workspace (`heroRoster`) is shared by the mod's scenario and the window
 // chrome, so the sidebar, tabs, terminals, panel and ribbon describe the same
@@ -288,7 +288,7 @@ async function moment(v, tools) {
 }
 
 /** What hero.mjs may want to know about the moment: the Flock tile of the jump shot's helper. */
-export const NOTES = { jumpTile: null, stormEnvelope: null };
+export const NOTES = { jumpTile: null, confettiEnvelope: null };
 
 /** Finishes a task on the given agents (turn +1; `status` null keeps their status), then ticks so envelopes land. */
 async function finish(tools, list, status = "working") {
@@ -426,34 +426,34 @@ async function openEnvelope(v, tools, helperId) {
 }
 
 /**
- * The frenzy: the player opens a Rush envelope, then a Paper Storm envelope,
+ * Confetti: the player opens a Rush envelope, then a Confetti envelope,
  * from the tray (through the envelopes' own click handlers), and clicks fast
  * (the streak meter high, In step). Which kind an envelope is was rolled when
  * it landed: setup sets the roll of two of the tray's envelopes (the one
- * engine field that decides it, as views.js moves spawn clocks). A storm
+ * engine field that decides it, as views.js moves spawn clocks). Confetti
  * drops a chain every 4 s, so two are usually on the mat; a gilded crane
  * glides in and two scraps land. The frame is the click on the older chain's
  * last node: its crease line is drawn across the mat and its "+N" sits where
  * that node was, at the end of the line.
  */
-export const FRENZY = view("frenzy", async (v, tools) => {
+export const CONFETTI = view("confetti", async (v, tools) => {
   const tray = S(v).vm().tray?.envelopes ?? [];
   if (tray.length < 3) throw new Error(`hero-views: ${tray.length} envelopes in the tray, want 3+`);
   state().envelopes[tray[0].helperId].type = "rush";
   state().envelopes[tray[1].helperId].type = "storm";
-  NOTES.stormEnvelope = tray[1].helperId;
+  NOTES.confettiEnvelope = tray[1].helperId;
   await openEnvelope(v, tools, tray[0].helperId);
   await sheetHits(v, tools, 12, 250);
 }, async (v, tools) => {
-  await openEnvelope(v, tools, NOTES.stormEnvelope);
+  await openEnvelope(v, tools, NOTES.confettiEnvelope);
   const sp = state().spawn;
-  // Fast clicking (the streak climbs) until the storm drops a fresh chain.
+  // Fast clicking (the streak climbs) until Confetti drops a fresh chain.
   const fresh = () => [sp.chain, sp.chain2].some((c) => c && sp.shownMs - c.born < 600);
   for (let i = 0; i < 120 && !fresh(); i++) {
     await sheetPresses(v, tools, 1);
     await tools.advance(100);
   }
-  if (!fresh()) throw new Error("hero-views: the storm dropped no chain");
+  if (!fresh()) throw new Error("hero-views: Confetti dropped no chain");
   await scrapJustIn(v, tools);
   await craneJustIn(v, tools);
   await scrapJustIn(v, tools);
@@ -461,7 +461,7 @@ export const FRENZY = view("frenzy", async (v, tools) => {
   await tools.advance(100);
   // The older chain played down to its last node (the frame's click finishes it).
   const older = sp.chain && sp.chain2 ? (sp.chain.born <= sp.chain2.born ? "chain" : "chain2") : sp.chain ? "chain" : "chain2";
-  if (!sp[older]) throw new Error("hero-views: no chain on the frenzy mat");
+  if (!sp[older]) throw new Error("hero-views: no chain on the Confetti mat");
   const prefix = String(sp[older].id);
   const due = () => S(v).vm().mat.nodes.find((x) => x.due && String(x.id).startsWith(`${prefix}-`));
   const left = () => S(v).vm().mat.nodes.filter((x) => String(x.id).startsWith(`${prefix}-`) && !x.done).length;
@@ -472,7 +472,7 @@ export const FRENZY = view("frenzy", async (v, tools) => {
     await tools.advance(150);
   }
   if (!sp[older] || !due()) throw new Error("hero-views: the older chain has no last node to finish");
-  if (state().boosts.stormEnd <= Date.now()) throw new Error("hero-views: the storm ran out before the frame");
+  if (state().boosts.stormEnd <= Date.now()) throw new Error("hero-views: Confetti ran out before the frame");
   // The finishing click: earlier pops finish their rise first (a pop starts
   // to rise 16 ms after its click and hand hits are at least 80 ms apart, so
   // one frame holds one pop at full strength), then the last node.
@@ -528,4 +528,4 @@ export const JUMP = view("jump", null, async (v, tools) => {
   await press(v, tools, `cw-flock-tile-${id}`);
 });
 
-export default [HERO, RAIL, FRENZY, FLOCK, SHOP, STRING, AWAY, JUMP];
+export default [HERO, RAIL, CONFETTI, FLOCK, SHOP, STRING, AWAY, JUMP];

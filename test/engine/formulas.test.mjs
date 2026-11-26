@@ -17,11 +17,14 @@ test("index.js exposes the B2 API", () => {
 test("workshop table and cost_n = base · 1.16^n (§7.2)", () => {
   const ids = CONTENT.WORKSHOPS.map((w) => w.id);
   assert.deepEqual(ids, ["paper-stack", "bone-folder", "scissor-stand", "glue-pot", "fold-bench", "washi-vat", "flower-press", "crane-loft", "kite-tower"]);
-  assert.deepEqual(CONTENT.WORKSHOPS.map((w) => w.base), [15, 180, 2200, 26000, 310000, 3.7e6, 4.5e7, 5.4e8, 6.5e9]);
-  assert.deepEqual(CONTENT.WORKSHOPS.map((w) => w.out), [0.05, 0.3, 1.8, 11, 65, 390, 2300, 14000, 84000]);
-  assert.equal(engine.workshopCost("paper-stack", 0), 15);
-  close(engine.workshopCost("paper-stack", 1), 17.4);
-  close(engine.workshopCost("glue-pot", 5), 26000 * 1.16 ** 5);
+  assert.deepEqual(CONTENT.WORKSHOPS.map((w) => w.base), [12, 180, 2700, 38000, 490000, 5.9e6, 6.5e7, 5.6e8, 4.8e9]);
+  assert.deepEqual(CONTENT.WORKSHOPS.map((w) => w.out), [0.05, 0.3, 2.2, 15, 95, 560, 3000, 14000, 60000]);
+  assert.equal(engine.workshopCost("paper-stack", 0), 12);
+  close(engine.workshopCost("paper-stack", 1), 13.92);
+  close(engine.workshopCost("glue-pot", 5), 38000 * 1.16 ** 5);
+  // no constant step: the ladder's cost steps shrink from ×15 to under ×9 (§7.2)
+  const steps = CONTENT.WORKSHOPS.slice(2).map((w, i) => w.base / CONTENT.WORKSHOPS[i + 1].base);
+  for (let i = 1; i < steps.length; i++) assert.ok(steps[i] < steps[i - 1], `step ${i + 1} shrinks`);
   // ×10 is the closed-form geometric sum of ten single costs.
   let sum = 0;
   for (let n = 3; n < 13; n++) sum += engine.workshopCost("bone-folder", n);
@@ -36,7 +39,7 @@ test("buying: ×1, ×10, Max, locks and refusals", () => {
   assert.equal(ev.at(-1).reason, "locked"); // predecessor not owned
   me.act({ t: T0, type: "buy", item: "paper-stack", count: 10 });
   assert.equal(s.owned["paper-stack"], 10);
-  close(s.bank, 1000 - 15 * (1.16 ** 10 - 1) / 0.16);
+  close(s.bank, 1000 - 12 * (1.16 ** 10 - 1) / 0.16);
   const before = s.bank;
   const max = engine.maxAffordable(s, "paper-stack");
   assert.ok(engine.workshopCost("paper-stack", 10, max) <= before);
@@ -53,7 +56,7 @@ test("buying: ×1, ×10, Max, locks and refusals", () => {
   assert.equal(engine.rates(s).echo, 0.10);
 });
 
-test("tier upgrades: at 10/25/50, cost ×20/×200/×4000, each ×2 output", () => {
+test("tier upgrades: at 10, a quire (24) and two quires (48), cost ×20/×200/×4000, each ×2 output", () => {
   const s = seeded();
   const me = writer(s);
   s.owned["glue-pot"] = 9;
@@ -62,20 +65,26 @@ test("tier upgrades: at 10/25/50, cost ×20/×200/×4000, each ×2 output", () =
   s.owned["glue-pot"] = 10;
   const bank = s.bank;
   me.act({ t: T0, type: "buy", item: "glue-pot-t1", count: 1 });
-  assert.equal(bank - s.bank, 26000 * 20);
-  close(engine.rates(s).Rw, 10 * 11 * 2);
-  assert.equal(engine.itemInfo(s, "glue-pot-t2").cost, 26000 * 200);
-  assert.equal(engine.itemInfo(s, "glue-pot-t3").cost, 26000 * 4000);
-  s.owned["glue-pot"] = 50;
+  assert.equal(bank - s.bank, 38000 * 20);
+  close(engine.rates(s).Rw, 10 * 15 * 2);
+  assert.equal(engine.itemInfo(s, "glue-pot-t2").cost, 38000 * 200);
+  assert.equal(engine.itemInfo(s, "glue-pot-t3").cost, 38000 * 4000);
+  assert.deepEqual(CONTENT.TIERS.map((x) => x.at), [10, 24, 48]);
+  s.owned["glue-pot"] = 23;
+  assert.equal(me.act({ t: T0, type: "buy", item: "glue-pot-t2", count: 1 }).at(-1).reason, "locked");
+  s.owned["glue-pot"] = 24;
   me.act({ t: T0, type: "buy", item: "glue-pot-t2", count: 1 });
+  s.owned["glue-pot"] = 47;
+  assert.equal(me.act({ t: T0, type: "buy", item: "glue-pot-t3", count: 1 }).at(-1).reason, "locked");
+  s.owned["glue-pot"] = 48;
   me.act({ t: T0, type: "buy", item: "glue-pot-t3", count: 1 });
-  close(engine.rates(s).Rw, 50 * 11 * 8);
+  close(engine.rates(s).Rw, 48 * 15 * 8);
 });
 
 test("upgrade costs match §7.3", () => {
   const cost = (id) => CONTENT.UPGRADES.find((u) => u.id === id).cost;
   const expect = {
-    "crisp-corners": 100, "bone-tip-nail": 1500, "valley-fold": 40000, "mountain-fold": 1.2e6, "squash-fold": 4e7,
+    "crisp-corners": 120, "bone-tip-nail": 1500, "valley-fold": 40000, "mountain-fold": 1.2e6, "squash-fold": 4e7,
     "petal-fold": 1.5e9, "thousandth-fold": 6e10, "echo-1": 2000, "echo-2": 80000, "echo-3": 4e6, "echo-4": 3e8,
     "echo-5": 2e10, "steady-rhythm": 5000, "long-streak": 250000, "endless-streak": 5e7, "rice-treats": 2000,
     "soft-brushes": 100000, "snug-bench": 5e6, "paper-hats": 3e8, "gold-leaf-hats": 2e10, "shared-rhythm": 2e6,
@@ -91,11 +100,11 @@ test("upgrade costs match §7.3", () => {
     [["mail-sorter", 25000], ["thrifty-fox", 500000], ["boost-keeper", 2.5e6], ["crease-helper", 5e6]]);
 });
 
-test("eff(n): 4.20 / 4.61 / 4.86, strictly increasing; adding an agent never lowers Hs0", () => {
+test("eff(n): 4.17 / 4.51 / 4.72, strictly increasing; adding an agent never lowers Hs0", () => {
   assert.equal(engine.eff(4), 4);
-  assert.equal(engine.eff(8).toFixed(2), "4.20");
-  assert.equal(engine.eff(30).toFixed(2), "4.61");
-  assert.equal(engine.eff(64).toFixed(2), "4.86");
+  assert.equal(engine.eff(8).toFixed(2), "4.17");
+  assert.equal(engine.eff(30).toFixed(2), "4.51");
+  assert.equal(engine.eff(64).toFixed(2), "4.72");
   for (let n = 0; n < 200; n++) assert.ok(engine.eff(n + 1) > engine.eff(n), `eff(${n + 1})`);
   let prev = 0;
   for (let n = 1; n <= 64; n++) {
@@ -160,13 +169,16 @@ test("rates: G, Rw, b_i, V = hand·G + echo·Rp (§4.1, §5.3)", () => {
   assert.equal(engine.rates(s).Hs, 0);
 });
 
-test("cranes(L) and the first wish: L = 6e9 gives exactly 1,000 cranes and 10 Wishes (§9)", () => {
+test("cranes(L) = floor(1000 · (L / 6e9)^0.4) and the first wish: L = 6e9 gives exactly 1,000 cranes and 10 Wishes (§9)", () => {
+  assert.deepEqual([CONTENT.PRESTIGE.Lw, CONTENT.PRESTIGE.stringExp], [6e9, 0.4]);
   assert.equal(engine.cranes(0), 0);
-  assert.equal(engine.cranes(6e6), 100);
-  assert.equal(engine.cranes(6e6 - 1), 99);
+  assert.equal(engine.cranes(6e9 / 32), 250); // (1/4)^2.5 = 1/32
+  assert.equal(engine.cranes(6e9 / 32 - 1), 249);
+  assert.equal(engine.cranes(6e6), 63); // not the cube root's 100
   assert.equal(engine.cranes(6e9), 1000);
   assert.equal(engine.cranes(6e9 - 1), 999);
-  assert.equal(engine.cranes(6e12), 10000);
+  assert.equal(engine.cranes(6e9 * 32), 4000);
+  assert.equal(engine.lifetimeFor(1500), 6e9 * 1.5 ** 2.5);
   for (let c = 1; c < 3000; c += 7) {
     const L = engine.lifetimeFor(c);
     assert.equal(engine.cranes(L), c, `c=${c}`);

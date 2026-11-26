@@ -371,7 +371,7 @@ test("boost envelopes: durations, extension by 25 %, caps (§6.1, §6.2)", () =>
   s.envelopes.e = { type: "storm", units: 9, landedAt: T0, lastAt: T0 };
   me.act({ t: T0, type: "open", helperId: "e" });
   assert.equal(s.boosts.storm, 30000);
-  // Rush ×3 on hand hits (Storm ×7 wins while both run)
+  // Rush ×3 on hand hits (Confetti ×6 wins while both run)
   engine.advance(s, T0 + 31000);
   assert.equal(s.boosts.storm, 0);
   assert.equal(s.boosts.rush, 90000 - 31000);

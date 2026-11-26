@@ -341,7 +341,7 @@ test("r1-19: the first gilded crane shows its one-time callout chip; none once c
   const s = seeded(11);
   s.ui.hints.fold = true;
   s.stats.hits = 10;
-  s.spawn.crane = { id: "gX", slot: 12, born: s.spawn.shownMs, outcome: "lucky" };
+  s.spawn.crane = { id: "gX", slot: 12, born: s.spawn.shownMs, outcome: "gift" };
   const ctx = makeCtx();
   const ui = { tab: "flock" };
   const json = renderMat(engine.view(s, T0, { role: "panel", width: 320 }), ui, ctx).toJSON();

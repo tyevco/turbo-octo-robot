@@ -18,7 +18,7 @@ export function itemRow(id) {
 
 export const CLICK_SOURCES = Object.freeze(["sheet", "mini", "node", "scrap", "crane", "ream", "boat"]);
 
-/** Bench pace: eff(n) = n up to the knee (K.knee = 4), then 4·(n/4)^K.crowdExp (0.07). */
+/** Bench pace: eff(n) = n up to the knee (K.knee = 4), then 4·(n/4)^K.crowdExp (0.06). */
 export function eff(n) {
   if (n <= K.knee) return n > 0 ? n : 0;
   return K.knee * Math.pow(n / K.knee, K.crowdExp);

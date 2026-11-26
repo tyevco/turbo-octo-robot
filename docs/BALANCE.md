@@ -6,7 +6,9 @@ This file is the written target that `tools/sim/pacing.mjs` asserts (ARCHITECTUR
 prototype of the DESIGN formulas (1 s steps, the profiles below, 20 seeds). The shipped simulator
 replaces it and drives the **real engine** (`engine.apply` / `engine.advance`) through the same
 profiles. With the §8 knobs at their current values it passes every row below (P1 first wish
-median 21:39, min 21:21, max 22:07; run `npm run sim` for the full table).
+median 21:21, min 21:10, max 21:28; run `npm run sim` for the full table). The last change to
+the numbers was the originality review r7 (§10): a new workshop ladder and knob 2 turned from
+0.07 to 0.06.
 
 ---
 
@@ -139,15 +141,15 @@ real-engine sim passed it only through the second night's pot: P1 seed 1 closes 
 8.07e8 folds, the night credits 5.29e8, and that pot is collected at the day-3 open, so the run
 total passes 1 B at exactly 16:00 on all 20 seeds, a 16 h wall-clock gap the play-clock window
 13:20 – 17:20 did not show (review r5-21). Live income passes 1 B on day 3 itself (sim median
-16:26, min 16:01, max 16:36). `npm run sim` notes any §4 row first reached by an away segment's
+16:01, min 15:49, max 16:09; on a few seeds in day 2's last session). `npm run sim` notes any §4 row first reached by an away segment's
 credit ("reached by a night pot on N of 20 seeds"); `run:1e9` is still recorded and is reached
 that way on every seed.
 
-**Lag behind the written targets (recorded, not retuned).** From M11 on, the real-engine P1
-curve runs 40–70 min of play-clock behind the targets above, which were written from the
-prototype: M11 median 10:02 (target 9:20), M12 10:40 (10:00), M13 16:26 (16:30; the old run-total
-target was 15:30), M14 16:00 (16:00, bought at the day-3 open from the night pot), M15 21:39 (min
-21:21, max 22:07; target 20:30). Every row passes its windows and the first wish stays on day 3,
+**Lag behind the written targets (recorded, not retuned).** From M10 on, the real-engine P1
+curve runs up to 80 min of play-clock behind the targets above, which were written from the
+prototype: M10 median 7:20 (target 6:40), M11 9:23 (9:20), M12 11:20 (10:00), M13 16:01 (16:30;
+the old run-total target was 15:30), M14 16:00 (16:00, bought at the day-3 open from the night
+pot), M15 21:21 (min 21:10, max 21:28; target 20:30). Every row passes its windows and the first wish stays on day 3,
 which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retuned for the lag.
 
 ## 5. First wish across profiles
@@ -166,7 +168,7 @@ which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retune
 | P10 busy agents | 19:20 | 17:00 – 22:00 | 16:00 – 23:00 | P10 ≤ P1 | 19:22 (18:54–20:01) |
 | P11 fast hands | 18:30 | 16:30 – 21:00 | **≥ 16:00** and ≤ 22:00 | — | 18:30 (17:29–19:18) |
 | P12 calm | = P1 | each seed within ±3 % of the same P1 seed | | calm changes no earnings | (= P1 by construction) |
-| P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 21:56 (21:24–22:21) |
+| P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 21:53 (21:35–22:20) |
 
 Monotonicity (medians): P3 ≥ P4 ≥ P1 ≥ P5 ≥ P6 ≥ P7. More agents never make the game slower,
 and 30 or 64 agents never reach the first wish on the first day of open time.
@@ -189,8 +191,8 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P1 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 9.1 / 28.1 / 37.6 % |
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3, P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | P3: 5.9 / 12.5 / 15.9 % |
-| P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 1.2 / 1.3 / 4.4 % (20 seeds 0.9–1.3 / 1.0–1.7 / 3.5–4.7 %) |
-| P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 10.8 / 20.1 / 25.3 % |
+| P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 1.0 / 1.1 / 4.0 % (before r6: 1.2 / 1.3 / 4.4 %) |
+| P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 9.0 / 19.8 / 22.4 % |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
 
@@ -270,8 +272,8 @@ and this file together.
 
 | Order | Knob (DESIGN ref) | Current value | Moves mostly |
 |---|---|---|---|
-| 1 | prestige scale `Lw` (§9) | 6e6 | M15 for every profile |
-| 2 | bench-pace exponent (§5.3) | 0.07, knee 4 | P5–P7 relative to P1; every `crowd(N)` payout |
+| 1 | prestige scale `Lw` (§9): lifetime folds that string the first 1,000 cranes | 6e9 | M15 for every profile |
+| 2 | bench-pace exponent (§5.3) | 0.06, knee 4 | P5–P7 relative to P1; every `crowd(N)` payout |
 | 3 | Echo levels (§7.3) | 0.03 base; 0.06 / 0.10 / 0.18 / 0.28 / 0.40 | click share, P2 gap |
 | 4 | chain payouts (§4.4) | 2·Vc per node, 3·k·Vc finish | click share, P8, P11 |
 | 5 | away factor (§10.2) | 0.25 / 0.35 / 0.45 | away share, P9 |
@@ -280,15 +282,80 @@ and this file together.
 
 Knob 2 was 0.15 while the bench pace scaled the whole sum of `b_i`. Making it marginal (DESIGN
 §5.3, inv. 6) stopped fresh agents diluting warm ones, which sped up P6 and P7 (first wish medians
-12:30 and 10:32 at 0.15); 0.07 puts them back inside their windows (12:42 and 11:21).
+12:30 and 10:32 at 0.15); 0.07 put them back inside their windows (12:42 and 11:21). The r7
+workshop ladder (§10) sped P7 up again (10:49 at 0.07, under its 11:00 window), and P1, with 4
+agents, is not changed by this knob; 0.06 gives P6 12:59 and P7 12:00.
 
 The exponent sets `crowd(N)` everywhere it is used, not only in `Hs0`: Bundle envelopes and the
 overflow conversion (`max(45 · Rp, 75 · V) · crowd(N) · units`, DESIGN §6.1), Elsewhere helpers' credit
 (`Hstale`, §12.5) and away gathering (§10.2). Against 0.15 they pay the same up to the knee and
-less above it: about 5 % less at 8 agents (`crowd(8)` 0.525 instead of 0.555), 15 % less at 30
-(0.154 instead of 0.180) and 20 % less at 64 (0.076 instead of 0.095). The simulator rows already
+less above it: about 6 % less at 8 agents (`crowd(8)` 0.521 instead of 0.555), 16 % less at 30
+(0.150 instead of 0.180) and 22 % less at 64 (0.074 instead of 0.095). The simulator rows already
 include this (bundles and away time are part of every profile), so no other knob moved; a profile
 that leans on bundles or away time at 30+ agents is the first place to look if knob 2 changes again.
+
+## 9. Originality redesign (review r6): what moved, no knob turned
+
+The gilded crane, its Lucky Fold and the ×7 storm copied Cookie Clicker's golden cookie, and the
+cube-root String was its prestige formula; DESIGN §1 "Mechanics" lists everything checked. The
+replacements (DESIGN §4.5, §6.1, §7, §9) were chosen to pay about what they replaced, then the
+simulator was rerun with every §8 knob unchanged; every row passes:
+
+| Change | Was | Now |
+|---|---|---|
+| Crane payout | Lucky Fold `min(900·Rp, 0.15·bank) + 13·V`, 50 % | Crane's Gift `25 · max(r, 4) · V + 90 · Hs0`, 40 % |
+| Crane life, gaps | 13 s; `300 + 300·u` (Bait 210, Song 150) | 11 s; `lo · (1 + 0.5·u)`, `lo` 340 (Bait 240, Song 170) |
+| Hand-hit boost | Paper Storm ×7 (Gale ×10), 30 % of cranes | Confetti ×6 (Gale ×9), 35 %; Flock Song 20 → 25 % |
+| String | `floor(100 · cbrt(L / 6e6))` | `floor(1000 · (L / 6e9)^0.4)` (same first wish at L = 6e9) |
+| Small numbers | Paper Stack 15, Crisp Corners 100, tiers at 10/25/50 | 12, 120, tiers at 10/24/48 |
+
+Effect on the P1 rows (20 seeds): M2 Crisp Corners 1:22 → 2:02 (window 0:40–3:00), M3 2:06 → 1:42,
+M11 10:02 → 9:31, M15 21:39 → 21:59 (still day 3, window 18:30–22:30), M17 M15 + 18:02 → M15 + 17:13
+(the 0.4 power needs 2.76× the first wish's lifetime for the second, the cube root 3.375×); the
+click share 25.1 → 24.7 %. P3's day-2 click share went 11.0 → 10.6 % (≥ 10 %): with no agents the
+Gift is only its rhythm part, where Lucky Fold had paid P3 from a bank no agent spent. The gilded
+crane's own income share in P1 is 0.5–1.9 % (seeds 1–3; Lucky Fold 1.3–2.0 %).
+
+## 10. Originality review r7: the workshop ladder, the 25-Wish perk, knob 2
+
+Two constants the r6 sweep kept match known games (DESIGN §1 "Mechanics"): the workshop ladder's
+cost step of about ×12 (AdVenture Capitalist's businesses step exactly ×12) and the 25-Wish perk
+"start with 10 Paper Stacks and 5 Bone Folders" (Cookie Clicker's Starter kit and Starter kitchen).
+
+| Change | Was | Now |
+|---|---|---|
+| Workshop costs (Bone Folder … Kite Tower) | 180, 2,200, 26,000, 310,000, 3.7e6, 4.5e7, 5.4e8, 6.5e9 (×12 a step) | 180, 2,700, 38,000, 490,000, 5.9e6, 6.5e7, 5.6e8, 4.8e9 (steps ×15 down to ×8.6) |
+| Workshop outputs | 0.3, 1.8, 11, 65, 390, 2,300, 14,000, 84,000 (×6 a step) | 0.3, 2.2, 15, 95, 560, 3,000, 14,000, 60,000 (×7.3 down to ×4.3; payback about ×2 a step) |
+| 25-Wish perk | start with 10 Paper Stacks and 5 Bone Folders | Spare parts: keep a tenth of the last run's Paper Stacks, Bone Folders and Scissor Stands |
+| Knob 2, bench-pace exponent | 0.07 | 0.06 |
+
+The ladder was searched with the simulator. A constant ×10 step (output ×5.2–5.5) failed M12 or
+M14 and the purchase cadence before the Kite Tower; a constant ×14 (output ×7) made P6 and P7
+too fast and P3 wait 22.5 min before the Crane Loft; steps that grow from ×9 to ×15 put P1's
+first wish at 16:00 or at 24:00, off day 3. Steps that shrink as the ladder climbs keep its top
+rungs from being walls. The Crane Loft is placed so P1 buys it at the day-3 open on every seed (as before),
+which keeps P12 within ±3 %. The perk applies from 25 Wishes, past every simulated run.
+
+Effect (20 seeds, before → after):
+
+| Row | Before | After | Window |
+|---|---|---|---|
+| M4 first Scissor Stand | 0:06:29 | 0:06:37 | 0:03–0:12 |
+| M10 first Washi Vat | 6:40 | 7:20 | 5:20–8:00 |
+| M12 first Flower Press | 10:40 | 11:20 | 8:40–12:00 |
+| M13 1 B live folds | 16:24 | 16:01 | 14:30–18:30 |
+| M15 P1 first wish | 21:59 (21:22–22:08) | 21:21 (21:10–21:28) | 18:30–22:30 |
+| M17 second wish | M15 + 17:13 | M15 + 16:52 | M15 + 9:00–22:00 |
+| P2 never clicks | 24:34 | 24:00 | 23:00–28:00, ≥ P1 + 2:00 |
+| P3 no agents | 37:21 | 36:58 | 32:00–42:00 |
+| P6 thirty agents | 12:42 | 12:59 | 12:30–17:00 |
+| P7 sixty-four agents | 11:20 | 12:00 (min 10:49) | 11:00–16:00 |
+| P1 click share, whole run | 24.7 % | 24.9 % | 20–38 % |
+| P3 day-2 click share | 10.6 % | 10.5 % | ≥ 10 % |
+| Purchase cadence P2 / P3 | 2.17 h / 12.5 min | 2.83 h / 10.0 min | ≤ 3 h / ≤ 15 min |
+
+The tightest rows are now P3's day-2 click share (10.5 % against 10 %), P2's purchase cadence
+(2.83 h against 3 h, before the Crane Loft) and P7's slowest seed (10:49, median 12:00).
 
 The calibration prototype was a throwaway script outside the repository; it is not a reference.
 The shipped simulator is.

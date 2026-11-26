@@ -1187,7 +1187,7 @@ test("r5-05: merging another window's recovery game names a refused purchase, as
     assert.equal(await cycle(B), true);
     const st = parsed(w.ctl, unreadable ? RECOVERY : SAVE).state;
     assert.deepEqual({ ...st.applied }, { wA: 1, wB: 1 });
-    assert.ok(st.bank >= 5 && st.bank < 6, `B's buy was refused on the merged game (bank ${st.bank})`);
+    assert.ok(st.bank >= 8 && st.bank < 9, `B's buy was refused on the merged game (bank ${st.bank})`);
     const want = store.refundText(true, ["Paper Stack"]);
     assert.equal(want, "Merged with another window's progress. Refunded: Paper Stack.");
     if (unreadable) {

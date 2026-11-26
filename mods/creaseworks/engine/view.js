@@ -1101,7 +1101,7 @@ function trayVm(state, t, E, r, idx, loops, style) {
         const add = Math.max(0, Math.min(def.capMs, cur + ms * K.extendShare) - cur);
         tooltip = `${def.name} is running: opening now adds only ${formatDuration(add)}`;
       } else {
-        // Chorus multiplies working helpers, Rush and Storm hand hits (§6.3, r3-15).
+        // Chorus multiplies working helpers, Rush and Confetti hand hits (§6.3, r3-15).
         const when = env.type === "chorus" ? "open while your helpers are working" : "open when you're ready to click";
         tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · ${when}`;
       }
@@ -1131,7 +1131,7 @@ function boostsVm(state, E, live, t) {
   const add = (type, label, msLeft) => {
     if (msLeft > 0) out.push({ type, label, msLeft: Math.round(msLeft), msTotal: Math.max(BOOST_CAP[type], Math.round(msLeft)) });
   };
-  add("storm", `Storm ${times(E.stormMult)}`, b.stormEnd - t);
+  add("storm", `Confetti ${times(E.stormMult)}`, b.stormEnd - t);
   add("rush", `Rush ${times(E.rushMult)}`, b.rushEnd - t);
   add("song", `Flock Song ${times(K.songMult)}`, num(b.song) - live);
   add("chorus", `Chorus ${times(K.chorusMult)}`, num(b.chorus) - live);
