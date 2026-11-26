@@ -18,8 +18,10 @@ export default class Creaseworks extends View {
     this.session.init(cx);
   }
 
-  render(_cx) {
+  render(cx) {
     const s = this.session;
+    // herdr: pause from the timer while hidden, restart from render once shown (r7-02).
+    s.wakeFromRender(cx);
     const root = div()
       .id("root")
       .size_full()

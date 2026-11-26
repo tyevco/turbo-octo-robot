@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import {
   validateLayout, layoutIds, walkNodes, pathTo, modStrings, propsValues, referencedMods, paletteEntryError,
 } from "../../tools/layout/schema.mjs";
-import { build, buildLayout, PANEL_WEIGHT, FILES_WEIGHT, FILES_MIN, MAIN_MIN, RAIL_WEIGHT } from "../../tools/layout/build.mjs";
+import { build, buildLayout, cappedWeightNodes, PANEL_WEIGHT, FILES_WEIGHT, FILES_MIN, MAIN_MIN, RAIL_WEIGHT } from "../../tools/layout/build.mjs";
 import { layoutBoxes, shares } from "../../tools/render/window.mjs";
 import { find, validateArgs, missing } from "../../tools/mock/commands.js";
 import {
@@ -128,12 +128,21 @@ describe(`layouts/${GAME.layout}.json`, () => {
         assert.deepEqual(node.size, { weight: FILES_WEIGHT });
         assert.equal(node.min, FILES_MIN);
         assert.ok(FILES_MIN < shipped.min, `Files min ${FILES_MIN} below herdr's ${shipped.min} (r6-07)`);
+        assert.ok(!("max" in node) && typeof shipped.max === "number", "herdr's Files max is dropped: no max on a weight node (r7-01)");
         node.size = shipped.size;
         node.min = shipped.min;
+        node.max = shipped.max;
       }
     }
     assert.deepEqual(l, MAIN);
     assert.deepEqual(buildLayout(MAIN, GAME), LAYOUT);
+  });
+
+  test("no {weight} node has a max (a capped weight node leaves an empty strip, B15, r7-01)", () => {
+    assert.deepEqual(cappedWeightNodes(LAYOUT), []);
+    const capped = clone(LAYOUT);
+    walkNodes(capped).find(({ node }) => node.id === "panel").node.max = 900;
+    assert.deepEqual(cappedWeightNodes(capped), ["panel"]);
   });
 
   test("no theme or colors (the person's theme stays theirs)", () => {
@@ -224,8 +233,13 @@ describe(`layouts/${GAME.layout}.json`, () => {
 
   // No case is skipped: every tested window has room for everything (MAIN_MIN is
   // chosen for the tightest one, 1100 x 700 at zoom 1.5 with Files open).
-  for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]]) {
-    for (const zoom of [1, 1.5]) {
+  // r7-01: herdr's zoom starts at 0.5 (settings.rs ZOOM_MIN), and wide or
+  // zoomed-out windows are where a capped weight node (Files at its old max
+  // 900) froze and left a strip: 3440 folded 285 px, 3840 folded 444, 5120
+  // folded 954, 2560 zoom 0.8 folded 152, 1920 zoom 0.5 folded 222.
+  const WIDE = [[2880, 1800], [3000, 2000], [3440, 1440], [3840, 2160], [5120, 2880]];
+  for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440], ...WIDE]) {
+    for (const zoom of [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.5]) {
       for (const state of Object.keys(STATES)) {
         test(`${width}x${height} zoom ${zoom}, ${state}: everything on screen, no empty strip`, () => {
           const b = boxesAt(state, width, height, zoom);
@@ -497,7 +511,7 @@ describe("RECIPE.md is written from the built files", () => {
     const line = (i) => see.slice(i, see.indexOf("\n", i));
     assert.ok(line(iMain).includes(`min ${MAIN_MIN} px`), line(iMain));
     assert.ok(line(iGame).includes(`weight ${PANEL_WEIGHT}`) && line(iGame).includes("min 64") && line(iGame).includes("no max"), line(iGame));
-    assert.ok(line(iFiles).includes(`weight ${FILES_WEIGHT}`) && line(iFiles).includes(`min ${FILES_MIN}`) && line(iFiles).includes("max 900"), line(iFiles));
+    assert.ok(line(iFiles).includes(`weight ${FILES_WEIGHT}`) && line(iFiles).includes(`min ${FILES_MIN}`) && line(iFiles).includes("no max") && !/max 900/.test(line(iFiles)), line(iFiles));
   });
 
   test("no figure of the old px layout is left", () => {
@@ -541,6 +555,32 @@ describe("RECIPE.md is written from the built files", () => {
     for (const c of run) assert.ok(para.includes(`\`${c} {`), `${c} missing from: ${para}`);
     assert.match(para, /`layout\.resize \{id:"cw-panel", weight\}`/);
     assert.ok(!/layout\.resize \{[^}]*px/.test(para), "never px");
+  });
+
+  // r7-03: the Files line is the installer's list of what the mod writes
+  // (defaults/AGENTS.md: say which files a mod touches). It left out
+  // save.recovery.json, and said nothing of the companions written next to a
+  // shared save. Every path glue/store.js pathsFor() gives is named, for this
+  // home and for a shared save.
+  test("Files: every file glue/store.js writes, here and next to a shared save (r7-03)", async () => {
+    const { pathsFor } = await import(resolve(MOD_DIR, "glue/store.js"));
+    const para = section("Built from").split("\n").find((l) => l.startsWith("**Files**"));
+    assert.ok(para, "a **Files** paragraph");
+    const own = pathsFor("<appHome>");
+    const base = (p) => p.slice(p.lastIndexOf("/") + 1);
+    assert.ok(para.includes(`\`${own.save}\``), `${own.save} in: ${para}`);
+    const keys = Object.keys(own).filter((k) => !["dir", "shared"].includes(k));
+    assert.deepEqual(keys.sort(), ["bak", "damaged", "location", "recovery", "save"], "store.js paths changed: update RECIPE's Files line");
+    for (const k of keys) {
+      const p = k === "damaged" ? own.damaged("<n>") : own[k];
+      assert.ok(para.includes(`\`${base(p)}\``), `${k}: ${base(p)} missing from: ${para}`);
+    }
+    // Sharing: the backup, recovery and damaged files sit next to the shared file.
+    const sh = pathsFor("<appHome>", "/path/name.json");
+    for (const p of [sh.save, sh.bak, sh.recovery, sh.damaged("<n>")]) {
+      assert.ok(para.includes(`\`${p}\``), `shared: ${p} missing from: ${para}`);
+    }
+    assert.equal(sh.location, own.location, "location.json stays in this home");
   });
 
   // r2-27: herdr's palette lists every mod's entries in every layout and
@@ -603,5 +643,50 @@ describe("share-format files", () => {
     assert.equal(lines[0], "MIT License");
     assert.ok(lines.includes("Copyright (c) 2026 Tyler Coles"), lines.slice(0, 4).join(" | "));
     assert.ok(lines.some((l) => l.startsWith("Permission is hereby granted, free of charge")));
+  });
+
+  // r7-16: herdr is Apache-2.0. Files copied or adapted from it need the
+  // licence text beside them (§4(a)) and a note of what was changed (§4(b));
+  // LICENSE (MIT) covers only this repo's own work.
+  const HERDR_FILES = [
+    "tools/layout/main.json", "tools/layout/herdr-defaults.json", "tools/mock/themes.json", "tools/mock/commands.js",
+    "tools/mock/theme-resolve.js", "tools/qjs/sandbox.js", "tools/render/window.mjs", `layouts/${GAME.layout}.json`,
+  ];
+  test("the Apache-2.0 text ships with herdr's files (r7-16)", () => {
+    const apache = readFileSync(at("LICENSES/Apache-2.0.txt"), "utf8");
+    assert.match(apache, /^\s*Apache License\s+Version 2\.0, January 2004/);
+    assert.match(apache, /4\. Redistribution\./);
+    assert.match(apache, /END OF TERMS AND CONDITIONS/);
+    if (HAVE_HERDR) assert.equal(apache, readFileSync(resolve(HERDR_SRC, "LICENSE"), "utf8"), "herdr's own LICENSE, byte for byte");
+  });
+  test("THIRD-PARTY-NOTICES.md names every file copied, adapted or ported from herdr (r7-16)", () => {
+    const notices = readFileSync(at("THIRD-PARTY-NOTICES.md"), "utf8");
+    assert.match(notices, /herdr-app 0\.1\.18/);
+    assert.match(notices, /Apache License, Version 2\.0/);
+    assert.match(notices, /\(LICENSES\/Apache-2\.0\.txt\)/);
+    assert.match(notices, /MIT, Copyright \(c\) 2026 Tyler Coles/);
+    // Any tooling file whose header says it was copied or ported from herdr is listed too.
+    const walk = (dir) => readdirSync(at(dir)).flatMap((f) => {
+      const rel = `${dir}/${f}`;
+      if (rel === "tools/out" || f === "node_modules") return [];
+      return isDir(at(rel)) ? walk(rel) : /\.(m?js|json)$/.test(f) ? [rel] : [];
+    });
+    const marked = walk("tools").filter((f) => /copied from herdr|port of herdr|ported exactly/i.test(readFileSync(at(f), "utf8")));
+    assert.ok(marked.includes("tools/mock/commands.js") && marked.includes("tools/qjs/sandbox.js"), marked.join(" "));
+    for (const f of new Set([...HERDR_FILES, ...marked])) {
+      assert.ok(existsSync(at(f)), f);
+      assert.ok(notices.includes(`\`${f}\``), `${f} missing from THIRD-PARTY-NOTICES.md`);
+    }
+    // §4(b): the adapted layout says what was changed.
+    const row = notices.split("\n").find((l) => l.startsWith(`| \`layouts/${GAME.layout}.json\``));
+    assert.ok(row && /What was changed|weight/.test(row) && row.includes("cw-panel") && row.includes("cw-ribbon"), row);
+  });
+  test("README's licence note points at the Apache text and the notices (r7-16)", () => {
+    const readme = readFileSync(at("README.md"), "utf8");
+    const lic = readme.slice(readme.indexOf("## Licence"));
+    assert.match(lic, /MIT\. Copyright \(c\) 2026 Tyler Coles/);
+    assert.match(lic, /Apache License 2\.0/);
+    assert.ok(lic.includes("(LICENSES/Apache-2.0.txt)") && lic.includes("(THIRD-PARTY-NOTICES.md)"), lic);
+    assert.ok(lic.includes(`\`layouts/${GAME.layout}.json\` is adapted from herdr's \`main.json\``), lic);
   });
 });

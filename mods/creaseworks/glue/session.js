@@ -163,6 +163,9 @@ export class Session {
     this.height = null;
     this.interval = 0;
     this.timer = null;
+    // r7-02: a task render started to put the 1 s timer back is pending.
+    this.waking = false;
+    this.closed = false;
     this.lastRev = -1;
     this.lastBucket = -1;
     this.cache = null;
@@ -320,7 +323,49 @@ export class Session {
       }
     }
     this.interval = ms;
+    this.waking = false;
     this.timer = cx.timer.every(ms, (tcx) => this.tick(tcx));
+  }
+
+  /**
+   * r7-02: herdr's rule for a hidden window is "check window()?.visible in
+   * the timer and stop when false; read it in render and restart when true".
+   * The tick does the first half (retime to 5000 ms). Render does the second:
+   * it reads window() on every render (so herdr renders this copy again when
+   * the window shows), and when the window is visible while the 5 s timer is
+   * still set it starts one task. The task waits for the scheduler (no timer
+   * is set during render: A2 rule 7), then ticks at once: the tick puts the
+   * 1 s timer back, observes the agents and sends what was held while hidden.
+   * Never throws (render must draw).
+   */
+  wakeFromRender(cx) {
+    let win = null;
+    try {
+      win = herdrWindow();
+    } catch {
+      return;
+    }
+    if (this.demo || this.closed || !this.slot || this.waking || this.interval !== HIDDEN_MS) return;
+    if (win && win.visible === false) return;
+    if (!cx || typeof cx.spawn !== "function") return;
+    this.waking = true;
+    try {
+      cx.spawn(async (tcx) => {
+        await tcx.sleep(0);
+        if (!this.waking || this.closed || this.interval !== HIDDEN_MS) return;
+        this.waking = false;
+        let w = null;
+        try {
+          w = herdrWindow();
+        } catch {
+          return;
+        }
+        if (w && w.visible === false) return;
+        this.tick(tcx);
+      });
+    } catch {
+      this.waking = false;
+    }
   }
 
   /** The data tick (B7). */
@@ -533,6 +578,8 @@ export class Session {
     const wasTicker = slot.ticker === this.copyId;
     delete slot.copies[this.copyId];
     if (wasTicker) slot.ticker = null;
+    this.closed = true;
+    this.waking = false;
     if (this.timer) {
       try {
         this.timer.cancel();

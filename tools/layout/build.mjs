@@ -10,16 +10,23 @@
 //   root      "preview": mods/<mod>/art/layout-preview.png (travels with the mod folder)
 //   main      "min": 80 (MAIN_MIN: a drag never squeezes the terminals below 80 px)
 //   panel     (herdr's Files/Changes column) "size": {"weight": 0.66} instead of {"px": 368},
-//             "min": 160 instead of 280 (FILES_MIN, r6-07)
+//             "min": 160 instead of 280 (FILES_MIN, r6-07), and herdr's "max": 900
+//             dropped (no max on a weight node, r7-01)
 //   work-body "cw-panel": the game, {"weight": 0.39}, min 64 (folds to a 64 px rail),
 //             right after main and BEFORE the Files column (main | cw-panel | panel)
 //   work      "cw-ribbon" (30 px) between work-body and status
 // Why weights (ARCHITECTURE B15): herdr makes a {px} node flex_none, and min/max
 // only add min_w/max_w (src/window.rs sized()), so a {px} node never gives way
 // and a narrow window or zoom 1.5 pushes the last node of the row off-screen.
-// Weight nodes shrink to their min first. No max on cw-panel: herdr keeps grow
-// factors normalised after a node freezes at its max, so a capped weight node
-// leaves the rest of its share empty (src/window/pane_size.rs shares()). 0.39
+// Weight nodes shrink to their min first. No max on any weight node (cw-panel,
+// and Files, whose herdr max of 900 the build drops): herdr keeps grow factors
+// normalised after a node freezes at its max, so a capped weight node leaves
+// the rest of its share empty (src/window/pane_size.rs shares(); src/window.rs
+// sized() sets flex_grow = weight / total with max_w, and CSS flexbox gives
+// the frozen space to no one). With Files at max 900 that was an empty strip at
+// the end of work-body from about 2560 px at zoom 0.8 or 2880 px at zoom 1,
+// folded (3440: 285 px, 3840: 444, 5120: 954), and at 1920 x 1080 zoom 0.5
+// (r7-01). 0.39
 // gives the game 322 px and Files 367 px at 1440 x 900, close to the shipped
 // 368 and the designed 320; at 1100 x 700 the game is 226 px (DESIGN §2.4
 // Narrow) and on big windows it keeps growing (1920: 456, 2560: 636).
@@ -144,6 +151,9 @@ export function buildLayout(main, { mod }) {
   files.size = { weight: FILES_WEIGHT };
   if (typeof files.min !== "number" || files.min < FILES_MIN) throw new Error("main.json changed shape: panel's min is below FILES_MIN");
   files.min = FILES_MIN;
+  // herdr's max (900) would freeze the weight column on wide or zoomed-out
+  // windows and leave the rest of its share empty (r7-01).
+  delete files.max;
 
   // The game goes right after main, before Files: a too-tight row is clipped at
   // its end, so the optional Files column is what herdr cuts first (r2-15).
@@ -151,6 +161,19 @@ export function buildLayout(main, { mod }) {
   workBody.children.splice(workBody.children.indexOf(files), 0, panel);
   work.children.splice(work.children.indexOf(status), 0, ribbon);
   return root;
+}
+
+/**
+ * Ids of the nodes that have both a {weight} size and a max. herdr keeps grow
+ * factors normalised after a node freezes at its max, so such a node leaves an
+ * empty strip once the row is wide enough (ARCHITECTURE B15, r7-01). Pure.
+ */
+export function cappedWeightNodes(node, out = []) {
+  if (node && typeof node === "object") {
+    if (node.size && typeof node.size.weight === "number" && node.max !== undefined) out.push(node.id);
+    for (const c of node.children ?? []) cappedWeightNodes(c, out);
+  }
+  return out;
 }
 
 /** The file text: two-space JSON like the shipped layouts, with a final newline. */
@@ -167,6 +190,7 @@ export function build({ root = ROOT, mainPath = MAIN_PATH } = {}) {
   const game = readGame(root);
   const layout = buildLayout(readMain(mainPath), game);
   const problems = validateLayout(layout);
+  for (const id of cappedWeightNodes(layout)) problems.push(`${id}: a {weight} node with a max leaves an empty strip on wide windows (B15)`);
   if (problems.length) throw new Error(`built layout is invalid:\n  ${problems.join("\n  ")}`);
   return { path: outputPath(root, game), text: layoutText(layout) };
 }

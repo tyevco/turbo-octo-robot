@@ -101,3 +101,5 @@ The herdr share package is `layouts/`, `mods/creaseworks/`, `keys.json`, `RECIPE
 ## Licence
 
 MIT. Copyright (c) 2026 Tyler Coles. See [LICENSE](LICENSE).
+
+Some development-only reference files are herdr's, under the Apache License 2.0 (text in [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)): `tools/layout/main.json`, `tools/layout/herdr-defaults.json`, `tools/mock/themes.json` and the herdr tables and ports in `tools/`. `layouts/Creaseworks.json` is adapted from herdr's `main.json`. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists each file and what was changed.

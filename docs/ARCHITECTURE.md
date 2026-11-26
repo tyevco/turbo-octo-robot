@@ -1151,7 +1151,7 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   give way and, with `main`'s `min: 360`, the last node (the game) was pushed off-screen.
 * **The layout now** (`tools/layout/build.mjs`). `cw-panel` is `{"weight": 0.39}`, `min: 64`, no
   `max`; herdr's Files column (`panel`) is `{"weight": 0.66}` with **`min: 160`** (`FILES_MIN`;
-  herdr ships 280, review r6-07; its `max: 900` and every other field kept); `main` is herdr's
+  herdr ships 280, review r6-07; herdr's `max: 900` dropped, r7-01; every other field kept); `main` is herdr's
   weight 1 with **`min: 80`** (`MAIN_MIN`; was 360).
   `work-body` is **`main | cw-panel | panel`**: the game sits right after the terminals and the
   optional Files column ends the row (r2-15, below), so herdr clips Files first.
@@ -1208,7 +1208,18 @@ the Perks heading and the garland stripes it is named for were below the fold (r
 * **No `max` on a weight node.** herdr keeps grow factors normalised to the original siblings
   after a node freezes at its max (`pane_size::shares`; taffy, CSS flexbox 9.7 step 4b), so a
   capped weight node leaves the rest of its share empty: `{weight: 1, max: 320}` would leave a
-  254 px empty strip right of the panel at 1440×900. `test/layout` checks there is no strip.
+  254 px empty strip right of the panel at 1440×900. **This covers Files too (r7-01):** the build
+  kept herdr's `max: 900` when it made Files a weight, so on wide or zoomed-out windows Files froze
+  at 900 × zoom and the rest of its share was left empty at the end of `work-body` (folded with
+  Files open: 2560×1440 zoom 0.8 152 px, 2880×1800 62, 3440×1440 285, 3840×2160 444, 5120 954;
+  1920×1080 zoom 0.5 222; herdr's own px Files leaves none). The build now deletes it, and
+  `build()` refuses any `{weight}` node with a `max` (`cappedWeightNodes`). Files keeps growing
+  with the row instead (3840 folded: about 1400 px beside 2100 of terminals). `test/layout`
+  checks there is no strip at 1100–5120 px (2880, 3000, 3440, 3840 and 5120 wide added in r7-01)
+  and zoom 0.5–0.9, 1 and 1.5, in every state. Owned elsewhere: `glue/commands.js` `FILES_MAX`
+  (900) is still `layoutInfo().filesMax`'s fallback when Files has no max, so `filesEstimate` and
+  `railMainEstimate` cap Files at 900 from about 2640 px folded (3100 open) at zoom 1; with no max it should be `Infinity`
+  (and `test/glue/commands.test.mjs` then expects that, not 900).
 * **Commands: both sides are weights.** herdr's `drag_to` (src/window.rs ~4890) keeps a `{px}`
   side of a dragged divider as px, so a `{px: 64}` rail dragged open would stay px and never give
   way again. Fold is therefore `layout.resize {id: "cw-panel", weight: 0.001}` (`RAIL_WEIGHT`, so
@@ -1239,7 +1250,8 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   `applyDrag` a divider drag (port of `drag_to`) to a tree as the window does; the mock controller
   runs every `layout.*` a copy runs through `applyLayoutCommand` itself (A7, r4-02), so a bad id
   is a run error and the copies read back the tree they changed. Tests:
-  `test/layout/layout.test.mjs` (every state at 1100–2560 px, zoom 1 and 1.5, none skipped;
+  `test/layout/layout.test.mjs` (every state at 1100–5120 px, zoom 0.5–0.9, 1 and 1.5, none skipped;
+  no `{weight}` node with a `max`;
   zooms 1.6–3.0 clip Files before the game; folding helps; the designed widths above; RECIPE.md
   written from the built files), `test/glue/commands.test.mjs` (the commands' own runs
   applied and laid out with Files open at zoom 1 and 1.5; dragging the rail open), and

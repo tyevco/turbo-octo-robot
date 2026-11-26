@@ -876,3 +876,42 @@ test("r3-05: the remembered panel weight reaches the ribbon copy's own store and
   }
   w = null;
 });
+
+// r7-02: the window shown again restarts every copy's 1 s tick from render
+// (herdr renders each copy that read window()), so the answer key opens an
+// agent that started waiting while the window was hidden at once, not after
+// the next 5 s hidden tick; a closed copy's render restarts nothing.
+test("r7-02: shown again, both copies restart from render; the answer key opens the agent that started waiting while hidden", async () => {
+  w = win({ agents: [agent(1), agent(2)], terminals: [term(1), term(2)], layout: LAYOUT() });
+  const panel = await w.copy("panel");
+  const ribbon = await w.copy("ribbon");
+  await w.advance(2000);
+  w.ctl.setWindow({ visible: false });
+  await w.advance(5200);
+  assert.deepEqual([panel.session.interval, ribbon.session.interval], [5000, 5000]);
+  w.ctl.setAgents([agent(1), agent(2, "blocked")]);
+  w.ctl.setTerminals([term(1), term(2, "blocked")]);
+  await w.advance(100);
+  assert.equal(byAddr(w.slot, "t2").status, "working", "not observed yet while hidden");
+  w.ctl.setWindow({ visible: true });
+  w.render(panel);
+  w.render(ribbon);
+  await w.advance(1);
+  assert.deepEqual([panel.session.interval, ribbon.session.interval], [1000, 1000]);
+  assert.equal(byAddr(w.slot, "t2").status, "blocked");
+  assert.equal(w.ctl.pendingTasks().filter((t) => t.kind === "timer").length, 2, "one data timer per copy");
+  w.ctl.sendCommand("answer");
+  await w.flush();
+  assert.deepEqual(runsOf(w.ctl, "pane.focus").at(-1).args, { pane: "p2" });
+  // A closed copy: its render (a last frame) starts no tick and no timer.
+  w.ctl.setWindow({ visible: false });
+  await w.advance(5200);
+  assert.equal(panel.session.interval, 5000);
+  w.ctl.within("event", panel, (cx) => panel.close(cx));
+  w.ctl.setWindow({ visible: true });
+  const tasks = w.ctl.pendingTasks().length;
+  w.render(panel);
+  await w.advance(1);
+  assert.equal(w.ctl.pendingTasks().length <= tasks, true, "nothing new from a closed copy");
+  assert.equal(panel.session.timer, null);
+});

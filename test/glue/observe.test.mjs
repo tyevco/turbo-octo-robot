@@ -445,3 +445,50 @@ test("r4-01: the read-failure notices keep their key words on a narrow rail", ()
   assert.equal(railFlash(READ_FAIL_TEXT.terminals, 64), "Agent details unreadable");
   for (const t of Object.values(READ_FAIL_TEXT)) assert.equal(railFlash(t, 200), t, "whole on a wide rail");
 });
+
+// r7-02: herdr's rule for a hidden window is "check window()?.visible in the
+// timer and stop when false; read it in render and restart when true". Only
+// the tick retimed, so for up to 5 s after the window showed again the 5 s
+// timer stayed: nothing advanced, and an agent that started waiting kept its
+// old state (no needs-you cue).
+test("r7-02: a window shown again restarts the 1 s tick from render: a needs-you agent reads at once", async () => {
+  w = win({ agents: [agent(1), agent(2)], terminals: [term(1), term(2)] });
+  const panel = await w.copy("panel");
+  await w.advance(3000);
+  const s = panel.session;
+  const timers = () => w.ctl.pendingTasks().filter((t) => t.kind === "timer");
+  const h = (addr) => Object.values(w.slot.state.helpers).find((x) => x.addr === addr && !x.gone);
+  assert.equal(s.interval, 1000);
+  w.ctl.setWindow({ visible: false });
+  await w.advance(1000);
+  assert.equal(s.interval, 5000, "hidden: the 5 s timer");
+  // Rendered while hidden: nothing restarts, and render reads window() (so herdr renders again on show).
+  w.ctl.resetCounts();
+  w.render(panel);
+  assert.ok((w.ctl.counts.window ?? 0) >= 1, "render reads window()");
+  await w.advance(10);
+  assert.equal(s.interval, 5000, "still hidden: still 5 s");
+  // t2 starts waiting for input while the window is hidden, just after a hidden tick.
+  w.ctl.setAgents([agent(1), agent(2, "blocked")]);
+  w.ctl.setTerminals([term(1), term(2, "blocked")]);
+  await w.advance(200);
+  assert.equal(h("t2").status, "working", "not observed yet (the next hidden tick is seconds away)");
+  w.ctl.setWindow({ visible: true });
+  const before = timers().length;
+  const spawns0 = w.ctl.pendingTasks().filter((t) => t.kind === "spawn").length;
+  w.render(panel);
+  w.render(panel);
+  assert.equal(timers().length, before, "no timer is set during render (A2 rule 7)");
+  assert.equal(w.ctl.pendingTasks().filter((t) => t.kind === "spawn").length - spawns0, 1, "one wake task, however many renders");
+  await w.advance(1);
+  assert.equal(s.interval, 1000, "the 1 s timer is back within a scheduler turn");
+  assert.equal(timers().length, 1, "still one data timer per copy");
+  assert.ok(timers()[0].due - Date.now() <= 1000);
+  assert.equal(h("t2").status, "blocked", "observed at once: needs-you shows");
+  await w.advance(1000);
+  assert.equal(s.vm().header.counts.needs, 1, "the Needs you count shows it");
+  // A visible window's render starts nothing.
+  const spawns = w.ctl.pendingTasks().length;
+  w.render(panel);
+  assert.equal(w.ctl.pendingTasks().length, spawns);
+});
