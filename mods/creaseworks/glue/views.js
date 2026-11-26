@@ -191,6 +191,14 @@ async function finish(tools, addrs, status = "working") {
   await tools.advance(1000);
 }
 
+/** Live time in 48 s ticks (each under the 60 s away threshold, so no away segment). */
+async function liveFor(tools, ms) {
+  for (let left = ms; left > 0; left -= 48000) {
+    tools.ctl.setNow(Date.now() + Math.min(48000, left));
+    await tools.flush();
+  }
+}
+
 const addrs = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => `t${from + i}`);
 
 /** Runs a spawn clock out now (the engine then spawns the piece on the next active second). */
@@ -258,6 +266,19 @@ add("tray-full", { roster: { working: 5, resting: 3, finished: 2 } }, async (v, 
   midGame(v);
   await finish(tools, addrs(1, 10));
 });
+// Fractional stack counts (r5-15, r6-17): a finish pays the share of its
+// helper's 12-minute unit budget refilled since the last one, so t1 ends at
+// 1 + 1 + 0.8 = ×2.8 and t2 at ×2.4 (50 s live ticks: never an absence).
+add("tray-fraction", { roster: { working: 4, resting: 1 } }, async (v, tools) => {
+  midGame(v);
+  await finish(tools, ["t1", "t2", "t3"]);
+  await liveFor(tools, 12 * 60000);
+  await finish(tools, ["t1", "t2"]);
+  await liveFor(tools, 4.8 * 60000);
+  await finish(tools, ["t2"]);
+  await liveFor(tools, 4.8 * 60000);
+  await finish(tools, ["t1"]);
+});
 add("storm", { roster: STD }, async (v, tools) => {
   midGame(v);
   const b = state().boosts;
@@ -278,6 +299,23 @@ add("boat", { roster: STD }, async (v, tools) => {
   act(v, { type: "buy", item: "harbour-ribbon", count: 1 });
   await spawnNow(v, tools, "nextBoatAt");
 });
+// The boat over a full tray (r6-06): it glides in its own lane above the
+// band, clear of the envelopes; calm parks it at the lane's far end, clear of
+// the streak label.
+for (const calm of [false, true]) {
+  add(calm ? "boat-calm" : "boat-tray", { roster: { working: 5, resting: 3, finished: 2 } }, async (v, tools) => {
+    midGame(v, 1.3e6);
+    act(v, { type: "buy", item: "harbour-ribbon", count: 1 });
+    if (calm) {
+      act(v, { type: "setting", key: "calm", value: true });
+      act(v, { type: "setting", key: "pops", value: false });
+    }
+    await finish(tools, addrs(1, 10));
+    await spawnNow(v, tools, "nextBoatAt");
+    // mid-glide: a quarter of its life (it starts at the left, over where the tray is)
+    if (!calm) await tools.advance(4000);
+  });
+}
 add("chain-7", { roster: STD }, async (v, tools) => {
   midGame(v, 2.5e6);
   act(v, { type: "buy", item: "long-crease", count: 1 });
@@ -296,6 +334,14 @@ add("in-step", { roster: { working: 4, resting: 1, finished: 1 } }, async (v, to
   midGame(v);
   await finish(tools, ["t1", "t5"]);
   await sheetHits(v, tools, 30, 300);
+});
+// Afterglow (r5-14, r6-17): In step, then the beat stops; the banked
+// afterglow shows as the footer chip.
+add("afterglow", { roster: { working: 4, resting: 1, finished: 1 } }, async (v, tools) => {
+  midGame(v);
+  await finish(tools, ["t1", "t5"]);
+  await sheetHits(v, tools, 30, 300);
+  await tools.advance(3000);
 });
 add("flock-12", { roster: { needs: 2, finished: 1, working: 5, resting: 4, kids: true }, block: "cw-panel", window: true }, async (v, tools) => {
   midGame(v);
@@ -347,6 +393,27 @@ add("string-ready", { roster: STD }, async (v) => {
 });
 add("string-confirm", { roster: STD }, async (v, tools) => {
   midGame(v, 6.2e9);
+  const h = S(v).handlers;
+  h.tab("string", undefined);
+  h.confirm("wish", undefined);
+  await tools.advance(1600);
+});
+// The gate mark (r5-12, r6-17): after the first wish (W = 10) the next opens
+// at 5 Wishes, 500 of the String's 1,000 cranes, so the String marks strand 10.
+add("string-gate", { roster: STD }, async (v, tools) => {
+  midGame(v, 6.2e9);
+  if (wishInfo(state()).can) act(v, { type: "wish" });
+  midGame(v, 5.4e9);
+  S(v).ui.tab = "string";
+  await tools.advance(WISH_MOMENT.settleMs + 1000);
+});
+// The confirm card with an uncollected away pot (r5-13, r6-17): it says the
+// wish collects the pot first.
+add("string-pot", { roster: STD }, async (v, tools) => {
+  midGame(v, 6.2e9);
+  tools.ctl.setNow(Date.now() + 2 * 3600000);
+  await tools.flush();
+  await tools.advance(1000);
   const h = S(v).handlers;
   h.tab("string", undefined);
   h.confirm("wish", undefined);

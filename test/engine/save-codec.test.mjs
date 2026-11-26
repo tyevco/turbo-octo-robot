@@ -637,3 +637,25 @@ test("r5-07: the save estimate is never below the real save, and close to it", (
   }
   assert.ok(Object.values(s.helpers).some((h) => h.compact), "some records compacted");
 });
+
+// Review r6-03: a save whose lifetime is past the crane hold (about 1.3e42)
+// is well formed, so it loads, and the game built from it renders at once
+// (it used to hang every view build); a non-finite lifetime cannot be
+// written as JSON and is the visible damaged path ("lifetime").
+test("a save with lifetime 2e42 or more loads and renders fast; a non-number lifetime is damaged (r6-03)", () => {
+  for (const L of [2e42, 1e300]) {
+    const s = played();
+    s.lifetime = L;
+    const r = engine.parseSave(engine.serialize(s));
+    assert.equal(r.ok, true, String(L));
+    assert.equal(r.state.lifetime, L);
+    const t0 = performance.now();
+    engine.view(r.state, r.state.clock + 1000);
+    assert.ok(performance.now() - t0 < 500, `view at L ${L}`);
+  }
+  const s = played();
+  s.lifetime = Infinity; // JSON writes null
+  const r = engine.parseSave(engine.serialize(s));
+  assert.equal(r.ok, false);
+  assert.ok(r.reason === "shape" || r.reason === "check", r.reason);
+});

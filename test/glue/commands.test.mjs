@@ -16,10 +16,10 @@ import { findById } from "../../tools/mock/gpui-kit.js";
 import { ScrollHandle } from "gpui-base";
 import { sectionIndex } from "../../mods/creaseworks/ui/flock.js";
 import { pipColumns, railFlash, TIGHT_PREFIX } from "../../mods/creaseworks/ui/rail.js";
-import { POP_RISE_MS, POP_PRUNE_MS, POP_DONE_MS, POP_CAP } from "../../mods/creaseworks/glue/session.js";
+import { POP_RISE_MS, POP_PRUNE_MS, POP_DONE_MS, POP_CAP, HIDE_BELOW, HIDDEN_TEXT, railMainEstimate } from "../../mods/creaseworks/glue/session.js";
 import { applyLayoutCommand, applyDrag } from "../../tools/mock/commands.js";
 import { layoutBoxes } from "../../tools/render/window.mjs";
-import { PANEL_WEIGHT, RAIL_WEIGHT as BUILD_RAIL_WEIGHT, MAIN_MIN } from "../../tools/layout/build.mjs";
+import { PANEL_WEIGHT, RAIL_WEIGHT as BUILD_RAIL_WEIGHT, MAIN_MIN, FILES_MIN } from "../../tools/layout/build.mjs";
 
 const SHIPPED = JSON.parse(readFileSync(new URL("../../layouts/Creaseworks.json", import.meta.url), "utf8"));
 
@@ -72,7 +72,7 @@ test("layout() is read tolerantly", () => {
   assert.equal(i.mainWeight, 1, "main has no size: herdr's weight 1");
   assert.equal(i.filesWeight, null, "a px Files column");
   const shipped = layoutInfo(SHIPPED);
-  assert.deepEqual([shipped.filesWeight, shipped.filesMin, shipped.filesMax, shipped.filesPx], [0.66, 280, 900, FILES_PX_FALLBACK]);
+  assert.deepEqual([shipped.filesWeight, shipped.filesMin, shipped.filesMax, shipped.filesPx], [0.66, FILES_MIN, 900, FILES_PX_FALLBACK]);
   assert.equal(layoutInfo({ id: "root", children: [] }).ribbonHidden, true, "a missing node is hidden");
 });
 
@@ -224,7 +224,7 @@ test("the panel a fold/unfold leaves stays on screen, Files open, zoom 1 and 1.5
       assert.ok(p.width >= 64 * zoom - 0.01, `${at}: panel ${p.width}`);
       assert.ok(Math.abs(p.visible.width - p.width) < 0.5, `${at}: panel ${p.width} px, ${p.visible.width} on screen`);
       assert.ok(b.main.width >= (zoom === 1 ? 360 : MAIN_MIN * zoom) - 0.01, `${at}: terminals ${b.main.width}`);
-      assert.ok(b.panel.width >= 280 * zoom - 0.01 && Math.abs(b.panel.visible.width - b.panel.width) < 0.5, `${at}: Files ${b.panel.visible.width} of ${b.panel.width}`);
+      assert.ok(b.panel.width >= FILES_MIN * zoom - 0.01 && Math.abs(b.panel.visible.width - b.panel.width) < 0.5, `${at}: Files ${b.panel.visible.width} of ${b.panel.width}`);
     }
   };
   await sync();
@@ -356,6 +356,70 @@ test("narrow window (§2.3): the ribbon offers to fold once per Files opening an
   await w.advance(1000);
   assert.equal(ribbon.session.ctx().narrowHint, false, "wide enough");
   assert.equal(panel.session.ctx().narrowHint, undefined, "a ribbon-only chip");
+});
+
+test("r6-07: at the rail with narrow terminals (1100 x 700, zoom 1.5, Files open) the ribbon offers to hide the panel", async () => {
+  let tree = JSON.parse(JSON.stringify(SHIPPED));
+  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  const { panel, ribbon } = await game({ layout: tree });
+  const measure = (t, width, height, zoom) => {
+    const b = layoutBoxes(t, { width, height, zoom });
+    sizeOf(panel, Math.round(b["cw-panel"].width / zoom), 584);
+    sizeOf(ribbon, Math.round(b["cw-ribbon"].width / zoom), 30);
+    return b;
+  };
+  for (const folded of [false, true]) {
+    if (folded) {
+      await w.handler(ribbon, "fold");
+      tree = w.ctl.layoutValue;
+    }
+    await w.advance(1000);
+    const b = measure(tree, 1100, 700, 1.5);
+    await w.advance(1000);
+    const at = folded ? "folded" : "unfolded at its rail";
+    assert.ok(b.main.width / 1.5 < HIDE_BELOW, `${at}: terminals ${b.main.width / 1.5}`);
+    // The glue's estimate of the terminals is close to herdr's geometry.
+    const est = railMainEstimate(Math.round(b["cw-ribbon"].width / 1.5), Math.round(b["cw-panel"].width / 1.5), w.slot.layout);
+    assert.ok(Math.abs(est - b.main.width / 1.5) <= 4, `${at}: estimate ${est}, terminals ${b.main.width / 1.5}`);
+    const ctx = ribbon.session.ctx();
+    assert.equal(ctx.narrowHint, true, `${at}: offered (it stayed silent at the rail before r6-07)`);
+    assert.equal(ctx.narrowHide, true, `${at}: as Hide, since folding gains nothing`);
+  }
+  // Hide: layout.hide of the game panel, and a flash saying how to get it back.
+  await w.handler(ribbon, "hide");
+  assert.deepEqual(runsOf(w.ctl, "layout.hide").map((r) => r.args), [{ id: "cw-panel" }]);
+  assert.equal(w.slot.flash && w.slot.flash.text, HIDDEN_TEXT);
+  assert.equal(layoutNode(w.ctl.layoutValue, "cw-panel").hidden, true);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, false, "nothing to offer with the panel hidden");
+  // herdr's geometry gives them the rail and its gap back.
+  const shown = layoutBoxes(tree, { width: 1100, height: 700, zoom: 1.5 }).main.width;
+  const hidden = layoutBoxes(w.ctl.layoutValue, { width: 1100, height: 700, zoom: 1.5 }).main.width;
+  assert.ok(hidden > shown + 60, `terminals ${shown} -> ${hidden}`);
+  // The ribbon's fold button brings it back (shown and unfolded).
+  await w.handler(ribbon, "fold");
+  assert.deepEqual(w.ctl.runs.slice(-2).map((r) => r.name), ["layout.show", "layout.resize"]);
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
+test("r6-07: no hide offer where the terminals have room, or once dismissed", async () => {
+  let tree = JSON.parse(JSON.stringify(SHIPPED));
+  applyLayoutCommand(tree, "layout.show", { id: "panel" });
+  applyLayoutCommand(tree, "layout.resize", { id: "cw-panel", weight: RAIL_WEIGHT });
+  const { panel, ribbon } = await game({ layout: tree });
+  await w.advance(1000);
+  const b = layoutBoxes(tree, { width: 1440, height: 900, zoom: 1 });
+  sizeOf(panel, Math.round(b["cw-panel"].width), 584);
+  sizeOf(ribbon, Math.round(b["cw-ribbon"].width), 30);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHint, false, "1440 x 900 zoom 1, folded with Files: wide enough");
+  const z = layoutBoxes(tree, { width: 1100, height: 700, zoom: 1.5 });
+  sizeOf(ribbon, Math.round(z["cw-ribbon"].width / 1.5), 30);
+  await w.advance(1000);
+  assert.equal(ribbon.session.ctx().narrowHide, true);
+  await w.handler(ribbon, "dismiss", "narrow");
+  assert.equal(ribbon.session.ctx().narrowHint, false, "Not now holds for this Files opening");
+  assert.equal(ribbon.session.ctx().narrowHide, false);
 });
 
 // ---------------------------------------------------------------------------

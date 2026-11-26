@@ -2,7 +2,8 @@
 // writers (two slots, one shared file) merging through the real store; a
 // finished task's envelope exists once whichever window saw it; the
 // notification cap (3 a day) holds across writers; notifications are opt-in,
-// quiet while the panel is shown in an active window, and never for agent
+// quiet while the panel is shown in an active window, held (not claimed or
+// counted) while the window is hidden or inactive (r6-02), and never for agent
 // status; a lasting save problem notifies once and shows a hidden ribbon.
 
 import { test, afterEach } from "node:test";
@@ -127,13 +128,51 @@ test("opt-in, quiet while the panel shows in an active window, never for agent s
   w.slot.state.lifetime = 7e9;
   await w.advance(5000);
   assert.equal(w.ctl.notifications.length, 0, "quiet while the panel is shown and the window is active");
-  w.ctl.setWindow({ active: false });
+  // r6-02: herdr's toast is drawn in the window and expires on the wall clock,
+  // so while the window is inactive or hidden nothing is claimed, counted or sent.
+  for (const away of [{ active: false }, { active: false, visible: false }, { active: true, visible: false }]) {
+    w.ctl.setWindow(away);
+    await w.advance(30000);
+    assert.equal(w.ctl.notifications.length, 0, `held while away: ${JSON.stringify(away)}`);
+  }
+  assert.equal(w.slot.state.notify.firedFull, false, "the once-per-run wish notice is not used up unseen");
+  assert.equal(notifier.sentOn(w.slot.state, localDay(Date.now())), 0, "and no daily slot is counted");
+  // Back and active with the panel shown: still quiet (the game is in view).
+  w.ctl.setWindow({ active: true, visible: true });
+  await w.advance(5000);
+  assert.equal(w.ctl.notifications.length, 0);
+  // Active with the panel hidden: the held notification is sent now, where it can be seen.
+  w.ctl.layoutValue = { id: "root", children: [{ id: "cw-panel", hidden: true }, { id: "cw-ribbon" }] };
   await w.advance(5000);
   assert.equal(w.ctl.notifications.length, 1);
   assert.equal(w.ctl.notifications[0].notification.title, "Your string is full");
   await w.advance(60000);
   assert.equal(w.ctl.notifications.length, 1, "once per run");
   assert.equal(panel.session.vm().settings.notifySentToday, 1);
+});
+
+test("r6-02: a claim confirmed after the window went away is sent once it is active again, not into an unseen toast", async () => {
+  w = win();
+  const t = Date.now();
+  const day = localDay(t);
+  const base = engine.newGame({ seed: 4, now: t, day });
+  base.lifetime = 7e9;
+  base.settings.notify.master = true;
+  w.ctl.externalWrite(SAVE, engine.serialize(base));
+  const A = writerSlot(w.ctl, w.ctl.readFile(SAVE), "wA");
+  const here = { day, quiet: false, away: false, layout: { known: false } };
+  const away = { ...here, away: true };
+  assert.equal(notifier.wanted(A, t, away), null, "nothing is wanted while away");
+  assert.equal(notifier.check(A, t, away, () => {}), null, "nor claimed");
+  assert.equal(A.state.notify.firedFull, false);
+  assert.equal(notifier.check(A, t, here, () => {}), "claimed");
+  await hostWork(w.ctl, () => store.cycle(A, env));
+  assert.equal(notifier.check(A, t + 1000, away, () => {}), null, "confirmed, but the window is away: held");
+  assert.equal(notifier.check(A, t + 20 * 60000, away, () => {}), null, "a confirmed claim is never given up while held");
+  assert.equal(w.ctl.notifications.length, 0);
+  assert.equal(notifier.check(A, t + 20 * 60000 + 1000, here, () => {}), "sent");
+  assert.equal(w.ctl.notifications.length, 1);
+  assert.equal(notifier.check(A, t + 20 * 60000 + 2000, here, () => {}), null, "sent once");
 });
 
 test("a save problem lasting 5 min notifies once per episode; hidden ribbon and panel → ribbon shown once", async () => {

@@ -5,7 +5,13 @@
 // one entry per pane agent, plus one per live terminal with a status word
 // whose `parent` chain reaches a pane agent within 32 hops (a fledgling).
 // The two lists are joined by address (`created_ms` and `turn` come from
-// `terminals()`; a missing `created_ms` counts as 0). Addresses are data and
+// `terminals()`; an entry without `created_ms` counts as 0). A pane agent
+// with no live terminals() entry at all is left out (r6-01): herdr builds
+// agents() from its pane model without checking liveness (restored words at
+// startup before the first terminals listing, a remote machine whose
+// terminals are not live, a pane whose exit is not yet confirmed), and with
+// no `created_ms` its helper id would be addr#0, not its own: a phantom
+// helper, and the real one sent to the Album. Addresses are data and
 // may be anything (`__proto__`, `constructor`, `peer/t7`): every index here
 // is a `Map` or a null-prototype object. (A label or report key named like
 // an Object.prototype member makes herdr's own terminals() call throw before
@@ -52,9 +58,10 @@ function whereOf(t) {
 
 /**
  * buildObservation(agents(), terminals()) → { list: Observation[], live, panes }.
- * `list` is the B5 Observation array (pane agents in agents() order, then
- * fledglings in terminals() order); `live` is a Map of every live terminal
- * address → true (§5.6 liveness); `panes` maps a pane agent's address → pane id.
+ * `list` is the B5 Observation array (pane agents with a live terminals()
+ * entry, in agents() order, then fledglings in terminals() order); `live` is a
+ * Map of every live terminal address → true (§5.6 liveness); `panes` maps a
+ * pane agent's address → pane id.
  */
 export function buildObservation(agentList, terminalList) {
   const agentsIn = Array.isArray(agentList) ? agentList : [];
@@ -67,9 +74,15 @@ export function buildObservation(agentList, terminalList) {
     if (!terms.has(t.address)) terms.set(t.address, t);
     live.set(t.address, true);
   }
+  // Pane agents with a live terminals() entry; the rest wait for one (r6-01).
+  // They stay out of `live` (so opening one reports it gone) and are no root
+  // for a fledgling either: one whose parent agent is unread waits with it.
   const agentAt = new Map();
+  const panes = new Map();
   for (const a of agentsIn) {
-    if (a && typeof a === "object" && typeof a.address === "string" && !agentAt.has(a.address)) agentAt.set(a.address, a);
+    if (!a || typeof a !== "object" || typeof a.address !== "string") continue;
+    if (!panes.has(a.address) && typeof a.pane === "string" && a.pane) panes.set(a.address, a.pane);
+    if (terms.has(a.address) && !agentAt.has(a.address)) agentAt.set(a.address, a);
   }
 
   // The pane agent a terminal's parent chain reaches within 32 hops, memoised
@@ -101,24 +114,22 @@ export function buildObservation(agentList, terminalList) {
 
   const included = new Map(); // address → kind
   const list = [];
-  const panes = new Map();
   for (const a of agentAt.values()) {
-    const t = terms.get(a.address) ?? null;
+    const t = terms.get(a.address);
     const raw = rawWord(t) ?? (typeof a.status === "string" ? a.status : null);
     const root = rootOf(a.address);
     const kept = root !== null && root !== a.address;
     const pane = typeof a.pane === "string" && a.pane ? a.pane : null;
-    if (pane !== null) panes.set(a.address, pane);
     included.set(a.address, kept ? "kid" : "pane");
     list.push({
       addr: a.address,
-      created: t ? fin(t.created_ms) : 0,
+      created: fin(t.created_ms),
       status: paneStatus(a.status, raw),
       raw: raw ?? "",
-      turn: t ? fin(t.turn) : 0,
-      parent: kept ? str(t && t.parent) : null,
+      turn: fin(t.turn),
+      parent: kept ? str(t.parent) : null,
       pane,
-      title: str(a.title || (t && t.title)),
+      title: str(a.title || t.title),
       paneName: a.pane_name === null || a.pane_name === undefined ? "" : str(a.pane_name),
       space: str(a.space_name),
       tab: str(a.tab_name),

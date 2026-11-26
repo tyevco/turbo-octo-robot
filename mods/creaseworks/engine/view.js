@@ -63,7 +63,7 @@ const SAVE_ACTIONS = {
   recovered: ["details", "dismiss"], fresh: ["details"], conflict: [], merged: [],
   error: ["retry", "details"], newer: ["details"], clock: ["dismiss"],
 };
-/** Mat geometry (DESIGN §3.2): play field y 28–200 (short: 28–152); crane hit 48×36, boat 48×32. */
+/** Mat geometry (DESIGN §3.2): play field y 28–200 (short: 28–152); crane hit 48×36, boat 48×30. */
 const MAT = { w: 304, fieldTop: 28, fieldBottom: 200, shortBottom: 152, craneW: 48, craneH: 36, boatW: 48, edge: 8 };
 const CRANE_HINT = "A gilded crane! Click it before it flies off.";
 const CLIP = { name: 8, chip: 10, long: 16, title: 60, agent: 24, notice: 140, row: 32, place: 40, error: 60 };
@@ -1040,7 +1040,8 @@ function matVm(state, t, E, loops, short, calm, roster) {
     const x0 = MAT.edge;
     const x1 = MAT.w - MAT.boatW - MAT.edge;
     const k = life > 0 ? Math.max(0, Math.min(1, 1 - msLeft / life)) : 1;
-    // Calm: it sits at the tray end.
+    // Calm: it sits still at the far end of its lane (the field's bottom strip,
+    // above the streak meter, never under its label: the mat draws the lane, r6-06).
     boat = calm ? { id: sp.boat.id, x: x1, x1, msLeft } : { id: sp.boat.id, x: round1(x0 + (x1 - x0) * k), x1, msLeft };
   }
   let ream = null;

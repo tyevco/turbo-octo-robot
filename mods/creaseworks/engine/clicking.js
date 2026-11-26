@@ -7,6 +7,17 @@ import { keyed } from "./prng.js";
 import { credit } from "./economy.js";
 import { addBoost } from "./envelopes.js";
 
+/**
+ * What gilded crane number `n` (0-based, spawn.cranesSeen) holds: "gift"
+ * (craneGiftOdds, 40 %), "storm" (Confetti, craneConfettiOdds, 35 %) or
+ * "song" (Flock Song, the rest, 25 %), DESIGN §4.5. Keyed by n, so it is the same in every
+ * window.
+ */
+export function craneOutcome(state, n) {
+  const u = keyed(state, `crane:${n}`);
+  return u < K.craneGiftOdds ? "gift" : u < K.craneGiftOdds + K.craneConfettiOdds ? "storm" : "song";
+}
+
 /** Node id used by actions and element ids: `<chainId>-<i>`. */
 export function nodeId(chain, i) {
   return `${chain.id}-${i}`;
@@ -354,8 +365,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         if (sp.crane) { sp.nextCraneAt = sp.activeMs + craneInterval(state, E); break; }
         const slots = pickSlots(state, sp, 1);
         if (!slots) { sp.nextCraneAt = sp.activeMs + craneInterval(state, E); break; }
-        const u = keyed(state, `crane:${sp.cranesSeen}`);
-        const outcome = u < K.craneGiftOdds ? "gift" : u < K.craneGiftOdds + K.craneConfettiOdds ? "storm" : "song";
+        const outcome = craneOutcome(state, sp.cranesSeen);
         const id = `g${sp.seq++}`;
         sp.crane = { id, slot: slots[0], born: sp.shownMs, outcome };
         sp.cranesSeen++;

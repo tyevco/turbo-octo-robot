@@ -10,6 +10,14 @@
 // cannot wait for a save (saving is what fails), so it is sent on the local
 // counter.
 //
+// herdr's notify() is a toast inside the window, not an OS notification, and
+// it expires on the wall clock whether or not anyone is looking (src/mods.rs
+// notify -> OpenOverlay toast; window.rs poll). So nothing is claimed, counted
+// or sent while the window is hidden or inactive (`env.away`): a wanted
+// notification simply waits and is sent once the window is active again
+// (r6-02). The once-per-run wish notice and the daily slots are used only for
+// a toast that can be seen.
+//
 // Save problems never depend on notifications: if the ribbon and the panel
 // are both hidden while a save problem lasts 30 s, the ribbon is shown once
 // per episode instead (run("layout.show", {id: "cw-ribbon"})).
@@ -32,14 +40,15 @@ export function sentOn(state, day) {
 }
 
 /**
- * The event that wants a notification now, or null. `env` = { day, quiet }:
- * quiet = the panel is shown and the window is active (nothing is sent then).
+ * The event that wants a notification now, or null. `env` = { day, quiet, away }:
+ * quiet = the panel is shown and the window is active (nothing is sent then);
+ * away = the window is hidden or inactive (a toast would expire unseen: it waits).
  */
 export function wanted(slot, t, env) {
   const s = slot.state;
   if (!s) return null;
   const set = s.settings.notify;
-  if (!set || set.master !== true || env.quiet) return null;
+  if (!set || set.master !== true || env.quiet || env.away) return null;
   if (sentOn(s, env.day) >= DAILY_CAP) return null;
   const n = s.notify;
   if (set.full !== false && !n.firedFull) {
@@ -100,6 +109,8 @@ export function check(slot, t, env, save) {
   const claim = N.claim;
   if (claim) {
     if (slot.save.confirmed >= claim.s) {
+      // Confirmed while the window went away: held (already counted) until it is back.
+      if (env.away && claim.day === env.day) return null;
       N.claim = null;
       touch(slot);
       if (sentOn(s, claim.day) <= DAILY_CAP && claim.day === env.day) return send(claim, slot) ? "sent" : null;

@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import {
   validateLayout, layoutIds, walkNodes, pathTo, modStrings, propsValues, referencedMods, paletteEntryError,
 } from "../../tools/layout/schema.mjs";
-import { build, buildLayout, PANEL_WEIGHT, FILES_WEIGHT, MAIN_MIN, RAIL_WEIGHT } from "../../tools/layout/build.mjs";
+import { build, buildLayout, PANEL_WEIGHT, FILES_WEIGHT, FILES_MIN, MAIN_MIN, RAIL_WEIGHT } from "../../tools/layout/build.mjs";
 import { layoutBoxes, shares } from "../../tools/render/window.mjs";
 import { find, validateArgs, missing } from "../../tools/mock/commands.js";
 import {
@@ -19,6 +19,9 @@ import {
 const LAYOUT = readJson(LAYOUT_PATH);
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const ADDED = ["cw-panel", "cw-ribbon"];
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+/** ui/panel.js FULL_BELOW: a narrower panel draws the rail. */
+const FULL_RAIL = Number(readFileSync(resolve(MOD_DIR, "ui/panel.js"), "utf8").match(/export const FULL_BELOW = (\d+);/)[1]);
 
 describe("committed herdr copies", () => {
   test("tools/layout/main.json is herdr's shipped main.json, byte for byte", { skip: !HAVE_HERDR && "herdr source not present" }, () => {
@@ -108,7 +111,7 @@ describe(`layouts/${GAME.layout}.json`, () => {
     }
   });
 
-  test("adds only cw-panel, cw-ribbon, the preview and main's min; sizes the Files column by weight", () => {
+  test("adds only cw-panel, cw-ribbon, the preview and main's min; sizes the Files column by weight with a lower min", () => {
     const mainIds = new Set(layoutIds(MAIN));
     assert.deepEqual(layoutIds(LAYOUT).filter((id) => !mainIds.has(id)).sort(), [...ADDED].sort());
     // Undo the additions: what is left is main.json exactly.
@@ -123,7 +126,10 @@ describe(`layouts/${GAME.layout}.json`, () => {
       }
       if (node.id === "panel") {
         assert.deepEqual(node.size, { weight: FILES_WEIGHT });
+        assert.equal(node.min, FILES_MIN);
+        assert.ok(FILES_MIN < shipped.min, `Files min ${FILES_MIN} below herdr's ${shipped.min} (r6-07)`);
         node.size = shipped.size;
+        node.min = shipped.min;
       }
     }
     assert.deepEqual(l, MAIN);
@@ -235,7 +241,7 @@ describe(`layouts/${GAME.layout}.json`, () => {
           // At zoom 1 the terminals keep DESIGN §2.2's 360 in every state.
           if (zoom === 1) assert.ok(b.main.width >= 360 - 0.01, `terminals ${b.main.width} at zoom 1`);
           if (state.startsWith("files")) {
-            assert.ok(b.panel.width >= 280 * zoom - 0.01, `Files ${b.panel.width}`);
+            assert.ok(b.panel.width >= FILES_MIN * zoom - 0.01, `Files ${b.panel.width}`);
             assert.ok(Math.abs(b.panel.visible.width - b.panel.width) < 0.5, `Files ${b.panel.width} px, ${b.panel.visible.width} on screen`);
           }
         });
@@ -244,7 +250,7 @@ describe(`layouts/${GAME.layout}.json`, () => {
   }
 
   // r2-15: herdr's zoom goes to 3.0 in 0.1 steps, and past 1.5 a window with
-  // Files open runs out of room for every min ((80 + 280 + 64) x zoom). herdr
+  // Files open can run out of room for every min ((80 + 160 + 64) x zoom). herdr
   // renders containers overflow_hidden and clips a row at its end, so Files
   // (the last child) gives way first: main and the game stay whole wherever
   // work-body holds main's min, a gap and the 64 px rail.
@@ -291,9 +297,11 @@ describe(`layouts/${GAME.layout}.json`, () => {
       assert.ok(Math.abs(p.visible.width - p.width) < 0.5 && p.x + p.width <= w, `${w}x${h} zoom ${z}: the game ${p.x}..${p.x + p.width}, ${p.visible.width} of ${p.width} on screen`);
       assert.ok(Math.abs(b.main.visible.width - b.main.width) < 0.5, `${w}x${h} zoom ${z}: main on screen`);
     }
-    // At 1100 x 700 zoom 1.6 Files loses 47 px; at zoom 2 it keeps 226 of 560.
+    // With Files' min at 160 (r6-07) 1100 x 700 zoom 1.6 holds the whole row; at zoom 2 Files is clipped, keeping 226 of 320.
     const z16 = boxesAt("files", 1100, 700, 1.6);
-    assert.ok(z16.panel.visible.width < z16.panel.width && z16.panel.visible.width > 380, `Files ${z16.panel.visible.width}`);
+    assert.ok(Math.abs(z16.panel.visible.width - z16.panel.width) < 0.5, `Files ${z16.panel.visible.width} of ${z16.panel.width}`);
+    const z2 = boxesAt("files", 1100, 700, 2);
+    assert.ok(z2.panel.visible.width < z2.panel.width && z2.panel.visible.width > 200, `Files ${z2.panel.visible.width} of ${z2.panel.width}`);
   });
 
   test("folding gives the terminals room whenever the panel is wider than the rail (the narrow hint's promise)", () => {
@@ -320,7 +328,7 @@ describe(`layouts/${GAME.layout}.json`, () => {
     // DESIGN §2.4 states: Narrow 140-279, Standard 280-399, Wide 400+.
     assert.equal(px("expanded", 1100, 700), 226, "1100 x 700: Narrow (the terminals get 581 instead of 488)");
     assert.equal(px("files", 1440, 900), 217, "1440 x 900 with Files: Narrow");
-    assert.equal(px("files", 1100, 700), 146, "1100 x 700 with Files: still a panel, Narrow");
+    assert.equal(px("files", 1100, 700), 152, "1100 x 700 with Files: still a panel, Narrow (Files gives way to 257, r6-07)");
     assert.equal(px("expanded", 1920, 1080), 456, "1920: Wide");
     assert.equal(px("expanded", 2560, 1440), 636, "2560: Wide, past the old 560 cap (no max, B15)");
     // Zoom 1.5: the panel gives way first; with Files open it is the rail at 1100.
@@ -328,16 +336,42 @@ describe(`layouts/${GAME.layout}.json`, () => {
     assert.equal(Math.round(z["cw-panel"].width), 185, "1100 at zoom 1.5: the panel gives way (124 design px, drawn as the rail)");
     assert.equal(Math.round(z.main.width), 475, "the terminals: 317 design px");
     const zf = boxesAt("files", 1100, 700, 1.5);
-    assert.equal(Math.round(zf["cw-panel"].width), 96, "1100 at zoom 1.5 with Files: the rail, on screen");
-    assert.ok(zf.main.width >= MAIN_MIN * 1.5 && zf.main.width < 140, `terminals ${zf.main.width} (herdr's own layout gives them about 108)`);
+    assert.ok(zf["cw-panel"].width < FULL_RAIL * 1.5, `1100 at zoom 1.5 with Files: drawn as the rail (${zf["cw-panel"].width})`);
+    assert.equal(Math.round(zf.panel.width), FILES_MIN * 1.5, "Files gives way to its (lowered) min");
+  });
+
+  // r6-07: herdr's Files min of 280 held 420 px at zoom 1.5 and left the
+  // terminals 133 px (88 design px: a column or two per pane). Files now gives
+  // way by weight, so the terminals stay usable in the tightest supported
+  // window, open or folded, and never get less with Files open than before.
+  const USABLE = 190; // design px for the terminals (two panes of about 13 columns at zoom 1.5)
+  for (const [width, height] of [[1100, 700], [1280, 800], [1440, 900]]) {
+    for (const state of ["files", "files-folded"]) {
+      test(`r6-07: ${width}x${height} zoom 1.5, ${state}: the terminals keep a usable width`, () => {
+        const b = boxesAt(state, width, height, 1.5);
+        assert.ok(b.main.width / 1.5 >= USABLE, `terminals ${b.main.width / 1.5} design px`);
+        assert.ok(Math.abs(b.main.visible.width - b.main.width) < 0.5, "on screen");
+        const old = clone(LAYOUT);
+        find(old, "panel").min = 280;
+        STATES[state](old);
+        assert.ok(b.main.width > layoutBoxes(old, { width, height, zoom: 1.5 }).main.width + 20, "wider than with herdr's 280 min");
+      });
+    }
+  }
+  test("r6-07: 1100x700 zoom 1.5 with Files: 294 px terminals (196 design px), not 133", () => {
+    assert.equal(Math.round(boxesAt("files", 1100, 700, 1.5).main.width), 294);
+    assert.equal(Math.round(boxesAt("files-folded", 1100, 700, 1.5).main.width), 313);
   });
 
   test("the preview picture lives in the mod folder (it travels with the copied folder)", () => {
     assert.equal(LAYOUT.preview, `mods/${GAME.mod}/art/layout-preview.png`);
   });
 
-  test("the preview picture exists", { todo: !existsSync(at(LAYOUT.preview)) && "made by npm run shots (ARCHITECTURE A12)" }, () => {
+  // r6-15: a plain test. The picture is committed (Settings shows it, and it is
+  // the only preview copied on install: herdr's AGENTS.md), so a fresh clone has it.
+  test("the preview picture exists and is a PNG", () => {
     assert.ok(existsSync(at(LAYOUT.preview)), LAYOUT.preview);
+    assert.deepEqual([...readFileSync(at(LAYOUT.preview)).subarray(0, 8)], PNG_MAGIC, LAYOUT.preview);
   });
 });
 
@@ -463,7 +497,7 @@ describe("RECIPE.md is written from the built files", () => {
     const line = (i) => see.slice(i, see.indexOf("\n", i));
     assert.ok(line(iMain).includes(`min ${MAIN_MIN} px`), line(iMain));
     assert.ok(line(iGame).includes(`weight ${PANEL_WEIGHT}`) && line(iGame).includes("min 64") && line(iGame).includes("no max"), line(iGame));
-    assert.ok(line(iFiles).includes(`weight ${FILES_WEIGHT}`) && line(iFiles).includes("min 280") && line(iFiles).includes("max 900"), line(iFiles));
+    assert.ok(line(iFiles).includes(`weight ${FILES_WEIGHT}`) && line(iFiles).includes(`min ${FILES_MIN}`) && line(iFiles).includes("max 900"), line(iFiles));
   });
 
   test("no figure of the old px layout is left", () => {
@@ -534,5 +568,40 @@ describe("RECIPE.md is written from the built files", () => {
       assert.match(s, /layout\.switch \{name:"main"\}/, `${f} names the way back`);
     }
     assert.match(section("Done when"), /`layout\.switch \{name:"main"\}`[^\n]*goes back to it unchanged/);
+  });
+});
+
+// r6-15: the herdr.dev share format (layouts/, mods/<name>/, RECIPE.md,
+// preview.png, keys.json) and the MIT licence are files a fresh clone must have.
+describe("share-format files", () => {
+  test(`layouts/${GAME.layout}.json and mods/${GAME.mod}/ are named after the game`, () => {
+    assert.ok(existsSync(LAYOUT_PATH), LAYOUT_PATH);
+    assert.ok(isDir(MOD_DIR), MOD_DIR);
+    assert.ok(existsSync(resolve(MOD_DIR, "main.js")) && existsSync(resolve(MOD_DIR, "mod.json")));
+  });
+
+  test("preview.png at the root is a PNG", () => {
+    assert.ok(existsSync(at("preview.png")), "preview.png");
+    assert.deepEqual([...readFileSync(at("preview.png")).subarray(0, 8)], PNG_MAGIC);
+  });
+
+  test("keys.json exists and is a JSON object", () => {
+    assert.ok(existsSync(at("keys.json")), "keys.json");
+    const keys = readJson(at("keys.json"));
+    assert.equal(typeof keys, "object");
+    assert.ok(keys && !Array.isArray(keys));
+  });
+
+  test("RECIPE.md and README.md exist; README has the install step", () => {
+    assert.ok(existsSync(at("RECIPE.md")) && existsSync(at("README.md")));
+    assert.match(readFileSync(at("README.md"), "utf8"), /Add the layout at https?:\/\/\S+/);
+  });
+
+  test("LICENSE is MIT, copyright Tyler Coles", () => {
+    assert.ok(existsSync(at("LICENSE")), "LICENSE");
+    const lines = readFileSync(at("LICENSE"), "utf8").split(/\r?\n/);
+    assert.equal(lines[0], "MIT License");
+    assert.ok(lines.includes("Copyright (c) 2026 Tyler Coles"), lines.slice(0, 4).join(" | "));
+    assert.ok(lines.some((l) => l.startsWith("Permission is hereby granted, free of charge")));
   });
 });

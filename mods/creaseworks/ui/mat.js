@@ -1,9 +1,10 @@
 // The mat, the main scene (DESIGN §3.2, §4, §13.5): `renderMat(vm, ui, ctx)`
 // (ARCHITECTURE B11). Layering is sibling order (later paints on top): grid
-// and edge (paint_path), storm stripes, crease line, the Sheet and its fold
-// ticks, crease nodes, scraps, the ream, the gilded crane, the boat, the top
-// band (needs-you chips or the figure shelf), the bottom band (tray and
-// streak meter), floating numbers, the first-run hint.
+// and edge (paint_path), confetti flecks, crease line, the Sheet and its fold
+// ticks, crease nodes, scraps, the ream, the gilded crane, the top band
+// (needs-you chips or the figure shelf), the bottom band (tray and streak
+// meter), the boat (in its lane above the band, r6-06), floating numbers, the
+// first-run hint.
 //
 // Positions in the vm are logical px in the 304×232 mat (304×184 with
 // `sheet.short`). The mat drawn here is `ctx.width − 16` wide and 184 / 232 /
@@ -17,6 +18,7 @@ import { h_flex } from "gpui-base";
 import { clip } from "../engine/index.js";
 import { validateBackgroundColor } from "./color.js";
 import { sheetPaths, spritePath, speciesSprite, icon, sprite } from "./art.js";
+import { HUE_DARK } from "./palette.js";
 import { chip, pop, progressBar, text } from "./widgets.js";
 
 /** Grapheme limits for every string this module draws (tested). */
@@ -29,8 +31,11 @@ const TOP_BAND = 28;
 const BOTTOM_BAND = 32;
 const HALF_HIT = 14;
 const CRANE = Object.freeze({ w: 48, h: 36 });
-const BOAT = Object.freeze({ w: 48, h: 32, x0: 8, x1: 248 });
+/** The Paper Boat's hit box: 48 × 30 (the 40 × 28 art at top 1) in its own lane above the bottom band. */
+const BOAT = Object.freeze({ w: 48, h: 30, x0: 8, x1: 248 });
 const ENV_TYPES = Object.freeze(["bundle", "rush", "storm", "chorus"]);
+/** Confetti's two cool flecks: the light identity hues coral and sky (the mat is dark green in both appearances). */
+const CONFETTI_HUES = Object.freeze({ coral: HUE_DARK[0], sky: HUE_DARK[4] });
 const HINT_TEXT = "Click the paper to fold it";
 const CRANE_HINT = "A gilded crane! Click it before it flies off.";
 /** The first gilded crane's callout chip (§3.2): 176 wide (two lines of 11/600) where it fits. */
@@ -129,13 +134,66 @@ function background(g, S, calm, zoom, storm) {
   out.push(layer(paint(gridPath(g.w, g.h, 64), Background.solid(validateBackgroundColor(S.gridMajor)))));
   const edge = PathBuilder.fill().add_polygon([["0%", pct(g.h - 4, g.h)], ["100%", pct(g.h - 4, g.h)], ["100%", "100%"], ["0%", "100%"]]).build();
   out.push(layer(paint(edge, Background.solid(validateBackgroundColor(S.matEdge)))));
-  // 2. Confetti stripes (internal id "storm"), under the play pieces.
+  // 2. Confetti (internal id "storm"), under the play pieces: sparse paper
+  // flecks in four hues that twinkle (review r6-09: no longer storm stripes).
   if (storm && !calm) {
-    const rect = PathBuilder.fill().add_polygon([["0%", "0%"], ["100%", "0%"], ["100%", "100%"], ["0%", "100%"]]).build();
-    const stripes = layer(paint(rect, Background.pattern_slash(validateBackgroundColor(S.onMat), 2 * zoom, 12 * zoom)));
-    if (stripes) out.push(stripes.id("cw-storm").opacity(0.06).loop("opacity", { from: 0.06, to: 0.16, period: 1200 }));
+    const flecks = confettiLayers(g, S);
+    if (flecks.length) {
+      const box = div().id("cw-storm").absolute().inset_0().opacity(0.55).loop("opacity", { from: 0.55, to: 0.9, period: 1200 });
+      for (const el of flecks) box.child(el);
+      out.push(box);
+    }
   }
   return out.filter(Boolean);
+}
+
+/** One confetti fleck's corners: a 6 × 2.5 px strip turned to one of four angles. */
+const FLECK = Object.freeze({ w: 6, h: 2.5, cellW: 34, cellH: 30, angles: Object.freeze([0.35, 1.2, -0.45, 2.1]) });
+
+/**
+ * The confetti flecks (DESIGN §3.2 item 2): `{ hue: k, pts: [[x, y]...] }` in
+ * mat px, one per 34 × 30 cell on a staggered grid, jittered and turned by a
+ * fixed integer hash of the cell (no randomness: every frame draws the same
+ * flecks), each in one of four hues.
+ */
+export function confettiFlecks(w, h) {
+  const out = [];
+  const rows = Math.ceil(h / FLECK.cellH);
+  const cols = Math.ceil(w / FLECK.cellW) + 1;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const k = (Math.imul(r * 131 + c * 197 + 7, 0x9e3779b1) >>> 0);
+      const cx = c * FLECK.cellW + (r % 2) * (FLECK.cellW / 2) + ((k % 17) - 8);
+      const cy = r * FLECK.cellH + FLECK.cellH / 2 + (((k >>> 5) % 15) - 7);
+      if (cx < 4 || cx > w - 4 || cy < 4 || cy > h - 4) continue; // whole flecks only (half diagonal 3.25)
+      const a = FLECK.angles[(k >>> 9) % 4];
+      const ux = Math.cos(a) * FLECK.w / 2;
+      const uy = Math.sin(a) * FLECK.w / 2;
+      const vx = -Math.sin(a) * FLECK.h / 2;
+      const vy = Math.cos(a) * FLECK.h / 2;
+      out.push({
+        hue: (r + c + ((k >>> 12) % 2)) % 4,
+        pts: [[cx - ux - vx, cy - uy - vy], [cx + ux - vx, cy + uy - vy], [cx + ux + vx, cy + uy + vy], [cx - ux + vx, cy - uy + vy]],
+      });
+    }
+  }
+  return out;
+}
+
+/** The confetti as four fill paths (one Background each, gpui §8): paper, amber, coral and sky flecks. */
+function confettiLayers(g, S) {
+  const hues = [S.sheet, S.node, CONFETTI_HUES.coral, CONFETTI_HUES.sky];
+  const flecks = confettiFlecks(g.w, g.h);
+  const out = [];
+  for (let k = 0; k < hues.length; k++) {
+    const mine = flecks.filter((f) => f.hue === k);
+    if (!mine.length) continue;
+    const b = PathBuilder.fill();
+    for (const f of mine) b.add_polygon(f.pts.map(([x, y]) => [pct(x, g.w), pct(y, g.h)]));
+    const el = layer(paint(b.build(), Background.solid(validateBackgroundColor(hues[k]))));
+    if (el) out.push(el.id(`cw-storm-${k}`));
+  }
+  return out;
 }
 
 function creaseLine(points, g, S) {
@@ -432,13 +490,30 @@ function crane(c, g, S, click, calm, zoom) {
   return el;
 }
 
+/**
+ * Where the Paper Boat's hit box goes: `[left, top]` in mat px (review r6-06).
+ * It glides in its own lane, the bottom strip of the play field just above the
+ * bottom band, so it never sits under the tray's envelopes or the streak
+ * meter (both are later siblings that would paint over it and, the envelopes,
+ * take its clicks). Where the Sheet reaches into that lane (the short mat,
+ * whose strip under the Sheet is 14 px) the boat dips just below the Sheet
+ * while it crosses the Sheet's columns: it is drawn after the bottom band, so
+ * it stays on top and catchable there too, and never covers the Sheet.
+ */
+export function boatBox(b, g) {
+  const left = r1(Math.max(0, lin(num(b && b.x, BOAT.x0), BOAT.x0, BOAT.x1, BOAT.x0, g.w - BOAT.w - BOAT.x0)));
+  let top = g.h - BOTTOM_BAND - BOAT.h;
+  const crossing = left < g.sx + g.sheet && left + BOAT.w > g.sx;
+  if (crossing && top < g.sy + g.sheet) top = Math.min(g.h - BOAT.h, g.sy + g.sheet);
+  return [left, r1(top)];
+}
+
 function boat(b, g, S, click, calm) {
-  const left = r1(lin(num(b.x, BOAT.x0), BOAT.x0, BOAT.x1, BOAT.x0, g.w - BOAT.w - BOAT.x0));
-  const top = g.h - BOTTOM_BAND;
+  const [left, top] = boatBox(b, g);
   const el = div()
     .id("cw-boat")
     .absolute()
-    .left(Math.max(0, left))
+    .left(left)
     .top(top)
     .w(BOAT.w)
     .h(BOAT.h)
@@ -448,8 +523,8 @@ function boat(b, g, S, click, calm) {
       cx.stop_propagation();
       return click("boat", b.id, { x: r1(left + BOAT.w / 2), y: top }, cx);
     })
-    .child(svg(spritePath("scene", "boat-hull")).absolute().left(4).top(2).w(40).h(28).text_color(S.sheet))
-    .child(svg(spritePath("scene", "boat-sail")).absolute().left(4).top(2).w(40).h(28).text_color(S.sheetShade));
+    .child(svg(spritePath("scene", "boat-hull")).absolute().left(4).top(1).w(40).h(28).text_color(S.sheet))
+    .child(svg(spritePath("scene", "boat-sail")).absolute().left(4).top(1).w(40).h(28).text_color(S.sheetShade));
   if (!calm && num(b.x1, b.x) !== num(b.x)) el.transition("left", { duration: 1000, easing: "linear" });
   return el;
 }
@@ -664,9 +739,10 @@ export function renderMat(vm, ui, ctx) {
   for (const s of Array.isArray(mat.scraps) ? mat.scraps : []) root.child(scrap(s, g, S, click));
   if (mat.ream) root.child(ream(mat.ream, g, S, click));
   if (mat.crane) root.child(crane(mat.crane, g, S, click, calm, zoom));
-  if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
   root.child(topBand(vm, g, T, S, openHelper, calm));
   root.child(bottomBand(vm, g, T, S, open, calm, zoom));
+  // The boat after the band (r6-06): where it dips below a short Sheet it is on top.
+  if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
   for (const p of pops(vm, ui, S, calm)) root.child(p);
   const hint = firstRunHint(vm, g, T, calm, zoom);
   if (hint) root.child(hint);

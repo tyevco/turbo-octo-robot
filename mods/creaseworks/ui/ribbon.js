@@ -7,7 +7,9 @@
 // pill (only while the panel is folded or hidden, or a flash) or the
 // narrow-window hint take the first place of the middle area;
 // their reserved width is subtracted before the density level is chosen
-// (`ribbonLayout`), so a lead chip never pushes a mark past the edge.
+// (`ribbonLayout`), so a lead chip never pushes a mark past the edge. When the
+// middle does not fit beside the blocks' full widths it borrows their unused
+// room first (r6-08), before the narrow hint gives way.
 // The ribbon draws no loops (the view's budget gives it none).
 
 import { div, svg } from "gpui-kit";
@@ -184,12 +186,21 @@ function buttonBound(label) {
 
 const MIDDLE_GAP = 4;
 const HINT_TEXT = "Terminals are narrow: fold Creaseworks?";
+/** The hint's question when the panel is at its rail and folding gains nothing (r6-07: `ctx.narrowHide`). */
+const HIDE_TEXT = "Terminals are narrow: hide Creaseworks?";
 /**
  * The narrow hint's fold button: "Fold" beside the question, "Fold panel"
  * when the compact lead drops the question (r3-23: a bare "Fold" next to the
  * fold count read as the game's own fold click). Tested.
  */
 export const HINT_FOLD = Object.freeze({ full: "Fold", compact: "Fold panel" });
+/** The same buttons when the hint offers hiding the panel (r6-07). Tested. */
+export const HINT_HIDE = Object.freeze({ full: "Hide", compact: "Hide panel" });
+
+/** The narrow hint's words and button labels for `ctx` (fold, or hide at the rail). */
+function hintWords(ctx) {
+  return ctx && ctx.narrowHide ? { text: HIDE_TEXT, act: HINT_HIDE, hide: true } : { text: HINT_TEXT, act: HINT_FOLD, hide: false };
+}
 
 /**
  * True only when the glue says the panel shows its full view, with the away
@@ -268,11 +279,12 @@ function leadSpecs(vm, ctx, compact, noHint = false) {
     out.push({ key: "welcome", label, w: chipBound(label), pill: pill.text, flash: pill.flash });
   }
   if (ctx && ctx.narrowHint && !noHint) {
-    const label = compact ? null : clip(HINT_TEXT, RIBBON_CLIP.hint);
-    const fold = buttonBound(label ? HINT_FOLD.full : HINT_FOLD.compact);
+    const words = hintWords(ctx);
+    const label = compact ? null : clip(words.text, RIBBON_CLIP.hint);
+    const fold = buttonBound(label ? words.act.full : words.act.compact);
     const later = buttonBound("Not now");
     const pill = label ? 18 + textBound(label, 400) : 0;
-    out.push({ key: "hint", label, pill, fold, later, w: (pill ? pill + 4 : 0) + fold + 4 + later });
+    out.push({ key: "hint", label, pill, fold, later, hide: words.hide, w: (pill ? pill + 4 : 0) + fold + 4 + later });
   }
   return out;
 }
@@ -315,9 +327,11 @@ function leadElement(sp, T, S, h) {
         .child(text(sp.label, { size: 11, color: T.foreground, truncate: true }, T)),
     );
   }
-  const foldTip = sp.label ? undefined : HINT_TEXT;
+  const act = sp.hide ? HINT_HIDE : HINT_FOLD;
+  const foldTip = sp.label ? undefined : sp.hide ? HIDE_TEXT : HINT_TEXT;
+  const id = sp.hide ? "cw-rib-hint-hide" : "cw-rib-hint-fold";
   return row
-    .child(button("cw-rib-hint-fold", sp.label ? HINT_FOLD.full : HINT_FOLD.compact, { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => h.fold(cx) }, T))
+    .child(button(id, sp.label ? act.full : act.compact, { h: 28, w: sp.fold, size: 11, px: 6, tooltip: foldTip, onClick: (e, cx) => (sp.hide ? h.hide(cx) : h.fold(cx)) }, T))
     .child(button("cw-rib-hint-later", "Not now", { variant: "ghost", h: 28, w: sp.later, size: 11, px: 6, onClick: (e, cx) => h.dismiss("narrow", cx) }, T));
 }
 
@@ -402,8 +416,43 @@ export function fitLevelC(marksIn, talliesIn, avail) {
   return { marks: keep(needs.slice(0, k)), tallies };
 }
 
+/** The envelope count the right block shows. */
+function envCount(vm) {
+  const rib = (vm && vm.ribbon) || {};
+  const tray = (vm && vm.tray) || {};
+  const envs = Array.isArray(tray.envelopes) ? tray.envelopes : [];
+  return num(rib.envelopes, envs.length + num(tray.more, 0));
+}
+
+/** The left block's two lines: the fold count (12/600) and the rate (11/400), clipped. */
+function leftLines(vm) {
+  const rib = (vm && vm.ribbon) || {};
+  const header = (vm && vm.header) || {};
+  return {
+    count: clip(String(rib.folds ?? header.folds ?? ""), RIBBON_CLIP.count),
+    rate: clip(String(rib.rate ?? header.rate ?? ""), RIBBON_CLIP.rate),
+  };
+}
+
 /**
- * The middle area's plan for a ribbon of work width `W` (tested):
+ * Upper bounds of what the two blocks hold (r6-08): the left block is the
+ * 28 px fold button, a 4 px gap and the wider of its two lines (the count is
+ * 12 px, so its 11 px bound is scaled by 12/11); the right block is the
+ * envelope button (px 4, glyph 12, gap 3, count; at least 28), the mini Sheet
+ * (26) while the panel is folded or hidden, and the 28 px toggle, 2 px apart.
+ * Each is at most its §3.10 width.
+ */
+export function blockNeeds(vm, ctx) {
+  const { count, rate } = leftLines(vm);
+  const left = Math.min(RIBBON_BLOCKS.left, 28 + 4 + Math.max(Math.ceil((textBound(count, 600) * 12) / 11), textBound(rate, 400)));
+  const env = Math.max(28, 8 + 12 + 3 + textBound(clip(String(envCount(vm)), RIBBON_CLIP.n), 600));
+  const mini = ctx && ctx.panelShown ? 0 : 26 + 2;
+  const right = Math.min(RIBBON_BLOCKS.right, env + mini + 2 + 28);
+  return { left, right };
+}
+
+/**
+ * The middle area's plan for a pip area `w` px wide:
  * `{ w, lead, avail, level, marks, tallies, need, compact, hintDropped, specs }`.
  * The level is the denser of the view's level and the one that fits beside
  * the lead chips; at C the marks and tallies are fitted to `avail`
@@ -414,11 +463,10 @@ export function fitLevelC(marksIn, talliesIn, avail) {
  * marks are every helper's state: DESIGN §3.10 "never capped", r5-17) and
  * the lead is tried again, full then compact. The save chip always stays.
  */
-export function ribbonLayout(vm, ctx, W) {
+function middlePlan(vm, ctx, w) {
   const rib = (vm && vm.ribbon) || {};
   const marks0 = Array.isArray(rib.marks) ? rib.marks : [];
   const tallies0 = Array.isArray(rib.tallies) ? rib.tallies : [];
-  const w = pipArea(W);
   const viewLevel = rib.level === "A" || rib.level === "B" || rib.level === "C" ? rib.level : null;
   // Helpers in all: the view's level C has already folded some into tallies.
   let n = marks0.length;
@@ -468,6 +516,28 @@ export function ribbonLayout(vm, ctx, W) {
   return fits(bare) || bare.need - bare.avail < withHint.need - withHint.avail ? bare : withHint;
 }
 
+/**
+ * The ribbon's plan (tested): `middlePlan` plus `left` and `right`, the block
+ * widths. The blocks keep their §3.10 widths (118, 100) while everything
+ * fits beside them. When it does not (marks overflowing, or the narrow hint
+ * dropped: r6-08, 1100x700 at zoom 1.5 left about 100 px of the blocks empty
+ * while the hint gave way), the middle borrows the blocks' unused room
+ * (`blockNeeds`) and is planned again, and that plan is used when it does better.
+ */
+export function ribbonLayout(vm, ctx, W) {
+  const std = middlePlan(vm, ctx, pipArea(W));
+  const ok = (p) => p.need <= p.avail && !p.hintDropped;
+  const out = (p, left, right) => Object.assign(p, { left, right });
+  if (ok(std)) return out(std, RIBBON_BLOCKS.left, RIBBON_BLOCKS.right);
+  const nb = blockNeeds(vm, ctx);
+  const spare = RIBBON_BLOCKS.left - nb.left + RIBBON_BLOCKS.right - nb.right;
+  if (spare <= 0) return out(std, RIBBON_BLOCKS.left, RIBBON_BLOCKS.right);
+  const wide = middlePlan(vm, ctx, pipArea(W) + spare);
+  const over = (p) => Math.max(0, p.need - p.avail);
+  const better = ok(wide) || over(wide) < over(std) || (over(wide) === over(std) && std.hintDropped && !wide.hintDropped);
+  return better ? out(wide, nb.left, nb.right) : out(std, RIBBON_BLOCKS.left, RIBBON_BLOCKS.right);
+}
+
 /** The ribbon. */
 export function renderRibbon(vm, ui, ctx) {
   const T = ctx.T;
@@ -481,16 +551,19 @@ export function renderRibbon(vm, ui, ctx) {
     showGroup: handler(ctx, "showGroup"),
     show: handler(ctx, "show"),
     fold: handler(ctx, "fold"),
+    hide: handler(ctx, "hide"),
     dismiss: handler(ctx, "dismiss"),
     click: handler(ctx, "click"),
   };
   const rib = vm.ribbon || {};
-  const header = vm.header || {};
+  const lines = leftLines(vm);
+  // The middle's plan first: it says how wide the blocks are (r6-08).
+  const lay = ribbonLayout(vm, ctx, W);
 
   // Left block.
   const left = h_flex()
     .id("cw-rib-left")
-    .w(RIBBON_BLOCKS.left)
+    .w(lay.left)
     .h(30)
     .flex_none()
     .gap(4)
@@ -498,12 +571,11 @@ export function renderRibbon(vm, ui, ctx) {
     .child(
       v_flex()
         .min_w(0)
-        .child(text(clip(String(rib.folds ?? header.folds ?? ""), RIBBON_CLIP.count), { size: 12, weight: 600, color: T.foreground }, T).line_height("117%"))
-        .child(text(clip(String(rib.rate ?? header.rate ?? ""), RIBBON_CLIP.rate), { size: 11, color: T.muted }, T).line_height("118%")),
+        .child(text(lines.count, { size: 12, weight: 600, color: T.foreground }, T).line_height("117%"))
+        .child(text(lines.rate, { size: 11, color: T.muted }, T).line_height("118%")),
     );
 
   // Middle: the lead chips first, then the marks at the level that fits beside them.
-  const lay = ribbonLayout(vm, ctx, W);
   const middle = h_flex().id("cw-rib-marks").flex_1().min_w(0).h(30).gap(MIDDLE_GAP).overflow_hidden();
   for (const sp of lay.specs) middle.child(leadElement(sp, T, S, h));
   if (!lay.marks.length && !lay.tallies.length) {
@@ -521,9 +593,9 @@ export function renderRibbon(vm, ui, ctx) {
   // Right block.
   const tray = vm.tray || {};
   const envs = Array.isArray(tray.envelopes) ? tray.envelopes : [];
-  const nEnv = num(rib.envelopes, envs.length + num(tray.more, 0));
+  const nEnv = envCount(vm);
   const oldest = envs[0] && envs[0].helperId;
-  const right = h_flex().id("cw-rib-right").w(RIBBON_BLOCKS.right).h(30).flex_none().gap(2).justify_end();
+  const right = h_flex().id("cw-rib-right").w(lay.right).h(30).flex_none().gap(2).justify_end();
   const envBtn = h_flex()
     .id("cw-rib-env")
     .min_w(28)

@@ -1642,3 +1642,203 @@ test("r4-05: every unreadable fresh-start notice fits the banner, alone and afte
           assert.ok(engine.graphemes(store.goneJoined(text)).length <= store.NOTICE_MAX, store.goneJoined(text));
         }
 });
+
+// r6-04: a backup that is there but can't be read (herdr's read() errors:
+// "Not a regular file", "Text file exceeds 1 MiB", invalid UTF-8, permission)
+// still holds the player's progress. It is never taken for "no backup", and
+// a fresh start beside it is never silent.
+const BIG_BAK = `{"pad":"${"x".repeat(1100000)}"}`;
+// Two-byte characters over 1 MiB: the mock's cut lands inside one, so the read says invalid UTF-8.
+const BAD_UTF8_BAK = "é".repeat(524289);
+const BAK_CASES = [
+  ["a folder", (ctl) => ctl.mkdir(BAK), "Not a regular file", {}],
+  ["over 1 MiB", () => {}, "Text file exceeds 1 MiB", { [BAK]: BIG_BAK }],
+  ["invalid UTF-8", () => {}, "stream did not contain valid UTF-8", { [BAK]: BAD_UTF8_BAK }],
+];
+
+test("r6-04: save.json missing beside an unreadable backup: a fresh start that says the backup can't be read and was left in place", async () => {
+  for (const [what, make, msg, files] of BAK_CASES) {
+    w = win({ files });
+    make(w.ctl);
+    const v = await w.copy("panel");
+    await w.flush();
+    const n = w.slot.notice;
+    assert.ok(n, `${what}: never a silent fresh start`);
+    assert.equal(n.kind, "fresh", what);
+    assert.equal(n.text, "Save was missing; backup can't be read (left in place; Details). Started fresh.", what);
+    assert.equal(n.message, msg, `${what}: the host message`);
+    assert.doesNotMatch(n.text, /no backup/);
+    const info = v.session.ctx().save;
+    assert.equal(info.backup, `can't be read, left in place (${msg}): ${BAK}`, `${what}: the message and path in Details`);
+    const banner = v.session.vm().notices.find((x) => x.save);
+    assert.ok(banner && banner.actions.includes("details"), `${what}: the banner offers Details`);
+    await w.advance(3000);
+    assert.ok(parsed(w.ctl).ok, `${what}: the fresh game is saved`);
+    assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: the backup is left as it was`);
+    // The rotation later can't replace it either, and says so; the progress in it is never written over.
+    await w.advance(6 * 60000);
+    assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: still left as it was`);
+    assert.ok(w.slot.notices.load, `${what}: the load notice stays until dismissed`);
+    w.dispose();
+    w = null;
+  }
+});
+
+test("r6-04: a damaged save.json beside an unreadable backup never says there was no backup", async () => {
+  for (const [what, make, msg, files] of BAK_CASES) {
+    w = win({ files: { ...files, [SAVE]: "{not json" } });
+    make(w.ctl);
+    await w.copy("panel");
+    await w.flush();
+    const n = w.slot.notice;
+    assert.equal(n && n.kind, "fresh", what);
+    assert.equal(n.text, "Save was damaged; backup can't be read (left in place; Details). Started fresh; the damaged file was kept.", what);
+    assert.equal(n.message, msg, what);
+    assert.equal(w.ctl.readFile(damaged(1)), "{not json", `${what}: the damaged save kept aside`);
+    assert.equal(w.ctl.readFile(BAK), files[BAK] ?? null, `${what}: the backup is not kept aside or touched`);
+    w.dispose();
+    w = null;
+  }
+});
+
+test("r6-04: an unreadable save.json beside an unreadable backup says both can't be read", async () => {
+  w = win({ files: { [SAVE]: HUGE, [BAK]: BIG_BAK } });
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.notices.write.kind, "error", "the unreadable save.json notice comes first");
+  assert.equal(w.slot.notices.load.text, "Save and backup can't be read (left in place; Details). Started fresh.");
+  assert.equal(w.slot.notices.load.message, "Text file exceeds 1 MiB");
+  assert.match(v.session.ctx().save.backup, /^can't be read, left in place \(Text file exceeds 1 MiB\)/);
+  assert.equal(w.ctl.readFile(BAK), BIG_BAK);
+  w.dispose();
+  w = win({ files: { [SAVE]: HUGE, [RECOVERY]: damagedText(5) } });
+  w.ctl.mkdir(BAK);
+  await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.notices.load.text, "Save and backup unreadable (left in place), recovery file damaged. Started fresh; the damaged file was kept.");
+});
+
+test("r6-04: a missing shared save beside an unreadable local backup says both", async () => {
+  const shared = "/mnt/usb/a-rather-long-folder-name-for-the-shared-game/creaseworks/save.json";
+  w = win({ files: { [`${DIR}/location.json`]: JSON.stringify({ path: shared }), [BAK]: BIG_BAK } });
+  await w.copy("panel");
+  await w.flush();
+  const n = w.slot.notice;
+  assert.equal(n && n.kind, "fresh");
+  assert.equal(n.text, "Shared save not found; using this window's own. Save was missing; backup can't be read (left in place; Details). Started fresh.");
+  assert.equal(w.ctl.readFile(shared), null);
+});
+
+test("r6-04: a backup that turns readable again is shown as present once rotated", async () => {
+  w = win({ files: { [BAK]: BIG_BAK } });
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  w.ctl.externalWrite(BAK, saveText(freshState(2)));
+  await w.advance(6 * 60000);
+  const info = v.session.ctx().save;
+  assert.doesNotMatch(String(info.backup), /can't be read/, String(info.backup));
+});
+
+test("r6-04: every unreadable-backup fresh-start notice fits the banner, alone and after a missing shared save", () => {
+  const texts = [];
+  for (const hadMain of [false, true]) for (const kept of [null, "save.damaged-5.json"]) texts.push(store.freshText(hadMain, kept, false, undefined, "Text file exceeds 1 MiB"));
+  for (const hadRec of [false, true]) for (const kr of [null, "save.damaged-5.json"]) texts.push(store.unreadableFreshText(hadRec, kr, false, undefined, "Not a regular file"));
+  for (const t of texts) {
+    assert.doesNotMatch(t, /no backup|backup was damaged/, t);
+    assert.ok(engine.graphemes(t).length <= store.NOTICE_MAX, t);
+    const j = store.goneJoined(t);
+    assert.ok(j.startsWith("Shared save not found") && j.endsWith(t), j);
+  }
+});
+
+// r6-18: herdr's create_new write (expected null) returns the OS text when the
+// file appeared in between: Unix and Windows word it differently.
+test("r6-18: isCas takes herdr's CAS texts and the create_new collision on Unix and Windows", () => {
+  for (const m of [
+    "The file changed outside Herdr",
+    "The file changed while saving",
+    "File exists (os error 17)",
+    "The file exists. (os error 80)",
+    "Die Datei ist vorhanden. (os error 80)",
+    "`herdr.writeTextFile`: The file exists. (os error 80)",
+    "`herdr.writeTextFile`: File exists (os error 17)",
+  ]) assert.equal(store.isCas(new Error(m)), true, m);
+  for (const m of ["Permission denied (os error 13)", "Text file exceeds 1 MiB", "Not a regular file", "No space left on device (os error 28)", "Access is denied. (os error 5)", "os error 170"]) {
+    assert.equal(store.isCas(new Error(m)), false, m);
+  }
+});
+
+test("r6-18: a racing first write on Windows is merged, not shown as a save error", async () => {
+  const other = freshState(9);
+  other.stats.hits = 41;
+  w = win();
+  await w.copy("panel");
+  // Another process creates save.json between herdr's check and its create_new open.
+  w.ctl.failNextWrite("The file exists. (os error 80)", SAVE);
+  w.ctl.externalWrite(SAVE, saveText(other));
+  await w.advance(3000);
+  assert.equal(w.slot.save.errors, 0, "no save error and no back-off");
+  assert.notEqual(w.slot.notices.write && w.slot.notices.write.kind, "error");
+  const p = parsed(w.ctl);
+  assert.ok(p.ok && p.state.stats.hits >= 41, "the other process's save is merged in");
+});
+
+// r6-16: the engine holds the save under K.saveBudget by archiving Album
+// records, but a roster that alone passes herdr's 1 MiB limit (about 1,300
+// helpers present at once, DESIGN R13) cannot shrink. The store measures the
+// text before writing: such a write is never sent, the reason is said in
+// words, and it is retried until the roster is small enough again.
+test("r6-16: oversize measures UTF-8 bytes exactly around herdr's 1 MiB limit", () => {
+  assert.equal(store.FILE_LIMIT, 1024 * 1024);
+  const L = store.FILE_LIMIT;
+  const cases = [
+    "x".repeat(L), "x".repeat(L + 1), "x".repeat(349525), "é".repeat(L / 2), "é".repeat(L / 2) + "x",
+    "漢".repeat(349525), "漢".repeat(349525) + "x", "漢".repeat(349525) + "xy", "🐦".repeat(L / 4), "🐦".repeat(L / 4) + "é",
+    `${"a".repeat(500000)}${"支払い".repeat(60000)}`, `${"a".repeat(600000)}${"é🐦漢".repeat(50000)}`,
+  ];
+  for (const t of cases) {
+    const bytes = Buffer.byteLength(t, "utf8");
+    assert.equal(store.oversize(t), bytes > L ? bytes : 0, `${t.length} units, ${bytes} bytes`);
+  }
+  assert.equal(store.oversize(""), 0);
+});
+
+test("r6-16: the too-big message fits the banner's error clip whole", () => {
+  for (const kib of [1025, 1216, 4096, 9999]) {
+    const m = store.oversizeText(kib * 1024);
+    assert.ok(engine.graphemes(m).length <= 60, m);
+    assert.match(m, new RegExp(`^save is ${kib} KiB, over herdr's 1 MiB cap: too many helpers$`));
+  }
+});
+
+test("r6-16: a save over 1 MiB is never sent, is said in words, and saves again once the roster shrinks", async () => {
+  const many = (n) => {
+    const agents = [];
+    const terminals = [];
+    for (let i = 1; i <= n; i++) {
+      agents.push({ address: `t${i}`, pane: `p${i}`, status: "working", title: `agent ${i} 支払い照合サービスのテスト ${"漢".repeat(20)}`, space_name: "api", tab_name: "tab 1", tab_index: 1, focused: i === 1 });
+      terminals.push({ address: `t${i}`, status: "working", turn: 0, created_ms: 1000 + i * 997 });
+    }
+    return { agents, terminals };
+  };
+  w = win(many(2000));
+  const v = await w.copy("panel");
+  await w.advance(3000);
+  assert.equal(w.ctl.readFile(SAVE), null, "nothing written");
+  assert.equal(w.ctl.counts.writeTextFile ?? 0, 0, "the write was not sent to herdr");
+  assert.equal(w.slot.save.status, "error");
+  assert.match(w.slot.notices.write.message, /^save is \d+ KiB, over herdr's 1 MiB cap: too many helpers$/);
+  const banner = v.session.vm().notices.find((x) => x.save);
+  assert.match(banner.text, /^Can't save: save is \d+ KiB, over herdr's 1 MiB cap: too many helpers\. Retrying in .*Your progress is safe in memory\.$/);
+  assert.equal(v.session.ctx().save.state, "problem");
+  // The flock goes back to a size that fits: the next retry saves, and the notice clears.
+  const few = many(40);
+  w.ctl.setAgents(few.agents);
+  w.ctl.setTerminals(few.terminals);
+  await w.advance(6 * 60000);
+  const p = parsed(w.ctl);
+  assert.ok(p && p.ok, "saved once it fits");
+  assert.ok(Buffer.byteLength(w.ctl.readFile(SAVE), "utf8") <= store.FILE_LIMIT);
+  assert.equal(w.slot.save.status, "ok");
+  assert.equal(w.slot.notices.write, null);
+});

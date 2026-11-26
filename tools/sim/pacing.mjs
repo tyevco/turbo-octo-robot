@@ -417,18 +417,21 @@ export function runProfile(profileId, seed, opts = {}) {
       cross("run:1e9", 1e9, last.run, s.runFolds, p0, p, continuous && s.wishCount === 0);
       cross("live:1e9", 1e9, last.live, live, p0, p, continuous && s.wishCount === 0);
     }
-    awayNow = false;
     if (!("wish:available" in sim.milestones) && s.wishCount === 0) {
       const info = engine.wishInfo(s);
       if (info.can) {
         const target = engine.lifetimeFor(engine.CONTENT.PRESTIGE.firstCranes);
         cross("wish:available", target, last.life, s.lifetime, p0, p, continuous);
         hit("wish:available", p);
+        // review r6-12: the first wish became available in a step that credited a night pot
+        // (cross() may not fire when the crane count, not L, was the last gate to open)
+        if (awayNow) sim.byAway["wish:available"] = true;
         sim.m15Gain = info.gain;
         sim.shares = { ...s.stats.runBySource };
         sim.daySnaps.push({ p: sim.milestones["wish:available"], src: { ...s.stats.runBySource }, m15: true });
       }
     }
+    awayNow = false;
     if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) hit("wish2:available", p);
     last = { p, run: s.runFolds, live, life: s.lifetime, wishCount: s.wishCount };
   };
@@ -736,6 +739,9 @@ export function evaluate(runs, bal = parseBalance()) {
     if (!rs) continue;
     const vals = rs.map((r) => r.m15 ?? NaN);
     const med = median(vals);
+    // seeds whose first wish became available only with a night pot's credit (a day-open snap, review r6-12)
+    const byAway = rs.filter((r) => r.byAway && r.byAway["wish:available"]).length;
+    const awayNote = byAway ? `reached by a night pot on ${byAway} of ${rs.length} seeds` : "";
     if (row.sameSeed) {
       const base = runs[row.sameSeed.of];
       if (!base) continue;
@@ -755,15 +761,15 @@ export function evaluate(runs, bal = parseBalance()) {
         }
       });
       add({ section: "§5", id: row.id, what: `first wish; every §4 milestone within ±${row.sameSeed.rel * 100} % of the same ${row.sameSeed.of} seed`, unit: "clock",
-        vals, median: med, min: Math.min(...vals), max: Math.max(...vals), pass: bad.length === 0,
-        note: `worst ${(worst * 100).toFixed(2)} %${bad.length ? "; " + bad.slice(0, 3).join("; ") : ""}`, value: worst });
+        vals, median: med, min: Math.min(...vals), max: Math.max(...vals), pass: bad.length === 0, byAway,
+        note: `worst ${(worst * 100).toFixed(2)} %${bad.length ? "; " + bad.slice(0, 3).join("; ") : ""}${awayNote ? "; " + awayNote : ""}`, value: worst });
       continue;
     }
     const okMed = inWin(med, row.median);
     const okEvery = vals.every((v) => inWin(v, row.every));
     const extras = row.extra.map((e) => ({ text: e.text, ok: e.check(medians) }));
     add({ section: "§5", id: row.id, what: "first wish", unit: "clock", vals, median: med, min: Math.min(...vals), max: Math.max(...vals),
-      window: row.median, every: row.every, extras, pass: okMed && okEvery && extras.every((e) => e.ok) });
+      window: row.median, every: row.every, extras, pass: okMed && okEvery && extras.every((e) => e.ok), byAway, note: awayNote || undefined });
   }
   // §5 monotonicity
   {

@@ -53,7 +53,7 @@ const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creasework
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
 const { renderAway, awayLines, AWAY_CLOSE } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
-const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, fitLevelC, CHIP_GLYPH, ENV_MARKER, HINT_FOLD } = await import("../../mods/creaseworks/ui/ribbon.js");
+const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, fitLevelC, blockNeeds, CHIP_GLYPH, ENV_MARKER, HINT_FOLD, HINT_HIDE } = await import("../../mods/creaseworks/ui/ribbon.js");
 const { statusColor, statusDisc, contrast } = await import("../../mods/creaseworks/ui/color.js");
 const { spritePath } = await import("../../mods/creaseworks/ui/art.js");
 
@@ -67,7 +67,7 @@ function makeCtx(themeName, s, over = {}) {
   const calls = [];
   const names = [
     "click", "open", "openHelper", "buy", "setting", "switchAuto", "wish", "collect", "dismiss", "fold", "show", "tab",
-    "segment", "select", "toggleGroup", "showGroup", "details", "confirm", "cancel", "retrySave", "checkSave",
+    "segment", "select", "toggleGroup", "showGroup", "details", "confirm", "cancel", "retrySave", "checkSave", "hide",
     "restoreBackup", "sharePath",
   ];
   const handlers = {};
@@ -597,7 +597,10 @@ test("r5-17: at zoom-1.5 widths the narrow hint gives way before any helper's ma
   const pickMarks = (idx) => idx.map((i) => base.ribbon.marks[i]);
   const marks = pickMarks([0, 1, 2, 3, 5, 6, 7, 8, 9, 19, 20, 21, 22]);
   assert.deepEqual(marks.map((m) => m.status[0]).join(""), "bbbdwwwwwiiii");
-  const W = 465;
+  // r6-08: at W 465 the middle now borrows the blocks' unused room and keeps
+  // the hint (tested below); W 400 is too narrow even with that, so the hint
+  // still gives way there.
+  const W = 400;
   for (const viewLevel of [null, "A", "B"]) {
     for (const save of [null, "Save problem"]) {
       const vm = { ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: viewLevel, save, pill: null } };
@@ -616,7 +619,7 @@ test("r5-17: at zoom-1.5 widths the narrow hint gives way before any helper's ma
       for (const t of lay.tallies) assert.ok(ids(json).includes(`cw-rib-tally-${t.status}`), `${tag}: tally ${t.status}`);
     }
   }
-  // Without a save chip the bare middle (215 px) holds all 13 as pips (98 px).
+  // Without a save chip the bare middle holds all 13 as pips (98 px).
   const bare = ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: "A" } }, makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true, panelShown: true }), W);
   assert.equal(bare.level, "B");
   assert.equal(bare.need, 98);
@@ -652,6 +655,65 @@ test("r5-17: at zoom-1.5 widths the narrow hint gives way before any helper's ma
       }
     }
   }
+});
+
+test("r6-08: 1100x700 at zoom 1.5 (W 464, 13 helpers): the middle borrows the blocks' unused room and keeps the narrow hint", () => {
+  // The defect: pipArea(464) is 214 with the blocks at 118 and 100; the
+  // compact hint (147) and 13 level-B pips (98) need 245, so the hint was
+  // dropped, while the blocks held about 65 and 61 px of content.
+  const base = F.scenario("ribbon-34", { window: 1100 }).vm;
+  const marks = [0, 1, 2, 3, 5, 6, 7, 8, 9, 19, 20, 21, 22].map((i) => base.ribbon.marks[i]);
+  for (const W of [464, 465]) {
+    for (const folds of [undefined, "226K", "1.23M"]) {
+      for (const save of [null, "Save problem"]) {
+        const vm = { ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: null, save, pill: null, folds, rate: "+14/s" } };
+        const ctx = makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true, panelShown: true });
+        const lay = ribbonLayout(vm, ctx, W);
+        const tag = `W ${W} folds ${folds} save ${save}`;
+        assert.equal(lay.hintDropped, false, `${tag}: the hint stays`);
+        assert.ok(lay.specs.some((x) => x.key === "hint"), tag);
+        assert.ok(lay.lead + lay.need <= lay.w, `${tag}: ${lay.lead} + ${lay.need} within ${lay.w}`);
+        // The blocks give only what they do not use, and the middle gets exactly that.
+        const nb = blockNeeds(vm, ctx);
+        assert.ok(lay.left >= nb.left && lay.right >= nb.right && lay.left <= 118 && lay.right <= 100, `${tag}: ${lay.left} ${lay.right}`);
+        assert.equal(lay.w, W - 16 - lay.left - lay.right - 16);
+        const json = renderRibbon(vm, {}, ctx).toJSON();
+        assert.equal(styleOf(findNode(json, "cw-rib-left"), "w"), lay.left);
+        assert.equal(styleOf(findNode(json, "cw-rib-right"), "w"), lay.right);
+        assert.ok(ids(json).includes("cw-rib-hint"), `${tag}: drawn`);
+        assert.equal(ids(json).filter((id) => id.startsWith("cw-rib-m-")).length, 13, `${tag}: every helper a mark`);
+      }
+    }
+  }
+  // The content bounds hold the 12 px count and the 11 px rate (at most the clipped strings).
+  const nb = blockNeeds({ ribbon: { folds: "226K", rate: "+14/s", envelopes: 0 } }, { panelShown: true });
+  assert.ok(nb.left >= 28 + 4 + Math.ceil(textBound("226K", 600) * 12 / 11) && nb.left < 80, JSON.stringify(nb));
+  assert.ok(nb.right >= 28 + 2 + 28 && nb.right < 70, JSON.stringify(nb));
+  assert.ok(blockNeeds({ ribbon: { envelopes: 3 } }, { panelShown: false }).right >= nb.right + 26, "the mini Sheet counts while the panel is folded");
+  // Where everything fits, the blocks keep their §3.10 widths (no jitter as the counts change).
+  const wide = ribbonLayout({ ...base, ribbon: { ...base.ribbon, marks, tallies: [], level: null } }, makeCtx("graphite", { width: 832, height: 30 }, { narrowHint: true }), 832);
+  assert.deepEqual([wide.left, wide.right, wide.hintDropped], [118, 100, false]);
+});
+
+test("r6-07: at the rail the narrow hint offers Hide panel instead of Fold", () => {
+  const vm = ribbonOf(4, 700);
+  for (const W of [464, 700]) {
+    const ctx = makeCtx("graphite", { width: W, height: 30 }, { narrowHint: true, narrowHide: true, panelShown: true });
+    const lay = ribbonLayout(vm, ctx, W);
+    const sp = lay.specs.find((x) => x.key === "hint");
+    assert.ok(sp && sp.hide === true, `W ${W}`);
+    const tree = renderRibbon(vm, {}, ctx);
+    const json = tree.toJSON();
+    assert.ok(ids(json).includes("cw-rib-hint-hide") && !ids(json).includes("cw-rib-hint-fold"), `W ${W}`);
+    const label = JSON.stringify(findNode(json, "cw-rib-hint-hide"));
+    assert.ok(label.includes(sp.label ? `"${HINT_HIDE.full}"` : `"${HINT_HIDE.compact}"`), label.slice(0, 200));
+    if (sp.label) assert.match(sp.label, /hide Creaseworks\?/);
+    fire(tree, "cw-rib-hint-hide", "on_click", {}, fakeCx());
+    assert.deepEqual(ctx.calls, [["hide"]], "hides, never folds");
+  }
+  // Without narrowHide it is the fold offer as before.
+  const json = renderRibbon(vm, {}, makeCtx("graphite", { width: 700, height: 30 }, { narrowHint: true })).toJSON();
+  assert.ok(ids(json).includes("cw-rib-hint-fold") && !ids(json).includes("cw-rib-hint-hide"));
 });
 
 test("r4-07: the engine's level C and the ribbon's fit agree (no lead), at every width and mix", async () => {

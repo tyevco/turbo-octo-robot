@@ -10,13 +10,13 @@
 // (cx.notify()) when the slot's rev or the clock bucket (5 s in calm mode)
 // changed. Handlers dispatch B5 actions or change this copy's `ui`.
 
-import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings, pickFiles } from "herdr";
+import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings, pickFiles, run } from "herdr";
 import { view, advance, apply, newGame, formatCount } from "../engine/index.js";
 import { now as clockNow, localDay, bucket } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, codeGeneration, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, observeFromAgents, signature } from "./observe.js";
-import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, recallWeight, syncStore, panelState, RAIL_PX, FULL_BELOW } from "./commands.js";
+import { layoutInfo, filesEstimate, fold as foldPanel, show as showPanel, openHelper as openHelperCmd, runCommand, actsOnCommands, startCommandLoop, notePanelWidth, recallWidth, recallWeight, syncStore, panelState, RAIL_PX, FULL_BELOW, PANEL_ID } from "./commands.js";
 import * as notifier from "./notify.js";
 
 export const VISIBLE_MS = 1000;
@@ -31,6 +31,16 @@ export const POP_DONE_MS = POP_RISE_MS + 700;
 /** At most this many pops alive (DESIGN §13.5; ui/mat.js draws the last 5). */
 export const POP_CAP = 5;
 export const SHORT_BELOW = 640;
+/**
+ * r6-07: the narrow hint offers to hide a panel at (or about) its 64 px rail
+ * while the terminals have less than this (design px): folding it gains
+ * nothing there, hiding gives them the rail and its gap.
+ */
+export const HIDE_BELOW = 360;
+/** A panel less than this wider than the rail is offered hiding, not folding (folding would gain under 24 px). */
+export const FOLD_GAIN_MIN = 24;
+/** The flash after the hint hides the panel: how to get it back. */
+export const HIDDEN_TEXT = "Panel hidden: the ribbon's fold button brings it back";
 /**
  * A load that has made no progress for this long has stopped (its task cut
  * off: herdr's budget, a view closed): it is started again, and the
@@ -69,6 +79,25 @@ const notifyCx = (cx) => {
     }
   }
 };
+
+/**
+ * The terminals' width (design px) with the panel `Wp` wide at about its
+ * rail, in a ribbon (work column) `W` wide. filesEstimate says nothing there
+ * (a rail's width does not follow its weight), so a weight Files column is
+ * shared with main by weight, held to its min and max (herdr's shares()).
+ */
+export function railMainEstimate(W, Wp, L) {
+  const room = W - 16 - (Wp + 8);
+  if (!L || !L.filesShown) return room;
+  const rest = room - 8;
+  const fw = L.filesWeight;
+  let files = L.filesPx;
+  if (typeof fw === "number" && Number.isFinite(fw) && fw > 0) {
+    const mw = typeof L.mainWeight === "number" && Number.isFinite(L.mainWeight) && L.mainWeight > 0 ? L.mainWeight : 1;
+    files = Math.max(Math.min((rest * fw) / (fw + mw), L.filesMax), L.filesMin);
+  }
+  return rest - files;
+}
 
 /** The ticker hands over when its heartbeat is older than this (a hidden window beats every 5 s). */
 const staleFor = (interval) => Math.max(TICKER_STALE_MS, Math.round(interval * 2.5));
@@ -329,7 +358,7 @@ export class Session {
     // Folded or not is the layout's weight, not the measured width (r2-13).
     const pst = panelState(slot, L);
     const panelShown = panelAlive && pst !== "hidden" && pst !== "folded";
-    slot.presence = { visible, active, panelShown };
+    slot.presence = { visible, active, panelShown, panelAlive };
     // Narrow-window hint epochs: a new Files-panel opening allows the hint again (§2.3).
     if (L.filesShown && !slot.narrow.filesWas) slot.narrow.filesEpoch += 1;
     slot.narrow.filesWas = L.filesShown;
@@ -400,7 +429,9 @@ export class Session {
     if (more) touch(slot);
 
     // Notifications (opt-in, ≤ 3 a day) and the save-problem ribbon rescue.
-    notifier.check(slot, t, { day, quiet: panelShown && active, layout: L }, () => {
+    // herdr's toast expires on the wall clock even while nobody looks, so a
+    // hidden or inactive window holds them back until it is active (r6-02).
+    notifier.check(slot, t, { day, quiet: panelShown && active, away: !visible || !active, layout: L }, () => {
       markDirty(slot, t, true);
       slot.save.urgentAt = t;
     });
@@ -742,7 +773,9 @@ export class Session {
         ctx.panelShown = !!slot.presence.panelShown;
         // r3-14: only a full panel shows the away card (a tight rail has none).
         ctx.panelFull = ctx.panelShown && panelState(slot) === "full";
-        ctx.narrowHint = this.narrowHint(t);
+        const offer = this.narrowOffer(t);
+        ctx.narrowHint = offer !== null;
+        ctx.narrowHide = offer === "hide";
       }
     } else if (this.role === "ribbon") {
       ctx.panelShown = false;
@@ -751,26 +784,43 @@ export class Session {
   }
 
   /**
-   * §2.3: the ribbon's one-time "fold to a rail?" chip. Offered while the
-   * panel is unfolded (by its layout weight) and folding gives the terminals
-   * room: wider than the rail's 64 (an unfolded panel at its 64 px min, zoom
-   * 1.5 with Files open, gains nothing), and either the terminals are under
-   * 600 or the panel is a tight rail under FULL_BELOW holding its whole
-   * column (r2-13, r2-14: 124 or 106 at zoom 1.5 too).
+   * §2.3: the ribbon's one-time "terminals are narrow" chip: true when it is
+   * offered (see narrowOffer).
    */
-  narrowHint(_t) {
+  narrowHint(t) {
+    return this.narrowOffer(t) !== null;
+  }
+
+  /**
+   * What the narrow chip offers, or null: "fold" while the panel is unfolded
+   * (by its layout weight) and folding gives the terminals room (the panel is
+   * at least FOLD_GAIN_MIN wider than the 64 px rail, and either the
+   * terminals are under 600 or the panel is a tight rail under FULL_BELOW
+   * holding its whole column: r2-13, r2-14, 124 or 106 at zoom 1.5 too);
+   * "hide" when the panel is the rail or about it (folded, or unfolded and
+   * held near its 64 px min: zoom 1.5 with Files open; folding gains
+   * nothing) and the terminals still have under HIDE_BELOW (r6-07: before,
+   * the chip stayed silent exactly where the terminals were narrowest). Once
+   * per Files opening with Files open, else once a day.
+   */
+  narrowOffer(_t) {
     const slot = this.slot;
     const s = slot && slot.state;
-    if (!s || this.role !== "ribbon" || typeof this.width !== "number") return false;
+    if (!s || this.role !== "ribbon" || typeof this.width !== "number") return null;
     const L = slot.layout;
     const Wp = slot.widths.panel;
-    if (!slot.presence.panelShown || typeof Wp !== "number" || Wp <= RAIL_PX + 8) return false;
+    if (typeof Wp !== "number") return null;
     const st = panelState(slot);
-    if (st !== "full" && st !== "tight") return false;
+    // A folded rail is not "shown" (the ribbon draws the mini Sheet), but it is on screen.
+    const onScreen = slot.presence.panelShown || (st === "folded" && slot.presence.panelAlive === true);
+    if (!onScreen) return null;
+    const again = L.filesShown ? slot.narrow.dismissed !== slot.narrow.filesEpoch : s.ui.narrowHintDay !== s.day;
+    if (!again) return null;
+    if (st === "folded" || Wp - RAIL_PX < FOLD_GAIN_MIN) return railMainEstimate(this.width, Wp, L) < HIDE_BELOW ? "hide" : null;
+    if (st !== "full" && st !== "tight") return null;
     const mainEst = this.width - 16 - (Wp + 8) - (L.filesShown ? filesEstimate(L, Wp) + 8 : 0);
-    if (mainEst >= 600 && st === "full") return false;
-    if (L.filesShown) return slot.narrow.dismissed !== slot.narrow.filesEpoch;
-    return s.ui.narrowHintDay !== s.day;
+    if (mainEst >= 600 && st === "full") return null;
+    return "fold";
   }
 
   /**
@@ -1022,6 +1072,24 @@ export class Session {
       },
       show(cx) {
         if (self.slot && !self.demo) showPanel(self.slot, undefined, clockNow());
+        self.changed(cx);
+      },
+      hide(cx) {
+        // The narrow chip's "Hide" (r6-07). The ribbon's fold button (fold:
+        // a hidden panel is shown and unfolded) and the palette bring it back.
+        const slot = self.slot;
+        if (slot && !self.demo) {
+          let ok = true;
+          try {
+            run("layout.hide", { id: PANEL_ID });
+          } catch {
+            ok = false; // a refused run arrives as a herdr toast
+          }
+          if (ok) {
+            slot.layout = { ...slot.layout, panelHidden: true };
+            flash(slot, HIDDEN_TEXT, clockNow());
+          }
+        }
         self.changed(cx);
       },
       tab(name, cx) {

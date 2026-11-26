@@ -19,7 +19,7 @@ import { engine, seeded, T0 } from "../engine/_util.mjs";
 import { graphemes } from "../../mods/creaseworks/engine/index.js";
 import { FREE_SLOTS, PERKS, AUTOMATIONS } from "../../mods/creaseworks/engine/content.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
-import { renderMat, matGeometry, craneHintBox } from "../../mods/creaseworks/ui/mat.js";
+import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks } from "../../mods/creaseworks/ui/mat.js";
 import { renderShop, rowText, rowTextWidth, SHOP_CLIP } from "../../mods/creaseworks/ui/shop.js";
 import { renderString } from "../../mods/creaseworks/ui/string.js";
 
@@ -302,6 +302,96 @@ test("r5-13: the confirm card says an uncollected away pot is collected first", 
   s.away.pot = null;
   const none = renderString(engine.view(s, T0, { role: "panel", width: 320, tab: "string" }), { tab: "string", confirm: "wish", armedAt: 0, now: 2000 }, makeCtx()).toJSON();
   assert.ok(!texts(findById(none, "cw-string-confirm")).some((x) => /while you were away/.test(x)));
+});
+
+// ---------------------------------------------------------------------------
+// r6-06
+
+test("r6-06: the Paper Boat glides in its own lane above the bottom band: never under the tray or the streak label, never on the Sheet", () => {
+  let dips = 0;
+  for (const width of [240, 320, 420]) {
+    for (const calm of [false, true]) {
+      for (const age of [0, 2500, 5000, 7500, 10000, 12500, 15000, 19500]) {
+        const s = seeded(11);
+        s.ui.hints.fold = true;
+        s.stats.hits = 10;
+        s.settings.calm = calm;
+        for (let i = 0; i < 10; i++) {
+          s.envelopes[`bbbb000${i}`] = { type: ["bundle", "rush", "storm", "chorus"][i % 4], units: 1 + (i % 3), landedAt: T0 - 60000 + i, lastAt: T0 - 60000 + i };
+        }
+        s.spawn.boat = { id: "b7", born: s.spawn.shownMs - age };
+        const vm = engine.view(s, T0, { role: "panel", width });
+        if (!vm.mat.boat) continue;
+        const ctx = makeCtx({ width, calm });
+        const json = renderMat(vm, { tab: "flock" }, ctx).toJSON();
+        const at = `width ${width}, age ${age}${calm ? ", calm" : ""}`;
+        const el = findById(json, "cw-boat");
+        assert.ok(el, `${at}: the boat is drawn`);
+        const box = { x: styleVal(el, "left"), y: styleVal(el, "top"), w: styleVal(el, "w"), h: styleVal(el, "h") };
+        const g = matGeometry(vm, ctx);
+        assert.deepEqual(boatBox(vm.mat.boat, g), [box.x, box.y]);
+        const sheet = { x: g.sx, y: g.sy, w: g.sheet, h: g.sheet };
+        const band = { x: 0, y: g.h - 32, w: g.w, h: 32 };
+        assert.equal(overlap(box, sheet), 0, `${at}: not on the Sheet ${JSON.stringify(box)}`);
+        assert.ok(box.x >= 0 && box.x + box.w <= g.w && box.y >= 28 && box.y + box.h <= g.h, `${at}: inside the mat ${JSON.stringify(box)}`);
+        const crossing = box.x < g.sx + g.sheet && box.x + box.w > g.sx;
+        if (!crossing || !g.short) {
+          assert.equal(overlap(box, band), 0, `${at}: above the tray and the streak meter ${JSON.stringify(box)}`);
+          assert.equal(box.y + box.h, g.h - 32, `${at}: on the band's top edge`);
+        } else {
+          dips++;
+        }
+        // painted after the band: the envelopes never take its clicks
+        const order = json.children.map((c) => c && c.id);
+        assert.ok(order.indexOf("cw-boat") > order.indexOf("cw-mat-bottom"), `${at}: the boat paints over the band`);
+        assert.ok(findById(json, "cw-tray").children.length >= 2, `${at}: the tray is full`);
+        if (calm) assert.equal(box.x, g.w - 48 - 8, `${at}: calm parks it at the lane's far end`);
+      }
+    }
+  }
+  assert.ok(dips > 0, "on the short mat it dips below the Sheet while crossing its columns");
+});
+
+// ---------------------------------------------------------------------------
+// r6-09
+
+test("r6-09: Confetti looks like confetti: multi-hue flecks on the mat (no storm stripes) and a fleck seal (no lightning bolt)", () => {
+  const s = seeded(11);
+  s.ui.hints.fold = true;
+  s.stats.hits = 10;
+  s.boosts.storm = 12000;
+  s.boosts.stormEnd = T0 + 12000;
+  const vm = engine.view(s, T0, { role: "panel", width: 320 });
+  assert.equal(vm.mat.storm, true);
+  for (const dark of [true, false]) {
+    const ctx = makeCtx({ S: pickScene(dark), dark });
+    const json = renderMat(vm, { tab: "flock" }, ctx).toJSON();
+    const box = json.children.find((c) => c && c.id === "cw-storm");
+    assert.ok(box, "the confetti layer is drawn");
+    assert.ok(json.children.indexOf(box) < json.children.findIndex((c) => c && c.id === "cw-sheet"), "under the play pieces");
+    assert.deepEqual([box.loops[0].property, box.loops[0].period], ["opacity", 1200]);
+    const paths = box.children.filter((c) => c && c.kind === "path");
+    assert.equal(paths.length, 4, "four hues, one Background each");
+    for (const p of paths) assert.equal(p.args[1].kind, "solid", "flecks, not a slash pattern");
+    const colours = new Set(paths.map((p) => p.args[1].values[0]));
+    assert.equal(colours.size, 4, `four distinct hues: ${[...colours].join(", ")}`);
+    for (const c of colours) assert.match(c, /^#[0-9a-f]{6}$/);
+    // calm: none
+    assert.equal(renderMat(vm, { tab: "flock" }, makeCtx({ S: pickScene(dark), dark, calm: true })).toJSON().children.find((c) => c && c.id === "cw-storm"), undefined);
+  }
+  // sparse, inside the mat, the same every frame
+  for (const [w, h] of [[304, 232], [224, 184], [620, 260]]) {
+    const a = confettiFlecks(w, h);
+    assert.deepEqual(confettiFlecks(w, h), a);
+    assert.ok(a.length >= (w * h) / 2000 && a.length <= (w * h) / 600, `${w}×${h}: ${a.length} flecks`);
+    for (const f of a) for (const [x, y] of f.pts) assert.ok(x >= 0 && x <= w && y >= 0 && y <= h);
+    assert.deepEqual([...new Set(a.map((f) => f.hue))].sort(), [0, 1, 2, 3]);
+  }
+  // the seal: several flecks and dots in one colour, not the old one-polygon bolt
+  const seal = readFileSync(join(root, "mods/creaseworks/art/scene/seal-storm.svg"), "utf8");
+  assert.ok(!seal.includes("7,0.5 10.5,0.5 8,4.5 11,4.5 4,11.5 5.5,6.5 2,6.5"), "not the lightning bolt");
+  assert.ok((seal.match(/<(polygon|circle)\b/g) || []).length >= 5, "flecks and dots");
+  assert.deepEqual([...new Set(seal.match(/fill="#[0-9a-f]{3,6}"/g))], ['fill="#000"'], "flat, one colour (tinted S.ink)");
 });
 
 function close1(a, b) {

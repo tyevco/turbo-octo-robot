@@ -54,6 +54,31 @@ test("§4 M13 is reached on live income, never by a night pot", () => {
   assert.equal(m13.byAway, 0);
 });
 
+// Review r6-12: the first wish (M15) is checked after the step's away flag was cleared, so a
+// first wish that only the night pot collected at a day open made available was never noted.
+// A first wish exactly on a day open (play-clock a multiple of the 8 h open day) is that case:
+// the sim must flag it on that seed and nowhere else, and carry the count into §4 M15 and §5.
+test("a first wish reached by a night pot is noted on §4 M15 and the §5 rows", () => {
+  const DAY = 8 * 3600;
+  for (const id of PROFILE_IDS) {
+    const rs = runs[id];
+    let snaps = 0;
+    for (const r of rs) {
+      const atOpen = r.m15 > 0 && r.m15 % DAY === 0;
+      if (atOpen) snaps++;
+      assert.equal(r.byAway["wish:available"] === true, atOpen, `${id} seed ${r.seed}: M15 ${fmtClock(r.m15)}`);
+    }
+    const row = ev.rows.find((x) => x.section === "§5" && x.id === id);
+    if (!row) continue;
+    assert.equal(row.byAway, snaps, `§5 ${id}`);
+    if (snaps) assert.match(row.note, new RegExp(`reached by a night pot on ${snaps} of ${rs.length} seeds`), `§5 ${id}`);
+  }
+  const m15 = ev.rows.find((x) => x.section === "§4" && x.id === "M15");
+  assert.equal(m15.byAway, runs.P1.filter((r) => r.byAway["wish:available"]).length);
+  // the profiles that sit at a day open in BALANCE §5 (P4 32:00 on every seed) really are snaps
+  if (seeds.length >= 5) assert.ok(runs.P4.some((r) => r.byAway["wish:available"]), "P4 never flagged");
+});
+
 const show = (r) => {
   if (r.unit === "text") return r.note;
   const f = r.unit === "pct" ? (x) => `${(x * 100).toFixed(1)} %` : r.unit === "clock" || r.unit === "M15+" ? fmtClock : String;

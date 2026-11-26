@@ -239,3 +239,53 @@ test("r5-13: a wish credits an uncollected away pot first (lifetime, the gain), 
   assert.ok(s.notices.some((n) => n.kind === "away"), "never silent: the footer notice says what was credited");
   assert.equal(engine.view(s, T0 + 50000 + 8 * 3600000, { role: "panel", width: 320, tab: "string" }).string.potNote, null);
 });
+
+// Review r6-03: above about L 1.3e42 the crane count passes 2^53, where
+// c + 1 === c, and the old upward correction spun forever (view() calls
+// cranes on every build, so every render and tick hung). Each call is now a
+// fixed handful of steps whatever L is, and the count holds at
+// Number.MAX_SAFE_INTEGER.
+test("cranes(L) returns at once for any L: huge, Infinity, NaN; exact below 2^53, held at MAX_SAFE_INTEGER above (r6-03)", () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  const t0 = performance.now();
+  for (const L of [2e42, 1e43, 1e60, 1e300, Number.MAX_VALUE, Infinity]) assert.equal(engine.cranes(L), max, String(L));
+  for (const L of [NaN, -1, 0, -Infinity, undefined]) assert.equal(engine.cranes(L), 0, String(L));
+  assert.ok(performance.now() - t0 < 50, "no correction loop runs away");
+  // Still the largest c with lifetimeFor(c) <= L right up to the hold.
+  // Near 2^53 adjacent lifetimes are a float ulp apart, so "largest c" is
+  // only defined to rounding: the count sits on the curve and under L.
+  for (const L of [1e41, 1e42, 1.25e42]) {
+    const c = engine.cranes(L);
+    const ideal = 1000 * Math.pow(L / 6e9, 0.4);
+    assert.ok(Number.isSafeInteger(c) && c < Number.MAX_SAFE_INTEGER, `L ${L}: ${c}`);
+    assert.ok(Math.abs(c - ideal) / ideal < 1e-13, `L ${L}: ${c} vs ${ideal}`);
+    assert.ok(engine.lifetimeFor(c) <= L, `L ${L}`);
+  }
+  for (const c of [1, 999, 1000, 1001, 123456, 1e9 + 7, 2e12 + 3, 4503599627370497]) {
+    assert.equal(engine.cranes(engine.lifetimeFor(c)), c, `c ${c}`);
+    assert.ok(engine.lifetimeFor(c + 1) > engine.lifetimeFor(c));
+  }
+  // Monotone across the hold.
+  let prev = 0;
+  for (let e = 9; e <= 308; e += 0.5) {
+    const c = engine.cranes(Math.min(Number.MAX_VALUE, Math.pow(10, e)));
+    assert.ok(c >= prev, `10^${e}`);
+    prev = c;
+  }
+  assert.equal(prev, max);
+});
+
+test("a game with lifetime 2e42 or more still builds its view and String tab fast (r6-03)", () => {
+  for (const L of [2e42, 1e300, Number.MAX_VALUE]) {
+    const { s } = ready();
+    s.lifetime = L;
+    const t0 = performance.now();
+    const w = engine.wishInfo(s);
+    const info = engine.stringInfo(s);
+    engine.view(s, s.clock + 1000);
+    assert.ok(performance.now() - t0 < 500, `L ${L}`);
+    assert.equal(w.cranes, Number.MAX_SAFE_INTEGER);
+    assert.ok(w.can && Number.isSafeInteger(w.gain) && w.gain > 0, JSON.stringify(w));
+    assert.ok(Number.isFinite(info.cranes) && Number.isFinite(info.of));
+  }
+});

@@ -17,10 +17,14 @@ function setup(seed = 1) {
   return { s, me };
 }
 
-/** The §10.2 rate per credited second: f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk). */
+/**
+ * The §10.2 rate per credited second: f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk),
+ * "present" being the pane helpers not waiting on the player: agent 4 waits
+ * ("Needs you") and stops helping while away too (review r6-05), so N = 3.
+ */
 function awayRate(s, f = 0.25) {
   const r = engine.rates(s);
-  const N = 4;
+  const N = 3;
   return f * (r.Rw + engine.crowd(N) * N * (0.3 * r.G + 0.04 * r.Rw) * 1.5);
 }
 
@@ -376,6 +380,53 @@ test("r4-06: helpers another window stopped seeing earn the away rate for 8 h in
   // B open only a moment: the away segment still pays (almost) the full 8 h
   const short = run(0.02, "wA");
   assert.ok(short.away > 7.9 * H && short.away <= 8 * H);
+});
+
+test("r6-05: a helper waiting for input adds nothing to an away segment, its folds or the crowd; it still shows under Needs you", () => {
+  const { s } = setup();
+  const id4 = engine.helperId("t4", 1004);
+  const f4 = s.helpers[id4].stats.folds;
+  engine.advance(s, T0 + 20 * H);
+  assert.equal(s.helpers[id4].stats.folds, f4, "the waiting agent earned nothing while away");
+  assert.deepEqual(s.away.pot.needs, [id4]);
+  // had agent 4 been working it would have earned its share
+  const b = setup().s;
+  b.helpers[id4].status = "working";
+  engine.advance(b, T0 + 20 * H);
+  assert.ok(b.away.pot.split.helpers > s.away.pot.split.helpers, "a working agent earns the away rate");
+  // the same absence with agent 4 not there at all pays exactly the same
+  const c = seeded(1);
+  c.owned["paper-stack"] = 30; c.owned["bone-folder"] = 12; c.owned["scissor-stand"] = 3; c.bought["rice-treats"] = true;
+  writer(c).act(observeAction(T0, [agent(1, "working"), agent(2, "working"), agent(3, "idle")]));
+  engine.advance(c, T0 + 20 * H);
+  close(s.away.pot.split.helpers, c.away.pot.split.helpers, 1e-12);
+  close(s.away.pot.folds, c.away.pot.folds, 1e-12);
+});
+
+test("r6-05: a helper nobody can see that waits for input adds nothing to the stale credit (Hstale) or its crowd", () => {
+  // wA saw three agents (one waiting) and stopped 2 min ago; wB is open and sees none of them.
+  const mk = (st3) => {
+    const s = seeded(9);
+    const A = writer(s, "wA");
+    const B = writer(s, "wB");
+    A.act(observeAction(T0, [agent(1, "working", 0), agent(2, "idle", 0), agent(3, st3, 0)]));
+    B.act(observeAction(T0 + 1000, []));
+    engine.advance(s, T0 + 120000, "wB");
+    return s;
+  };
+  const s = mk("blocked");
+  const r = engine.rates(s, "wB");
+  const base = 0.3 * r.G; // no workshops, folk 1
+  close(r.Hstale, 0.25 * engine.crowd(2) * base * 2, 1e-12);
+  const all = engine.rates(mk("working"), "wB");
+  close(all.Hstale, 0.25 * engine.crowd(3) * base * 3, 1e-12);
+  // and over live time the waiting agent's record gains nothing
+  const id3 = engine.helperId("t3", 1003);
+  const g = s.helpers[id3].stats.folds;
+  engine.advance(s, T0 + 150000, "wB");
+  engine.advance(s, T0 + 180000, "wB");
+  assert.equal(s.helpers[id3].stats.folds, g);
+  assert.ok(s.helpers[engine.helperId("t2", 1002)].stats.folds > 0, "an idle agent nobody sees still earns the away rate");
 });
 
 test("r4-06: with one window, a helper seen at the close earns the whole cap; one last seen 6 h before it earns 2 h", () => {

@@ -78,7 +78,44 @@ const PLAIN_CLAIMS = Object.freeze(["cycle", "resolve"]);
 /** The banner shows this many graphemes of a save notice (engine view.js CLIP.notice). */
 export const NOTICE_MAX = 140;
 
-const CAS_TEXTS = ["The file changed outside Herdr", "The file changed while saving", "File exists", "os error 17"];
+/**
+ * herdr's compare-and-swap rejections: its own two texts, and the OS text of
+ * a create_new write (expected null) that found the file there. That is
+ * "File exists (os error 17)" on Unix and "The file exists. (os error 80)" on
+ * Windows (r6-18), so the match ignores case and also takes the error code
+ * alone (a translated Windows text still ends in it).
+ */
+const CAS_RE = /the file changed outside herdr|the file changed while saving|file exists|\(os error (?:17|80)\)/i;
+
+/** herdr's text-file limit in UTF-8 bytes (src/mod_files.rs MAX_TEXT_BYTES): a write over it is refused. */
+export const FILE_LIMIT = 1024 * 1024;
+
+/**
+ * The UTF-8 size of `text` in bytes when it is over FILE_LIMIT, else 0
+ * (r6-16). The engine holds the save under K.saveBudget by archiving Album
+ * records (helpers.js albumKeepFor), but a roster that alone passes it (about
+ * 1,300 helpers present at once, DESIGN R13) cannot shrink: the write is not
+ * sent, and fail() says why in words, retrying as the roster changes. Most
+ * saves are decided by their length alone (one to three bytes a UTF-16 unit);
+ * the rest count their non-ASCII units with two regex replaces (no script
+ * loop over the text: about 900 KiB of save in one task step).
+ */
+export function oversize(text) {
+  const n = text.length;
+  if (n * 3 <= FILE_LIMIT) return 0;
+  let bytes = n;
+  if (n <= FILE_LIMIT) {
+    // +1 for each non-ASCII unit, +1 more for each from U+0800 outside the surrogates (3 bytes; a pair is 4 bytes for 2 units)
+    const wide = text.replace(/[\x00-\x7f]+/g, "");
+    bytes += wide.length + wide.replace(/[\u0080-\u07ff\ud800-\udfff]+/g, "").length;
+  }
+  return bytes > FILE_LIMIT ? bytes : 0;
+}
+
+/** The fail() message of a save too big for herdr (≤ 60 graphemes: view.js CLIP.error). */
+export function oversizeText(bytes) {
+  return `save is ${Math.ceil(bytes / 1024)} KiB, over herdr's 1 MiB cap: too many helpers`;
+}
 
 /** The paths for app home `home`, or for a shared save file `shared` (backups live next to it). */
 export function pathsFor(home, shared = null) {
@@ -364,8 +401,7 @@ export function hostMessage(e) {
 
 /** A compare-and-swap rejection (another writer changed the file). */
 export function isCas(e) {
-  const m = hostMessage(e);
-  return CAS_TEXTS.some((s) => m.includes(s));
+  return CAS_RE.test(hostMessage(e));
 }
 
 async function readOrError(path) {
@@ -581,6 +617,10 @@ export async function load(slot, opts) {
   slot.bakText = bak.text;
   slot.bakAt = null;
   slot.bakState = null;
+  // A backup that is there but can't be read (a folder, over 1 MiB, invalid
+  // UTF-8, no permission: r6-04) still holds progress: never taken for "no
+  // backup". Its host message is shown in Details (saveInfo).
+  S.bakUnreadable = bak.error;
   slot.readOnly = false;
   S.unreadable = null;
   S.recoveryText = null;
@@ -626,14 +666,15 @@ export async function load(slot, opts) {
     if (!state) {
       // Nothing to load from: a fresh game, said beside the unreadable notice (§12.2).
       state = fresh();
-      unreadableFresh = { kind: "fresh", text: unreadableFreshText(r !== null, keptRec, b !== null, keptBak), at: t0 };
+      unreadableFresh = { kind: "fresh", text: unreadableFreshText(r !== null, keptRec, b !== null, keptBak, bak.error), at: t0 };
+      if (bak.error !== null) unreadableFresh.message = bak.error;
     }
     S.unreadable = main.error;
     S.recoveryText = rec.error === null ? rec.text : null;
     notice = unreadableNotice(P, main.error, t0);
     slot.baseText = null;
     S.baseOk = false;
-  } else if (main.text === null && bak.text === null) {
+  } else if (main.text === null && bak.text === null && bak.error === null) {
     state = fresh(); // first run: the first tick creates the save
     slot.baseText = null;
     S.baseOk = false;
@@ -651,7 +692,7 @@ export async function load(slot, opts) {
       slot.readOnly = true;
       notice = { kind: "newer", at: t0 };
     } else {
-      // save.json damaged (or missing beside a backup)
+      // save.json damaged (or missing beside a backup, readable or not)
       let kept = null;
       if (main.text !== null) {
         kept = await keepAsideListed(slot, P, main.text);
@@ -679,7 +720,8 @@ export async function load(slot, opts) {
         await pause(opts);
         if (stale()) return false;
         state = fresh();
-        notice = { kind: "fresh", text: freshText(main.text !== null, kept, bak.text !== null, keptBak), at: t0 };
+        notice = { kind: "fresh", text: freshText(main.text !== null, kept, bak.text !== null, keptBak, bak.error), at: t0 };
+        if (bak.error !== null) notice.message = bak.error;
       }
     }
   }
@@ -764,8 +806,17 @@ function goneText(path) {
   return `Shared save not found: ${tailClip(path, 40)}. Using this window's own; share again in Settings when it's back.`;
 }
 
-/** The fresh-start notice text: what was missing or damaged, and what was really kept. */
-export function freshText(hadMain, kept, hadBak, keptBak) {
+/**
+ * The fresh-start notice text: what was missing or damaged, and what was
+ * really kept. `bakError` (the host message) is a backup that is there but
+ * can't be read (r6-04): it is left in place, never called missing, and its
+ * message is in Details (kept short so a missing shared save still joins it).
+ */
+export function freshText(hadMain, kept, hadBak, keptBak, bakError = null) {
+  if (bakError !== null && bakError !== undefined) {
+    const lead = hadMain ? "Save was damaged" : "Save was missing";
+    return `${lead}; backup can't be read (left in place; Details). Started fresh${hadMain ? `; ${keptTail([kept])}` : "."}`;
+  }
   const what = hadMain && hadBak ? "Save and backup were damaged." : hadMain ? "Save was damaged and there was no backup." : "Save was missing and the backup was damaged.";
   return `${what} Started fresh; ${keptTail([hadMain ? kept : undefined, hadBak ? keptBak : undefined])}`;
 }
@@ -775,7 +826,13 @@ export function freshText(hadMain, kept, hadBak, keptBak) {
  * recovery file and the backup were damaged (or that there was neither), and
  * what was really kept.
  */
-export function unreadableFreshText(hadRec, keptRec, hadBak, keptBak) {
+export function unreadableFreshText(hadRec, keptRec, hadBak, keptBak, bakError = null) {
+  if (bakError !== null && bakError !== undefined) {
+    // (r6-04) both files left in place: neither is said to be missing
+    // (the recovery-file case is worded tighter so a missing shared save still joins it)
+    if (hadRec) return `Save and backup unreadable (left in place), recovery file damaged. Started fresh; ${keptTail([keptRec])}`;
+    return "Save and backup can't be read (left in place; Details). Started fresh.";
+  }
   const what = hadRec && hadBak ? "the backup and recovery file were damaged" : hadBak ? "the backup was damaged" : hadRec ? "the recovery file was damaged and there was no backup" : "there was no backup";
   const files = [hadRec ? keptRec : undefined, hadBak ? keptBak : undefined];
   const tail = hadRec || hadBak ? `; ${keptTail(files)}` : ".";
@@ -899,6 +956,7 @@ async function leaveMissingShared(slot, env, stale) {
   // From here to the end nothing awaits: the paths, base and backup switch together.
   slot.paths = next;
   slot.bakText = own.error === null ? own.text : null;
+  S.bakUnreadable = own.error;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -1341,6 +1399,11 @@ async function recoveryWrite(slot, env, stale) {
     const epoch = slot.logEpoch || 0;
     const own = ownApplied(slot.state, slot.writerId);
     const text = serialize(slot.state);
+    const big = oversize(text);
+    if (big) {
+      fail(slot, `${oversizeText(big)} (writing ${baseName(rec)})`, env.now()); // never sent (r6-16)
+      return false;
+    }
     try {
       await writeTextFile(rec, text, S.recoveryText);
     } catch (e) {
@@ -1386,6 +1449,7 @@ async function rotateBackup(slot, env, stale, t) {
     slot.bakText = slot.baseText;
     slot.bakAt = t;
     slot.bakState = "ok";
+    S.bakUnreadable = null;
     S.bakError = null;
     S.bakErrors = 0;
     S.bakRetryAt = 0;
@@ -1399,6 +1463,7 @@ async function rotateBackup(slot, env, stale, t) {
       if (r.error === null) {
         slot.bakText = r.text;
         slot.bakState = null;
+        S.bakUnreadable = null;
       }
       slot.bakAt = t;
       return true;
@@ -1500,6 +1565,12 @@ export async function cycle(slot, env) {
       const upto = slot.seq;
       const epoch = slot.logEpoch || 0;
       const own = ownApplied(slot.state, slot.writerId);
+      const big = oversize(text);
+      if (big) {
+        // Over herdr's file limit (r6-16): never sent; said in words, retried with back-off.
+        fail(slot, oversizeText(big), env.now());
+        return false;
+      }
       slot.inflight = { text, upto, own };
       try {
         // (slot.paths, not a copy: a shared save found missing switches them: r4-04)
@@ -1628,6 +1699,7 @@ async function settleShare(slot, env, stale) {
   // (r2-08: a claim lost in between left new paths with the old file's base).
   slot.paths = next;
   slot.bakText = bak.error === null ? bak.text : null;
+  S.bakUnreadable = bak.error;
   slot.bakAt = null;
   slot.bakState = null;
   S.unreadable = null;
@@ -1883,6 +1955,7 @@ export async function sharePath(slot, env, path) {
     const bak = await readOrError(slot.paths.bak);
     if (stale()) return "stale";
     slot.bakText = bak.error === null ? bak.text : null;
+    S.bakUnreadable = bak.error;
     slot.bakAt = null;
     slot.bakState = null;
     S.unreadable = null;
@@ -1942,6 +2015,7 @@ export function saveInfo(slot, t) {
   } else text = "Not saved yet";
   let backup = false;
   if (S.bakError) backup = `not updated (${S.bakError})`;
+  else if (S.bakUnreadable) backup = `can't be read, left in place (${S.bakUnreadable}): ${slot.paths.bak}`;
   else if (slot.bakText !== null) backup = slot.bakState === "damaged" ? "damaged" : slot.bakAt !== null ? `rotated ${localTime(slot.bakAt)}` : "present";
   return {
     state: problem ? "problem" : S.status === "saving" ? "saving" : "saved",

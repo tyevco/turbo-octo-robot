@@ -3,12 +3,14 @@
 
 import { K, WORKSHOPS, UPGRADES, AUTOMATIONS } from "./content.js";
 import { credit, crowd, itemInfo } from "./economy.js";
-import { unseenLeftMs } from "./helpers.js";
+import { unseenLeftMs, awayPays } from "./helpers.js";
 import { pushNotice } from "./envelopes.js";
 
 /**
  * Credit an away segment (clock, now] in closed form:
- * away = f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk) · a, a = min(gap, cap left);
+ * away = f · (Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk) · a, a = min(gap, cap left),
+ * where "present" is the pane helpers not waiting on the player (a "Needs you"
+ * agent stops helping until it is answered, review r6-05) and N counts them;
  * a helper whose unseen allowance runs out first earns for less (awayHelpers).
  * Boost timers, afterglow, spawns and the rhythm are frozen; rest charges by a.
  */
@@ -77,7 +79,11 @@ export function awaySegment(state, ctx, t0, t1, ev) {
 
 /**
  * Credit present pane helpers for an away segment from `t0` with `a` ms of
- * the shared cap, whatever their status (§10.2). Each helper earns for
+ * the shared cap (§10.2): every status but "blocked". A helper waiting for
+ * input waits for the absent player, so it stops helping as it does live and
+ * adds neither its share nor a seat to the crowd (review r6-05); working,
+ * idle and finished helpers may pick up work we cannot see, so they earn the
+ * flat away estimate whatever they last showed. Each helper earns for
  * d = min(a, what is left of its unseen allowance, unseenLeftMs): the whole
  * cap when its window just closed, less (or nothing) when another window
  * already credited it at the stale rate, so a helper never earns away-rate
@@ -93,6 +99,7 @@ function awayHelpers(state, ctx, t0, a) {
   const base = (K.helperFlat * E.G + K.helperRw * E.Rw) * E.folk;
   const ds = [];
   for (const h of ctx.idx.panes) {
+    if (!awayPays(h)) continue;
     const d = Math.min(a, unseenLeftMs(state, h, t0, ctx.writer));
     if (d > 0) ds.push([d, h]);
   }

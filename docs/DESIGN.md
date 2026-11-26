@@ -352,8 +352,8 @@ file must stay valid JSON (an invalid file docks at the right, share Do 3).
 ## 3. Views
 
 Notation: sizes are logical px before zoom; numeric lengths are multiplied by zoom by gpui, loop
-px by us (gpui §9). `T.x` is herdr `theme()` key `x`; `S.x` is a scene token (§13.2) picked by
-`settings().dark`; `Hue[i]` is a helper identity colour (§13.2). Type: `text_size(n)`, weights
+px by us (gpui §9). `T.x` is herdr `theme()` key `x`; `S.x` is a scene token (§13.2) picked for
+the theme showing (`artDark`, §13.2; not `settings().dark`); `Hue[i]` is a helper identity colour (§13.2). Type: `text_size(n)`, weights
 400/600. **Minimum text size is 11 px everywhere.** Every clickable has a stable `.id()`; every
 clickable that sits over another calls `cx.stop_propagation()`.
 
@@ -417,8 +417,12 @@ Layering is sibling order (later paints on top; no z-index, gpui §11):
    (one path and one `Background` per element, gpui §8): minor lines every 16 px at 1 px in
    `S.grid`, then major lines every 64 px at 1 px in `S.gridMajor`, both in `%` coordinates,
    `absolute().inset_0()`. Bottom edge: a third paint_path rectangle, 4 px, `S.matEdge`.
-2. **Confetti stripes** (only during Confetti; internal id `storm`): paint_path rect with
-   `Background.pattern_slash(S.onMat, 2·zoom, 12·zoom)`, `.loop("opacity", {from: 0.06, to: 0.16, period: 1200})`.
+2. **Confetti flecks** (only during Confetti; internal id `storm`): sparse 6×2.5 px paper flecks,
+   one per 34×30 cell of a staggered grid, jittered and turned by a fixed hash of the cell (the
+   same flecks every frame), in four hues: `S.sheet`, `S.node`, and the light identity hues coral
+   and sky (the mat is dark green in both appearances). Four paint_path fills (one `Background`
+   each) inside `div#cw-storm` with `.loop("opacity", {from: 0.55, to: 0.9, period: 1200})`; the
+   flecks are `ui/mat.js` confettiFlecks (review r6-09: no storm stripes under the Confetti name).
    It is drawn before the play pieces so it paints under them.
 3. **Crease line** of a finished chain: paint_path stroke 2 px `S.sheet`, `dash_array([6,4])`
    through the node centres in `%`; fades with `.transition("opacity", 600)` to 0 over the next
@@ -436,8 +440,12 @@ Layering is sibling order (later paints on top; no z-index, gpui §11):
    hit `div#cw-ream`, fixed at the mat's top-left play slot.
 8. **Gilded crane**: three layers `crane-gilded-{outline,body,shade}.svg` tinted `S.goldInk`,
    `S.gold`, `S.goldShade`, in a 48×36 hit `div#cw-crane`. Motion §13.5.
-9. **Paper Boat** (curio): `boat-{hull,sail}.svg` tinted `S.sheet`/`S.sheetShade` in a 48×32 hit
-   `div#cw-boat`, gliding along the bottom band.
+9. **Paper Boat** (curio): `boat-{hull,sail}.svg` tinted `S.sheet`/`S.sheetShade` in a 48×30 hit
+   `div#cw-boat`, gliding in **its own lane**: the bottom strip of the play field, just above the
+   bottom band (y 170–200), never under the tray's envelopes or the streak meter. Where the Sheet
+   reaches into that lane (the short mat) it dips just below the Sheet while it crosses the
+   Sheet's columns. It is drawn **after** the bottom band (so where it dips it stays on top and
+   catchable); the list order here is the design order, not the paint order (review r6-06).
 10. **Needs-you chips** (top band): height 22, `rounded(11)`, `px(8)`, background `T.popover`,
     1 px border `S.sheet` (separates the chip from the mat in dark themes, where popover vs mat is
     1.21:1), `status/needs.svg` 12 px in the guarded status colour, name 11/600 `T.foreground`.
@@ -445,7 +453,9 @@ Layering is sibling order (later paints on top; no z-index, gpui §11):
 11. **Tray** (bottom band): envelopes 28×20 hit `div#cw-env-<helperId>`, layers
     `scene/envelope-{body,flap}.svg` tinted `S.sheet` and `S.sheetShade`, a 12 px **seal** at the
     top right showing the type (§6.1) tinted `S.ink` on the paper, and the stack count `×n` in
-    11/600 `S.ink` when n ≥ 2. Oldest first, at most 6 drawn, then `+n` (11/600 `S.onMat`).
+    11/600 `S.ink` when n ≥ 2: the vm's `label`, one decimal below 10 and never floored ("×2",
+    "×2.8", "×12"; units are 64ths of a share, review r5-15). A count longer than two graphemes
+    takes the envelope's lower half under a 10 px seal; a short one sits left of the 12 px seal. Oldest first, at most 6 drawn, then `+n` (11/600 `S.onMat`).
 12. **Streak meter**: track 96×6 `S.grid`, fill `S.node`, `.transition("width", 150)`; label
     `×1.4` 11/600 `S.onMat`. While **In step** a 12 px note glyph `ui/step.svg` and the word
     "In step" (11/600 `S.onMat`) sit right of it.
@@ -608,6 +618,15 @@ Segment control 40 px tall, six equal cells (~50 px at 320): 14 px icon over an 
   falls in a gap and never cuts a crane (review r3-20), `.transition("height", 600)`. The strand
   is 12 px wide on the 304 px card (`strandSize`: narrower cards scale it down, never under 6 px,
   with the height and crane pitch in step). That is 40 elements, never 1,000 (fun.md).
+* **Gate mark** (review r5-12): while the wish opens before the String is full (the later-wish gate of §9
+  sits inside it: W 10–39 opens at 500 of 1,000 cranes), a 2 px `S.node` bar, `rounded(1)`, as
+  tall as the strands plus 4 px, stands in the 3 px gap before the strand the gate falls on
+  (`string.gateStrand`, 1–19; `div#cw-string-gate`, an 8 px hover box with the tooltip "The wish
+  opens at 500 cranes"). The line under the String then names both gains ("At 500: +5 Wishes ·
+  at 1,000: +10", "Ready: …" once open). A gate at the String's end draws no mark.
+* **Away pot note** (review r5-13): with an uncollected away pot, the confirm card says "First
+  collects your +28.0K folds from while you were away." (`string.potNote`), because the wish
+  credits the pot first.
 * **Confirming**: the first click turns the button into a card (`T.popover`, 1 px `T.accent`)
   listing exact gains and resets with **[Keep folding]** and **[Make the wish]**; **[Make the
   wish] is disabled for 1.5 s** after the card appears, so a double click cannot reset by accident.
@@ -799,7 +818,9 @@ trusts `t`, not counts per tick. A 100-clicks-per-second script earns at most 12
 * **Afterglow**: each credited hand hit made while In step banks **6 s** of afterglow, up to
   **20 min**. While afterglow remains and the player is not In step, working helpers produce
   ×1.25 (×1.5 with Shared Rhythm). Afterglow drains 1 s per second of live (ticked) time and is
-  frozen while away. A 2½-minute session at 1.25 hits/s banks about 16 min, so short check-ins
+  frozen while away. While any is banked and the player is not In step, the footer shows a static
+  chip "Afterglow ×1.25 · 12m" (`streak.afterglowText`; the same in calm mode) and the streak
+  meter's tooltip ends with it (review r5-14); In step replaces the chip. A 2½-minute session at 1.25 hits/s banks about 16 min, so short check-ins
   keep paying while the player codes (fit.md's tension, without punishing absence).
 * The streak resets lazily: the next hit (or tick) after a gap > g sets `r` to 1 or 0. No timer.
 
@@ -825,7 +846,7 @@ trusts `t`, not counts per tick. A 100-clicks-per-second script earns at most 12
 | **Scrap** | every 45 active s | 12 s (24 calm) | `max(30·Rp, 50·V) · scrapMult` (scrapMult 2 with Scrap Basket) |
 | **Fresh Ream** (daily welcome) | first active moment of each local day, from the second day ever | until clicked or the day ends | `max(300·Rp, 100·V)` |
 | **Gilded crane** (golden) | first at 390 active s; then every `lo · (1 + 0.5·u)` active s with `lo` 340 (340–510 s; Crane Bait 240: 240–360; Crane Song 170: 170–255; `lo` ×0.8 with the 50-Wish perk), `u` from the PRNG | 11 s (18 Slow Wings; ×2 calm) | outcome table below |
-| **Paper Boat** (limited time, Harbour Ribbon curio) | every `1800 + 900·u` active s | 20 s (40 calm), sails along the bottom band | **Tailwind**: the next 3 envelopes opened within 10 min pay ×2, plus `120·Rp` at once |
+| **Paper Boat** (limited time, Harbour Ribbon curio) | every `1800 + 900·u` active s | 20 s (40 calm), sails in its lane just above the bottom band | **Tailwind**: the next 3 envelopes opened within 10 min pay ×2, plus `120·Rp` at once |
 | **Envelope** | helper finishes (§6) | until opened; cashed in once its helper's Album record is compacted (§6.1) | §6 |
 
 Gilded crane outcomes (engine PRNG):
@@ -1177,7 +1198,7 @@ agent status; its cue is silent and visual, inside the panel, rail and ribbon on
 |---|---|---|---|
 | Bundle | 55 % | stacked sheets | `unit · u · envMult · crowd(N)` folds (envMult 1 → 1.5 Wax Seal → 2 Ribbon Tie) |
 | Rush | 25 % | double chevron | hand hits ×3 (×4 Brisk Charm) for `30 · f · durMult` s |
-| Confetti | 10 % | zigzag | hand hits ×6 (×9 Gale Charm), chains every 4 s, for `12 · f · durMult` s |
+| Confetti | 10 % | confetti flecks | hand hits ×6 (×9 Gale Charm), chains every 4 s, for `12 · f · durMult` s |
 | Chorus | 10 % | three dots | working helpers ×2 for `120 · f · durMult` s |
 
 `durMult` 1 → 1.5 (Long Ribbon) → 2 (Longer Ribbon).
@@ -1405,16 +1426,21 @@ bonus      : G = 1 + 0.05 · W on all folds; perks by Wishes held (§3.5)
 away = f · ( Rw + crowd(N) · Σ_present (0.3·G + 0.04·Rw) · folk ) · a      f = 0.25 → 0.35 Night Shift → 0.45 Night Owl
 ```
 
-* "Present" = pane helpers present at the last observation, whatever their status (agents keep
-  working while the person is away; we do not know their schedule), at base rate: no warm, kids,
-  thanks, In step, afterglow or boosts.
+* "Present" = pane helpers present at the last observation that are **not waiting on you**:
+  working, resting and finished helpers count whatever their status (agents keep working while the
+  person is away; we do not know their schedule), but a helper waiting for input (`blocked`,
+  "Needs you") is waiting for the absent person, so it stops helping, as it does live: it adds
+  neither its share nor a seat to `N` (review r6-05). It still shows under "helpers needing you"
+  on the away card. Paid at base rate: no warm, kids, thanks, In step, afterglow or boosts.
 * Resting and finished helpers gain `a / restFull` rest; helpers come back fully rested if
   `a ≥ restFull`.
 * Not accrued: clicks, spawns, cranes, boats, envelopes (no finishes are observed while away),
   afterglow drain, and boost time: **boost timers and afterglow are frozen** and resume on return.
 * **Helpers nobody can see.** With two windows (§12.5), a helper last observed by another window
   more than 60 s ago counts as away for production: it earns the same away rate for at most 8 h
-  after its `lastSeen`, then nothing, until a window sees it again. One rule covers "game closed"
+  after its `lastSeen`, then nothing, until a window sees it again. As in an away segment, one
+  last seen waiting for input earns nothing and the away crowd counts only the pane helpers not
+  waiting (`Hstale = f · crowd(N) · base · unseen`, `helpers.js` flock / awayPays). One rule covers "game closed"
   and "the window that sees this agent closed": each helper has **one 8-h unseen allowance per
   absence** (review r4-06). The time since it went unseen (60 s after the later of its `lastSeen`
   and its window's last sign of life) is spent whether another window paid it live at the away
@@ -1446,8 +1472,9 @@ Calm mode changes **presentation only; no formula, value or chance changes** (as
 calm profile reaches every milestone within 3 % of the typical profile, BALANCE.md P12).
 
 1. **No `.loop()` and no `.spin()` anywhere**, in every copy: no needs-you pulse, no spinners, no
-   envelope bob, no crane bob, no storm stripes, no first-run bob.
-2. The gilded crane and the boat do not glide: they sit at their spawn slot with their outline.
+   envelope bob, no crane bob, no confetti flecks, no first-run bob.
+2. The gilded crane and the boat do not glide: the crane sits at its spawn slot, the boat at the
+   far end of its lane above the bottom band (clear of the streak label, r6-06).
 3. No floating numbers ("Floating numbers" is forced off and disabled).
 4. No transition longer than 150 ms (bars snap; the wish moment is one 300 ms fade, which is the
    single exception and is a fade, not motion).
@@ -1689,7 +1716,14 @@ shared goes there.
 
 ### 13.2 Palette (exact hex; WCAG 2.x ratios measured against `tools/mock/themes.json`)
 
-**Scene tokens `S`** (ours; picked by `settings().dark`):
+**Scene tokens `S`** (ours; light or dark half picked for the theme **showing**, review r5-01):
+`palette.artDark(theme(), settings().dark)` judges the theme's first opaque surface of `raised`,
+`chrome`, `surface` and takes the hue set with the higher minimum contrast there, so paper and
+win98 draw the light half and graphite, ink, moss and atom-one-dark the dark half whatever the
+window appearance; `settings().dark` (the appearance) decides only when the theme gives no opaque
+colour. A single-name theme shows the same theme in both appearances, so the appearance alone
+would draw dark art on paper. The glue passes the result as `ctx.dark` and the appearance as
+`ctx.appearanceDark` (ARCHITECTURE B11). The identity hues `Hue` follow the same choice.
 
 | Token | Light | Dark | Use and measured contrast |
 |---|---|---|---|
@@ -1747,7 +1781,7 @@ because a bad one there fails silently (gpui §5).
 | `sheet/{0..7}-base.svg`, `sheet/{0..7}-shade.svg` | 16 | 64 → 112, 96, 44, 26 | fold sequence: square, triangle, kite, square base, bird base, narrow, wings, crane |
 | `status/{working-arc,needs,done-check,rest,envelope,pip-work,pip-rest,pip-needs}.svg` | 8 | 16 → 11, 12 | arc = 270° ring 2.5 units; needs = pennant with "!" cut-out; done = check in a circle; rest = crescent; pips = filled diamond, hollow diamond, triangle |
 | `scene/{envelope-body,envelope-flap}.svg` | 2 | 28×20 | tray envelope |
-| `scene/{seal-bundle,seal-rush,seal-storm,seal-chorus}.svg` | 4 | 12 | stacked sheets, double chevron, zigzag, three dots |
+| `scene/{seal-bundle,seal-rush,seal-storm,seal-chorus}.svg` | 4 | 12 | stacked sheets, double chevron, confetti (four flecks and two dots), three dots |
 | `scene/scrap.svg`, `scene/ream.svg` | 2 | 16; 28×20 | torn quadrilateral; ream of paper with a band |
 | `scene/crane-gilded-{outline,body,shade}.svg` | 3 | 40×28 | outline = body grown 1.5 units |
 | `scene/boat-{hull,sail}.svg` | 2 | 40×28 | Paper Boat |
@@ -1779,8 +1813,8 @@ bars, storm stripes, garland stripes, all `PathBuilder` in `%` coordinates.
 | In step spin | `.spin(600)` on visible working badges | while In step (active play only); ≤ 6 per copy; replaces new-work spins | static |
 | Gilded crane glide | rendered at x0; the next data tick sets x1 with `.transition("left", {duration: remainingMs, easing: "linear"})` — one-way, no shared-clock loop | crane life | sits still |
 | Gilded crane bob | inner `.loop("top", {from: 0, to: −4·z, period: 1300})` | crane life (≤ 26 s) | none |
-| Paper Boat | one-way `.transition("left", …)` along the bottom band | boat life | sits at the tray end |
-| Confetti stripes | paint_path + `.loop("opacity", {0.06 → 0.16, 1200})` | Confetti duration (≤ 30 s) | none |
+| Paper Boat | one-way `.transition("left", …)` in its lane above the bottom band | boat life | sits at the lane's far end, above the streak meter (clear of its label) |
+| Confetti flecks | paint_path ×4 in `div#cw-storm` + `.loop("opacity", {0.55 → 0.9, 1200})` | Confetti duration (≤ 30 s) | none |
 | Envelope landing | newest tray envelope `.loop("top", {from: 0, to: −2·z, period: 1600})` | 10 s after it lands, mat shown | none |
 | First-run hint | `.loop("top", {0 → 4·z, 900})` | until the 3rd fold | static |
 | Sheet fold | frame swap on each click (data) + `.active(s => s.opacity(0.88))` | — | same |
@@ -1869,7 +1903,10 @@ banner,away,color,palette,art,widgets}.js`. Each import on one line (pat §8).
   `shop-{works,tools,folk,charms,curios,auto}`, `string-locked`, `string-ready`, `string-confirm`,
   `garlands`, `settings`, `away`, `busy`, `banner-{recovered,fresh,conflict,merged,error,newer,clock}`,
   `rail`, `rail-64`, `rail-banner`, `ribbon-{0,4,34,64,130}` at 1100 and 1440 widths, `narrow`,
-  `wide`, `short`, `calm` — each in **all six shipped themes** at zoom 1 and 1.5; greyscale,
+  `wide`, `short`, `calm` — each in **all six shipped themes** at zoom 1 and 1.5 (so are the
+  review-state views `tray-fraction`, `boat-tray`, `boat-calm`, `afterglow`, `string-gate` and
+  `string-pot`: a fractional stack count, the boat over a full tray gliding and calm, the
+  afterglow chip, the String's gate mark, and the wish card's away-pot note); greyscale,
   deuteranopia and protanopia captures of roster, ribbon and rail; **whole windows at 1440×900
   and 1100×700**, expanded, folded, hidden, and with the Files panel open, in paper and graphite.
   Every shot is looked at before a round is called clean.

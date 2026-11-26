@@ -402,14 +402,14 @@ function gameBlocks(layout, mod) {
  * herdr window (shared handover slot, as in herdr), sizes each copy through
  * its root's on_size_change, and renders them. Returns {blockId: {tree, ...}}.
  */
-export async function runWindowCopies(Class, target, themeName, size, layout, zoom = 1, windowAppearance = null) {
+export async function runWindowCopies(Class, target, themeName, size, layout, zoom = 1) {
   const palette = THEMES[themeName];
-  const appearance = windowAppearance ?? THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
+  // The window appearance is the theme's own (r6-17: no caller ever set another).
+  const appearance = THEME_LIST.find((t) => t.name === themeName)?.appearance ?? "dark";
   const blocks = contentNodes(layout).filter((b) => !b.hidden && b.content?.mod === target.mod && !b.float);
   const geometry = blockSizes(layout, size, zoom);
   const entry = entryForBlock(target.views, blocks.find((b) => b.content.props?.role !== "ribbon")?.id ?? null);
   const scenario = { ...(entry.scenario ?? {}), theme: themeName, layout: JSON.parse(JSON.stringify(layout)) };
-  if (windowAppearance) scenario.appearance = windowAppearance;
   scenario.mod ??= target.mod;
   scenario.zoom = zoom;
   const ctl = createController(scenario);

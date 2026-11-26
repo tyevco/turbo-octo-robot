@@ -536,6 +536,12 @@ function changesPanel(ctx) {
   return panelFrame(ctx, "Changes", `${changes.length} files`, rows.join(""));
 }
 
+// herdr's own Files and Changes panels paint t.background with t.foreground
+// text (defaults/mods/files/main.js render, defaults/mods/changes/main.js), and
+// so does this stand-in. In herdr's win98 theme both are #000000
+// (defaults/themes/win98.json colors), so the real panel's title and names are
+// black on black too: the win98 Files-open shots show herdr as it is (r6-11),
+// not a fault of the rig. test/tooling/window.test.mjs pins the tokens.
 function panelFrame(ctx, title, sub, body) {
   const { t, z } = ctx;
   return `<div class="chrome panel-mod" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:${t.background};` +

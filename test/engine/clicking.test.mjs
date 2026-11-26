@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { engine, seeded, writer, close, T0 } from "./_util.mjs";
+import { craneOutcome } from "../../mods/creaseworks/engine/clicking.js";
+import { K } from "../../mods/creaseworks/engine/content.js";
 
 test("click cap: a scripted 100 hits/s earns exactly the value of 12.5 hits/s (BALANCE inv. 5)", () => {
   const run = (stepMs) => {
@@ -196,7 +198,7 @@ test("Crane's Gift grows with the folk at work and drops their part while Helper
   close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 6000), 25 * 4 * 2 + 90 * 10, 1e-9, "the rhythm lapsed");
 });
 
-test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait 240-360, Crane Song 170-255); outcomes 40 / 35 / 25 %", () => {
+test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait 240-360, Crane Song 170-255); each crane holds its keyed outcome", () => {
   const s = seeded(21);
   const me = writer(s);
   let t = T0;
@@ -210,6 +212,7 @@ test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait
     const e = ev.find((x) => x.kind === "spawn" && x.what === "crane");
     if (!e) continue;
     outcomes[s.spawn.crane.outcome]++;
+    assert.equal(s.spawn.crane.outcome, craneOutcome(s, e.n - 1), "the spawned crane holds the keyed roll for its number");
     if (last !== null) gaps.push(s.spawn.activeMs - last);
     last = s.spawn.activeMs;
     s.spawn.crane = null; // gone, so the next one is never blocked
@@ -219,13 +222,43 @@ test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait
   assert.ok(Math.max(...gaps) - Math.min(...gaps) > 100000, "the gaps spread over the range");
   const n = outcomes.gift + outcomes.storm + outcomes.song;
   assert.ok(outcomes.gift > 0 && outcomes.storm > 0 && outcomes.song > 0, JSON.stringify(outcomes));
-  assert.ok(outcomes.gift / n > 0.2 && outcomes.song / n < 0.45, JSON.stringify(outcomes));
+  // 60 cranes pin only the wiring loosely; the shares are pinned tightly in
+  // the craneOutcome test below (review r6-14).
+  for (const [k, p] of [["gift", 0.4], ["storm", 0.35], ["song", 0.25]]) {
+    assert.ok(Math.abs(outcomes[k] / n - p) < 0.15, `${k} share ${JSON.stringify(outcomes)}`);
+  }
   const E = engine.effects(s);
   assert.equal(E.craneLo, 340);
   s.bought["crane-bait"] = true;
   assert.equal(engine.effects(s).craneLo, 240);
   s.bought["crane-song"] = true;
   assert.equal(engine.effects(s).craneLo, 170);
+});
+
+// Review r6-14: the outcome shares themselves (DESIGN §4.5: Crane's Gift
+// 40 %, Confetti 35 %, Flock Song 25 %). 4,000 keyed rolls per seed put the
+// sampling error near 0.8 points, so a 2.5-point band catches swapped odds
+// (5 points off) or any share drifting.
+test("gilded crane outcomes: Crane's Gift 40 %, Confetti ('storm') 35 %, Flock Song 25 % of keyed rolls", () => {
+  assert.equal(K.craneGiftOdds, 0.4);
+  assert.equal(K.craneConfettiOdds, 0.35);
+  const want = { gift: 0.4, storm: 0.35, song: 0.25 };
+  for (const seed of [1, 7, 21, 99]) {
+    const s = seeded(seed);
+    const o = { gift: 0, storm: 0, song: 0 };
+    const N = 4000;
+    for (let i = 0; i < N; i++) o[craneOutcome(s, i)]++;
+    assert.equal(o.gift + o.storm + o.song, N, "every roll is one of the three outcomes");
+    for (const k of Object.keys(want)) {
+      assert.ok(Math.abs(o[k] / N - want[k]) < 0.025, `seed ${seed}: ${k} ${o[k]}/${N} ${JSON.stringify(o)}`);
+    }
+    assert.equal(craneOutcome(s, 5), craneOutcome(seeded(seed), 5), "the roll is keyed: same seed and number, same outcome");
+  }
+  // Seed 21 pinned exactly, so any change to the roll shows here.
+  const s = seeded(21);
+  const o = { gift: 0, storm: 0, song: 0 };
+  for (let i = 0; i < 4000; i++) o[craneOutcome(s, i)]++;
+  assert.deepEqual(o, { gift: 1569, storm: 1483, song: 948 });
 });
 
 test("Fresh Ream: from the second day, once a day, gone when the day ends", () => {

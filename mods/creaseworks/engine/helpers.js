@@ -154,7 +154,20 @@ export function unseenLeftMs(state, h, t0, writer) {
 }
 
 /**
+ * Whether pane helper `h` earns the away estimate (§10.2), in an away segment
+ * and as a helper nobody can see: any status but "blocked". A helper waiting
+ * for input is waiting for the absent player, so it stops helping, as it does
+ * live (review r6-05).
+ */
+export function awayPays(h) {
+  return h.status !== "blocked";
+}
+
+/**
  * The flock's production terms at time `t` (§5.3, §10.2 "helpers nobody can see").
+ * Stale helpers (fr 2) earn the away rate unless they wait on the player
+ * (awayPays); the away crowd counts the pane helpers the away rate pays (Na),
+ * as in an away segment, so a waiting agent adds neither a share nor a seat.
  * Returns { n, crowd, Hs0, Hstale, working: [[h, b_i]...], kids: [[parent, b]...]
  * (working fledglings of a parent that is not working), stale: [h...], N, base }.
  */
@@ -170,9 +183,12 @@ export function flock(state, E, idx, t, writer) {
   const stale = [];
   const bs = [];
   let sum = 0;
+  let Na = 0;
   for (const h of idx.panes) {
+    const pays = awayPays(h);
+    if (pays) Na++;
     const fr = freshness(state, h, t, writer);
-    if (fr === 2) { stale.push(h); continue; }
+    if (fr === 2) { if (pays) stale.push(h); continue; }
     if (fr !== 1 || h.status !== "working") continue;
     const warm = t < h.warmUntil ? h.warm : 1;
     const kids = 1 + E.kidBonus * Math.min(K.kidMax, kidsW[h.id] || 0);
@@ -208,7 +224,7 @@ export function flock(state, E, idx, t, writer) {
   const c = sum > 0 ? Hs0 / sum : crowd(n);
   return {
     n, crowd: c, Hs0,
-    Hstale: E.awayF * crowd(N) * base * stale.length,
+    Hstale: E.awayF * crowd(Na) * base * stale.length,
     working, kids: orphans || [], stale, N, base,
   };
 }

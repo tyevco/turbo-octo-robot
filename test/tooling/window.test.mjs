@@ -12,6 +12,8 @@ import {
 import { shoot, launchBrowser, parseArgs, validateViews, demoLayout, blockSizes, WINDOW_STATES } from "../../tools/shots/shoot.mjs";
 import { pngSize, listShots } from "../../tools/shots/contact-sheet.mjs";
 
+const HERDR_WIN98 = "/tmp/claude-0/-home-user-turbo-octo-robot/765765b0-bd4e-5d4c-890a-1f1834a9bff2/scratchpad/herdr-src/defaults/themes/win98.json";
+
 // herdr's shipped layout, when the research checkout is present.
 const SHIPPED_MAIN =
   "/tmp/claude-0/-home-user-turbo-octo-robot/765765b0-bd4e-5d4c-890a-1f1834a9bff2/scratchpad/herdr-src/defaults/layouts/main.json";
@@ -74,6 +76,25 @@ test("the files/changes panel shows when not hidden, with its stack's active chi
   html = renderWindow({ layout, gameMod: null });
   assert.ok(nodeIds(html).includes("changes") && !nodeIds(html).includes("files"));
   assert.ok(html.includes(">Changes<") && html.includes("5 files"));
+});
+
+test("r6-11: the Files panel stand-in paints herdr's own tokens (t.background, t.foreground title), win98 included", () => {
+  const layout = clone(MAIN_LAYOUT);
+  layout.children[1].children[1].children[1].hidden = false;
+  for (const theme of ["graphite", "paper", "win98"]) {
+    const t = THEMES[theme];
+    const html = renderWindow({ layout, gameMod: null, theme });
+    const frame = html.match(/class="chrome panel-mod" style="([^"]*)"/);
+    assert.ok(frame && frame[1].includes(`background:${t.background}`), `${theme}: herdr's files mod is .bg(t.background)`);
+    assert.ok(html.includes(`<span style="font-weight:600;color:${t.foreground}">Files</span>`), `${theme}: title in t.foreground`);
+  }
+  // win98's background and foreground are the same colour in herdr's own theme file: the
+  // black-on-black Files panel is herdr's, and the rig keeps it so the shots stay faithful.
+  assert.equal(THEMES.win98.background, THEMES.win98.foreground);
+  if (existsSync(HERDR_WIN98)) {
+    const herdr = JSON.parse(readFileSync(HERDR_WIN98, "utf8")).colors;
+    assert.deepEqual([THEMES.win98.background, THEMES.win98.foreground], [herdr.background, herdr.foreground]);
+  }
 });
 
 test("game blocks get their fragments; floats are placed by edge, align and peek", () => {
@@ -160,7 +181,13 @@ test("layoutBoxes: herdr's geometry with separators, padding, borders, zoom and 
   const z = layoutBoxes(layout, { width: 1000, height: 700, zoom: 1.5 });
   assert.equal(z.sidebar.width, 402);
   const filesOpen = JSON.parse(JSON.stringify(layout));
-  filesOpen.children[1].children[1].children.find((n) => n.id === "panel").hidden = false;
+  const filesNode = filesOpen.children[1].children[1].children.find((n) => n.id === "panel");
+  filesNode.hidden = false;
+  // As shipped (Files min 160, r6-07) the row holds at 1000 px, zoom 1.5: nothing is clipped.
+  const fit = layoutBoxes(filesOpen, { width: 1000, height: 700, zoom: 1.5 });
+  for (const id of ["main", "cw-panel", "panel"]) assert.ok(Math.abs(fit[id].visible.width - fit[id].width) < 0.5, `${id} on screen`);
+  // With herdr's own Files min (280) it does not: the clipping rules below.
+  filesNode.min = 280;
   const zf = layoutBoxes(filesOpen, { width: 1000, height: 700, zoom: 1.5 });
   assert.equal(zf.main.width, 80 * 1.5, "main at its min x 1.5");
   // Files 420 + main 120 + rail 96 do not fit 1000 px at zoom 1.5: the row is clipped at its

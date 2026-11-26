@@ -33,6 +33,86 @@ test("pane agents: joined by address; created_ms and turn from terminals(); miss
   assert.equal(m.get("t2").status, "done", "a pane agent's done is shown as herdr reports it");
 });
 
+// r6-01: herdr's agents() comes from its pane model without a liveness check
+// (restored words at startup before the first terminals listing, a remote
+// machine's terminals not live, an exit not yet confirmed), so it can list a
+// pane agent terminals() does not. Such an agent used to be observed with
+// created 0: helper id addr#0, a phantom that joined the Flock, while the real
+// helper was sent to the Album, and the Album filled on every restart.
+test("r6-01: a pane agent with no live terminals() entry waits: no phantom helper, nothing sent to the Album", () => {
+  const agents = [agent(1, "working"), agent(2, "blocked"), agent(3, "idle")];
+  const terms = [term(1, "working", { created_ms: 101 }), term(2, "blocked", { created_ms: 102 }), term(3, "idle", { created_ms: 103 })];
+  const [a0, t0] = host(agents, []);
+  const first = buildObservation(a0, t0);
+  assert.deepEqual(first.list, [], "nothing to observe until terminals() lists them");
+  assert.deepEqual([...first.live.keys()], [], "and they are not live (opening one reports it gone)");
+  assert.equal(first.panes.get("t1"), "p1", "pane ids still read");
+  // A terminals() entry that is not live counts as none.
+  const [a1, t1] = host([agent(1)], [term(1, "working", { state: "exited", created_ms: 101 })]);
+  assert.deepEqual(buildObservation(a1, t1).list, []);
+  // Through the engine: the restart timing, then the listing.
+  const s = engine.newGame({ seed: 61, now: 1000, day: "2026-11-25" });
+  let seq = 0;
+  const observe = (t, obs) => engine.apply(s, { w: "wA", s: ++seq, t, type: "observe", helpers: obs.list, visible: true, active: true, matShown: true, day: "2026-11-25" });
+  observe(2000, first);
+  const [a2, t2] = host(agents, terms);
+  observe(3000, buildObservation(a2, t2));
+  observe(4000, buildObservation(a2, t2));
+  const records = Object.values(s.helpers);
+  assert.equal(records.length, 3, "three agents, three saved helpers");
+  assert.deepEqual(records.filter((h) => h.gone).map((h) => h.name), [], "an empty Album");
+  for (const [addr, created] of [["t1", 101], ["t2", 102], ["t3", 103]]) {
+    assert.ok(s.helpers[engine.helperId(addr, created)], `${addr} keyed on its own created_ms`);
+    assert.equal(s.helpers[engine.helperId(addr, 0)], undefined, `no ${addr}#0 phantom`);
+  }
+  // The skew again mid-run (terminals no longer live, panes remain): no phantom joins.
+  observe(5000, buildObservation(...host(agents, [])));
+  assert.equal(Object.keys(s.helpers).length, 3, "no phantom while the terminals are not listed");
+  observe(6000, buildObservation(a2, t2));
+  assert.equal(Object.keys(s.helpers).length, 3);
+  assert.equal(Object.values(s.helpers).filter((h) => h.gone).length, 0, "the real helpers rejoin under their own ids");
+});
+
+test("r6-01: a fledgling whose pane agent has no terminals() entry waits with it; a kept fledgling then stands alone", () => {
+  const [a, t] = host([agent(1), agent(2)], [
+    term(2, "working", { parent: "t1", created_ms: 2 }),
+    { address: "k1", status: "working", parent: "t1", created_ms: 9 },
+    { address: "k2", status: "working", parent: "k1", created_ms: 10 },
+  ]);
+  const obs = buildObservation(a, t);
+  const m = by(obs.list);
+  assert.equal(m.has("t1"), false);
+  assert.equal(m.has("k1"), false, "its parent is not observed: it does not point at an unknown helper");
+  assert.equal(m.has("k2"), false);
+  assert.equal(m.get("t2").kind, "pane");
+  assert.equal(m.get("t2").parent, null);
+  assert.equal(m.get("t2").created, 2);
+  assert.equal(obs.live.has("t1"), false);
+});
+
+test("r6-01: the mock at herdr's start (agents() restored before terminals() publishes): one helper, an empty Album", async () => {
+  w = win({ agents: [agent(1, "working")], terminals: [term(1, "working", { created_ms: 4242 })], terminalsPending: true });
+  const panel = await w.copy("panel");
+  await w.advance(3000);
+  assert.equal(Object.keys(w.slot.state.helpers).length, 0, "no helper before its created_ms is known");
+  assert.equal("t1" in w.slot.live, false, "not live yet");
+  w.ctl.setTerminals([term(1, "working", { created_ms: 4242 })]);
+  await w.advance(3000);
+  const id = engine.helperId("t1", 4242);
+  assert.deepEqual(Object.keys(w.slot.state.helpers), [id], "one helper, under its own id");
+  assert.equal(w.slot.state.helpers[id].gone, false);
+  // The terminals stop being live while the pane remains (a remote machine): no phantom gathers.
+  w.ctl.setTerminals([]);
+  await w.advance(3000);
+  assert.deepEqual(Object.keys(w.slot.state.helpers), [id], "no addr#0 phantom");
+  assert.equal(panel.session.vm().header.counts.working, 0, "nothing gathers without a live terminal");
+  w.ctl.setTerminals([term(1, "working", { created_ms: 4242 })]);
+  await w.advance(3000);
+  assert.deepEqual(Object.keys(w.slot.state.helpers), [id]);
+  assert.equal(w.slot.state.helpers[id].gone, false, "the real helper is back");
+  assert.equal(w.ctl.runErrors().length, 0);
+});
+
 test("error → blocked (pane agents and fledglings); paneless done → idle", () => {
   assert.equal(paneStatus("blocked", "error"), "blocked");
   assert.equal(paneStatus("working", "error"), "blocked");

@@ -10,12 +10,23 @@ import { makeMap, newSpawn } from "./state.js";
  * cranes(L) = floor(1000 · (L / Lw)^0.4) (firstCranes, stringExp): the
  * largest c with lifetimeFor(c) ≤ L, so cranes(lifetimeFor(c)) is exactly c
  * and L = Lw (6e9) gives exactly 1,000.
+ *
+ * Review r6-03: the count is held at Number.MAX_SAFE_INTEGER (reached near
+ * L 1.3e42), where c + 1 would equal c and the correction could never end,
+ * and Infinity or NaN never loop either. The estimate is off by float
+ * rounding only, so each correction is capped at CRANE_STEPS steps; every
+ * call is a fixed handful of pow calls whatever L is (render 50 ms).
  */
+const CRANE_STEPS = 64;
 export function cranes(L) {
   if (!(L > 0)) return 0;
-  let c = Math.floor(PRESTIGE.firstCranes * Math.pow(L / PRESTIGE.Lw, PRESTIGE.stringExp));
-  while (c > 0 && lifetimeFor(c) > L) c--;
-  while (lifetimeFor(c + 1) <= L) c++;
+  const max = Number.MAX_SAFE_INTEGER;
+  if (!(L < Infinity)) return max;
+  const est = Math.floor(PRESTIGE.firstCranes * Math.pow(L / PRESTIGE.Lw, PRESTIGE.stringExp));
+  if (!(est < max)) return max;
+  let c = est;
+  for (let i = 0; i < CRANE_STEPS && c > 0 && lifetimeFor(c) > L; i++) c--;
+  for (let i = 0; i < CRANE_STEPS && c < max && lifetimeFor(c + 1) <= L; i++) c++;
   return c;
 }
 

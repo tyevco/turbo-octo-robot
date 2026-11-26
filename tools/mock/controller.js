@@ -422,6 +422,14 @@ export class Controller {
     this.propsValue = sc.props === undefined ? null : bridgeIn(sc.props);
     this.agentsList = (sc.agents ?? []).map(normalizeAgent);
     this.terminalsList = (sc.terminals ?? []).map(normalizeTerminal);
+    // r6-01: herdr publishes agents() and terminals() on separate paths
+    // (mods.rs publish("agents") vs window.rs publish_terminals), and agents()
+    // comes from the pane model without a liveness check, pre-filled from the
+    // saved words at startup. `terminalsPending: true` models that start:
+    // terminals() reads [] (mods.rs Snapshot `terminals: json!([])`) until the
+    // first setTerminals publishes the live listing. (setTerminals([]) later
+    // models terminals that are no longer live while their panes remain.)
+    this.terminalsPublished = sc.terminalsPending !== true;
     this.explicit = {
       spaces: sc.spaces ?? null,
       panes: sc.panes ?? null,
@@ -1293,8 +1301,9 @@ export class Controller {
   }
 
   setTerminals(list) {
-    const before = { terminals: JSON.stringify(this.terminalsList) };
+    const before = { terminals: JSON.stringify(this.terminalsPublished ? this.terminalsList : []) };
     this.terminalsList = list.map(normalizeTerminal);
+    this.terminalsPublished = true;
     if (JSON.stringify(this.terminalsList) !== before.terminals) this._bump("terminals");
   }
 
@@ -1958,7 +1967,7 @@ const HOST = {
     return null;
   },
   terminals() {
-    return this.terminalsList;
+    return this.terminalsPublished ? this.terminalsList : [];
   },
   focused() {
     return this._focused();

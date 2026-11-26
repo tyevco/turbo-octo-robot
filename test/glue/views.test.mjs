@@ -88,6 +88,14 @@ const CHECKS = {
   storm: (r) => r.vm.mat.storm === true && r.vm.boosts.some((b) => b.type === "storm"),
   crane: (r) => !!r.vm.mat.crane,
   boat: (r) => !!r.vm.mat.boat,
+  // r6-06: the boat over a full tray, gliding and calm
+  "boat-tray": (r) => !!r.vm.mat.boat && r.vm.mat.boat.x < r.vm.mat.boat.x1 && r.vm.tray.envelopes.length >= 6 && r.vm.calm !== true,
+  "boat-calm": (r) => !!r.vm.mat.boat && r.vm.mat.boat.x === r.vm.mat.boat.x1 && r.vm.tray.envelopes.length >= 6 && r.vm.calm === true,
+  // r6-17: the states round 5 added, each in a shot
+  "tray-fraction": (r) => r.vm.tray.envelopes.some((e) => e.label === "×2.8") && r.vm.tray.envelopes.some((e) => e.label === "×2.4") && !r.vm.away,
+  afterglow: (r) => r.vm.streak.inStep === false && typeof r.vm.streak.afterglowText === "string" && /^Afterglow ×/.test(r.vm.streak.afterglowText),
+  "string-gate": (r) => r.vm.string.gateStrand === 10 && r.vm.string.can === false && r.slot.state.wishes === 10,
+  "string-pot": (r) => typeof r.vm.string.potNote === "string" && /^First collects your \+/.test(r.vm.string.potNote),
   "chain-7": (r) => r.vm.mat.nodes.length >= 5 && r.vm.mat.nodes.at(-1).i === 7,
   "in-step": (r) => r.vm.streak.inStep === true,
   // Needs you counts waiting fledglings too (r2-17): twelve agents plus those.

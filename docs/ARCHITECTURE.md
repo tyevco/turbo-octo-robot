@@ -550,13 +550,23 @@ title, paneName, space, tab, kind: "pane"|"kid" }`. `status` is already mapped
          nodes: [{ id, i, x, y, due, fading }], scraps: [{ id, x, y }],
          crane: null|{ id, x, y, x1, msLeft }, boat: null|{ id, x, x1, msLeft },
          ream: null|{ id, x, y }, storm: bool, creaseLine: null|[[x,y]…] },
-  tray: { envelopes: [{ helperId, type, units, bob }], more },
-  streak: { fill: 0..1, label: "×1.4", inStep: bool, afterglow: "12m" | null },
+  tray: { envelopes: [{ helperId, type, units, bob, label: "×2.8"|null, tooltip }], more },
+                                           // label: the stack count when units ≥ 2, one decimal below 10
+                                           //   ("×2", "×2.8", "×12"), never floored (r5-15); tooltip: what
+                                           //   opening it gives now ("Rush ×3 for 1m 30s · …")
+  streak: { fill: 0..1, label: "×1.4", inStep: bool, afterglow: "12m" | null,
+            afterglowText: "Afterglow ×1.25 · 12m" | null },  // the footer chip and streak tooltip (r5-14)
   boosts: [{ type, label, msLeft, msTotal }],
   helpers: { groups: [{ key, title, count, folded, tiles: [Tile] }], dense, legend: bool, empty: bool,
              elsewhere: [Tile], album: [{ helperId, name, species, hue, leftAgo, folds }] },
   shop: { segments: { works: [Row], tools: [Row], folk: [Row], charms: [Row], curios: [Row], auto: [Row] } },
-  string: { cranes, of, nextIn, lifetime, gain, can, perks: [{ at, text, have }], garlands: [...] },
+  string: { cranes, of, nextIn, lifetime, gain, can, needed, perks: [{ at, text, have }], garlands: [...],
+            strands: [0..1 ×20], title, next, at, button,
+            gate,                                // shown cranes at which the wish opens (≤ of)
+            gateStrand: 1..19 | null,            // the strand the gate mark sits before when the gate
+                                                 //   is inside the String (W 10–39), else null (r5-12)
+            potNote: "First collects your +28.0K folds from while you were away." | null, // r5-13
+            wishMoment: null | { phase: "rise"|"settle", strands } },
   settings: { …current values, notifySentToday, automations: [{ id, name, owned, on }] },
   away: null | { kind: "away"|"busy", duration, capped, folds, split, envelopes, needs: [...],
                  rested, best, affordable: [...], collectable: bool },
@@ -621,7 +631,7 @@ these instead of private variants.
 
 **Signatures.** `advance(state, now, writerId?)` and `rates(state, writerId?)`: the glue passes
 its `writerId` so helpers another window stopped observing fall back to the away rate after 60 s
-(§10.2; nothing after 8 h). Without a writer (simulator, tests) every helper counts as seen.
+(§10.2; nothing after 8 h, and nothing for one last seen waiting for input, review r6-05). Without a writer (simulator, tests) every helper counts as seen.
 `apply` uses the action's `w`. Extra read-only helpers: `effects(state)` (every bought effect as
 numbers: `G hand echo gapMs comboMax folk stepIn stepMult glowMult restFullMs restMax kidBonus
 awayF envMult durMult rushMult stormMult chainK chainEveryMs scrapMult craneLo craneLifeMs
@@ -740,7 +750,7 @@ space, tab, pane (natural order: "tab 2" before "tab 10"); its one group is
 tiles/marks come last with opacity 0.5.
 
 **Loop budget.** Computed once per call in priority order with a total of 12 (ribbon and calm:
-0): pulses (≤ 6 most recent waits, < 10 s), crane bob (`mat.crane.bob`), storm stripes
+0): pulses (≤ 6 most recent waits, < 10 s), crane bob (`mat.crane.bob`), confetti flecks
 (`mat.storm`, also false in calm), the newest *drawn* tray envelope (< 10 s since `lastAt`),
 In step spins (first ≤ 6 working tiles) or new-work spins (≤ 4 latest starts, < 20 s), and the
 first-run hint (`sheet.hintBob`; `sheet.firstRunHint` stays true in calm, static).
@@ -750,8 +760,9 @@ is set only when work starts, so it never invents a start; a Needs-you → Worki
 more than 5 min with no rest is the one start it misses).
 
 **Mat coordinates.** Nodes, scraps, the ream and the crease line are slot **centres**; the crane
-(48×36) and boat (48×32) are the **left/top** of their hit box, gliding by `left` from `x` to
-`x1` (crane: towards the far side; boat: 8 → 248; calm: `x1 === x`). `nodes[].i` is the
+(48×36) and boat (48×30) are the **left/top** of their hit box, gliding by `left` from `x` to
+`x1` (crane: towards the far side; boat: 8 → 248; calm: `x1 === x`). The boat's vm has no `y`:
+the mat puts it in its own lane above the bottom band (`ui/mat.js` boatBox, review r6-06). `nodes[].i` is the
 **1-based number drawn** on the node; `nodes[].id` is the engine click id (`nodeId`, 0-based).
 Short variant: y is scaled into 28–152 and the middle four columns of the top and bottom rows
 move beside the 96 px Sheet, so nothing overlaps it.
@@ -827,7 +838,10 @@ renderers default it:
 { T,            // herdr theme() as is (keys may be 8-digit; ui/color.js normalises)
   S,            // palette.pickScene(dark): scene tokens (§13.2)
   hues,         // palette.pickHues(dark): Hue[0..7]
-  dark,         // settings().dark (optional; S/hues already reflect it)
+  dark,         // the art for the theme SHOWING (r5-01): palette.artDark(T, appearanceDark),
+                //   remembered per theme surface (Session.artDarkFor); not settings().dark,
+                //   since a single-name theme shows the same theme in both appearances
+  appearanceDark, // settings().dark, the window appearance: artDark's fallback only
   zoom,         // settings().zoom (loop px are multiplied by it; numeric lengths are not)
   calm,         // vm settings calm (no loops, no spins, no pops)
   width,        // this copy's logical width (panel Wp, rail 64, ribbon work width W)
