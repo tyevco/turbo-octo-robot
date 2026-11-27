@@ -60,7 +60,7 @@ export const P1 = Object.freeze({
 
 const p = (id, name, change) => Object.freeze({ ...P1, id, name, ...change });
 
-/** Every profile, P1-P13 (BALANCE §3 "Other profiles"). */
+/** Every profile, P1-P15 (BALANCE §3 "Other profiles"). */
 export const PROFILES = Object.freeze({
   P1,
   P2: p("P2", "never clicks", { hands: false, cps: 0, scraps: false, ream: false, craneCatch: 0, chainSuccess: 0, buyEvery: 300,
@@ -330,7 +330,7 @@ export function parsePatternCell(cell) {
   throw new Error(`BALANCE §12.3: cannot parse "${cell}"`);
 }
 
-/** BALANCE §12.3's rows B1-B17: { id, what, key, median, every, provisional }. */
+/** BALANCE §12.3's rows B1-B18: { id, what, key, median, every, provisional }. */
 export function parsePatternRows(md) {
   const rows = table(section(md, "12.3")).rows.map((r) => ({
     id: r[0].trim(),
@@ -342,7 +342,7 @@ export function parsePatternRows(md) {
     provisional: /provisional/.test(r[1]),
   }));
   const ids = rows.map((r) => r.id);
-  for (let i = 1; i <= 17; i++) if (!ids.includes(`B${i}`)) throw new Error(`BALANCE §12.3: no row B${i}`);
+  for (let i = 1; i <= 18; i++) if (!ids.includes(`B${i}`)) throw new Error(`BALANCE §12.3: no row B${i}`);
   return rows;
 }
 

@@ -101,6 +101,44 @@ test("a newer save loads read-only and is never written", async () => {
   assert.equal(w.ctl.writes.length, 0);
 });
 
+test("a damaged save.json beside a backup from a newer build: read-only on the backup, says why, writes nothing", async () => {
+  const s = freshState(5);
+  s.bank = 12345;
+  s.version = 99;
+  const bak = engine.serialize(s);
+  w = win({ files: { [SAVE]: "{not json", [BAK]: bak } });
+  const v = await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.readOnly, true, "read-only, as for a newer save.json");
+  assert.equal(w.slot.notice.kind, "newer");
+  assert.match(w.slot.notice.text, /Save was damaged; its backup is from a newer Creaseworks\. Read-only until updated\. Damaged copy kept\./);
+  assert.equal(w.slot.state.bank, 12345, "the backup's game is shown");
+  assert.equal(w.ctl.readFile(damaged(1)), "{not json", "the damaged save.json is kept aside");
+  assert.equal(w.ctl.readFile(damaged(2)), null, "the backup is not taken for damaged");
+  await w.hits(v, 2);
+  await w.advance(20000);
+  assert.equal(w.ctl.readFile(SAVE), "{not json", "no fresh save written over it");
+  assert.equal(w.ctl.readFile(BAK), bak);
+  assert.equal(w.ctl.writes.filter((x) => x.path === SAVE || x.path === BAK).length, 0);
+  assert.equal(v.session.vm().notices[0].kind, "newer");
+});
+
+test("an unreadable save.json beside a backup from a newer build: read-only, the backup never kept aside as damaged", async () => {
+  const s = freshState(6);
+  s.version = 99;
+  const bak = engine.serialize(s);
+  const huge = `{"pad":"${"x".repeat(1100000)}"}`;
+  w = win({ files: { [SAVE]: huge, [BAK]: bak } });
+  await w.copy("panel");
+  await w.advance(1000);
+  assert.equal(w.slot.readOnly, true);
+  assert.equal(w.slot.notices.load.kind, "newer");
+  assert.equal(w.ctl.readFile(damaged(1)), null);
+  await w.advance(20000);
+  assert.equal(w.ctl.readFile(BAK), bak);
+  assert.equal(w.ctl.writes.filter((x) => x.path === SAVE || x.path === BAK).length, 0);
+});
+
 test("CAS conflict from another writer: re-read, merge, retry; nothing counted twice", async () => {
   w = win();
   const v = await w.copy("panel");

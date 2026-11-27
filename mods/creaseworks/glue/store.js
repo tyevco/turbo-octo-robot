@@ -16,7 +16,7 @@
 // generation's init releases such a claim (adopt) instead of waiting forever.
 
 import { readTextFile, writeTextFile, shared, setShared } from "herdr";
-import { serialize, serializeSteps, parseSave, parseSaveSteps, newGame, apply, advance, migrate, VERSION, clip, graphemes, CONTENT } from "../engine/index.js";
+import { serialize, serializeSteps, parseSave, parseSaveSteps, newGame, apply, advance, migrate, VERSION, SAVE_VERSION, clip, graphemes, CONTENT } from "../engine/index.js";
 import { localDay, localTime } from "./clock.js";
 import { touch, markDirty, dueAt, codeGeneration, confirmLog, clearLog, flash, DEBOUNCE_MS } from "./live.js";
 
@@ -429,6 +429,27 @@ function orphaned(slot, t) {
  * when an older main write may have landed (`inflight`): the caller then runs
  * resolveInflight.
  */
+/**
+ * The window goes read-only on a save from a newer build ("newer"): it keeps
+ * which code generation, state version and save format found it so, so that
+ * adopt lifts it only for a build that may understand the file.
+ */
+function goReadOnly(slot) {
+  slot.readOnly = true;
+  if (slot.save) slot.save.readOnlyFor = { gen: codeGeneration(), version: VERSION, format: SAVE_VERSION };
+}
+
+/**
+ * Is this build newer than the one that went read-only (`rof`, goReadOnly)?
+ * A missing record is from a build before it was kept (an older one: the
+ * Pattern book's 1 → 2 handover); the same code generation never is.
+ */
+function newerBuild(rof) {
+  if (!rof || typeof rof !== "object") return true;
+  if (rof.gen === codeGeneration()) return false;
+  return VERSION > (typeof rof.version === "number" ? rof.version : 0) || SAVE_VERSION > (typeof rof.format === "number" ? rof.format : 0);
+}
+
 export function adopt(slot, t) {
   const S = slot.save;
   // An older code generation's live state (state version 1 before the
@@ -443,8 +464,11 @@ export function adopt(slot, t) {
   // pending onto the file). Play while read-only was never recorded (it was
   // not saving), so the other window's progress is kept and nothing is
   // counted twice. A file still newer than this build makes it read-only again.
+  // Only a build that can now read what made the window read-only lifts it:
+  // another copy opening in the same code generation (every copy's init
+  // adopts) must keep the banner, write nothing and record nothing (B17).
   const load = slot.notices && slot.notices.load;
-  if (slot.readOnly && slot.state && load && load.kind === "newer") {
+  if (slot.readOnly && slot.state && load && load.kind === "newer" && newerBuild(S.readOnlyFor)) {
     slot.readOnly = false;
     S.status = "ok";
     slot.baseText = null;
@@ -746,6 +770,7 @@ export async function load(slot, opts) {
   S.bakProbeAt = null;
   S.bakFresh = false; // set below when this game started fresh beside it (r7-06)
   slot.readOnly = false;
+  S.readOnlyFor = null;
   S.unreadable = null;
   S.recoveryText = null;
   S.recOwn = 0; // applied[writerId] in this window's last recovery write (mergeRecovery)
@@ -769,7 +794,7 @@ export async function load(slot, opts) {
     if (stale()) return false;
     const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
     if (stale()) return false;
-    if (b) slot.bakState = b.ok ? "ok" : "damaged";
+    if (b) slot.bakState = b.ok ? "ok" : b.reason === "newer" ? null : "damaged";
     // The newer of the two: a recovery file left from an earlier episode must
     // not roll back the normally rotated backup (nothing retires it).
     const rOk = r && r.ok ? r.state : null;
@@ -782,12 +807,18 @@ export async function load(slot, opts) {
       keptRec = await keepAsideListed(slot, P, rec.text);
       if (stale()) return false;
     }
-    if (b && !b.ok) {
+    const bNewer = !!b && !b.ok && b.reason === "newer";
+    if (b && !b.ok && !bNewer) {
       keptBak = await keepAsideListed(slot, P, bak.text);
       if (stale()) return false;
     }
     state = rOk && (!bOk || rOk.clock >= bOk.clock) ? rOk : bOk;
-    if (!state) {
+    if (bNewer) {
+      // A newer build's backup: read-only on it, never written over or kept aside as damaged.
+      state = b.state ?? rOk ?? fresh();
+      goReadOnly(slot);
+      unreadableFresh = { kind: "newer", text: "The backup is from a newer Creaseworks. Read-only until updated.", at: t0 };
+    } else if (!state) {
       // Nothing to load from: a fresh game, said beside the unreadable notice (§12.2).
       state = fresh();
       unreadableFresh = { kind: "fresh", text: unreadableFreshText(r !== null, keptRec, b !== null, keptBak, bak.error), at: t0 };
@@ -813,7 +844,7 @@ export async function load(slot, opts) {
       state = m.state ?? fresh();
       slot.baseText = main.text;
       S.baseOk = false;
-      slot.readOnly = true;
+      goReadOnly(slot);
       notice = { kind: "newer", at: t0 };
     } else {
       // save.json damaged (or missing beside a backup, readable or not)
@@ -828,13 +859,19 @@ export async function load(slot, opts) {
       S.baseOk = false;
       const b = bak.text !== null ? await parseIn(slot, bak.text, opts, stale) : null;
       if (stale()) return false;
-      if (b) slot.bakState = b.ok ? "ok" : "damaged";
+      if (b) slot.bakState = b.ok ? "ok" : b.reason === "newer" ? null : "damaged";
       if (b && b.ok) {
         state = b.state;
         const when = localTime(state.clock);
         const lead = main.text === null ? "Save was missing." : "Save was damaged.";
         const tail = main.text === null ? "" : kept ? " Damaged copy kept." : " The damaged copy could not be kept.";
         notice = { kind: "recovered", text: `${lead} Loaded the backup from ${when}.${tail}`, at: t0 };
+      } else if (b && b.reason === "newer") {
+        // A backup from a newer build is never damaged (save-codec parseSaveSteps):
+        // read-only, as a newer save.json is, and nothing is written or kept aside.
+        state = b.state ?? fresh();
+        goReadOnly(slot);
+        notice = { kind: "newer", text: newerBackupText(main.text === null, kept), at: t0 };
       } else {
         let keptBak = null;
         if (bak.text !== null) {
@@ -1215,7 +1252,7 @@ async function mergeFromDisk(slot, env, stale) {
     return { ok: true, refunds, foreign };
   }
   if (parsed.reason === "newer") {
-    slot.readOnly = true;
+    goReadOnly(slot);
     slot.save.status = "readonly";
     // (not a conflict to merge: the newer banner says why nothing is saved)
     if (slot.notices.write && slot.notices.write.kind === "conflict") slot.notices.write = null;
@@ -1260,7 +1297,7 @@ async function overwriteBase(slot, env, stale) {
     const parsed = await parseIn(slot, r.text, env, stale);
     if (parsed === null || stale()) return { stop: true };
     if (!parsed.ok && parsed.reason === "newer") {
-      slot.readOnly = true;
+      goReadOnly(slot);
       S.status = "readonly";
       setNotice(slot, "load", { kind: "newer", at: t });
       return { stop: true };
@@ -1348,7 +1385,7 @@ async function mergeRecovery(slot, env, stale, text, back = false) {
   if (parsed === null || stale()) return null;
   if (!parsed.ok) {
     if (parsed.reason === "newer") {
-      slot.readOnly = true;
+      goReadOnly(slot);
       S.status = "readonly";
       setNotice(slot, "load", { kind: "newer", at: env.now() });
       return null;
@@ -1763,6 +1800,13 @@ export function backupUnreadableText(path, message) {
 /** The notice for a backup readable again that could not be kept aside yet (≤ NOTICE_MAX graphemes). */
 export function backupHeldText(path) {
   return clip(`The backup (${clip(baseName(path), 24)}) can be read again but could not be kept aside yet; not updated until it is. The save itself is fine.`, NOTICE_MAX);
+}
+
+/** The notice when save.json is damaged or missing and its backup is from a newer build. */
+function newerBackupText(missing, kept) {
+  const lead = missing ? "Save was missing" : "Save was damaged";
+  const tail = missing ? "" : kept ? " Damaged copy kept." : " The damaged copy could not be kept.";
+  return `${lead}; its backup is from a newer Creaseworks. Read-only until updated.${tail}`;
 }
 
 /** The notice when an unreadable backup turns readable and is kept aside (≤ NOTICE_MAX graphemes). */

@@ -1025,9 +1025,10 @@ save info in `ctx.save` carries `shared` (true only while sharing), and the shar
 `wish`, `windows`, `buys`, `keepState`, `trace`, `onStep`), `runAll(ids, seeds, { workers })`
 (worker threads), `evaluate(runs)` (every BALANCE row → `{ rows, pass }`), `report`, `bestBuy`,
 `playerBuys`, `Player`, `agentObservation(profileId, sec)`, `cadence`, `median`, `parseSeeds`,
-`SHARE_BUCKETS`, `T0`. `tools/sim/profiles.mjs` holds the P1–P12 parameters as code and
+`SHARE_BUCKETS`, `T0`. `tools/sim/profiles.mjs` holds the P1–P15 parameters as code and
 `parseBalance()` (§3 profile list, §3.1 activeFrac, §4, §5 incl. extras and monotonicity, §6.1–6.3,
-§7 numbers, §8 knob values); a BALANCE cell it cannot read throws.
+§7 numbers, §8 knob values, §12.3's Pattern book rows B1–B18 via `parsePatternRows`); a BALANCE
+cell it cannot read throws.
 * **Time.** Play-clock p (s) maps to wall `T0 + d·24 h + (p − 8 h·d)` on day d; nights are a
   16 h wall jump the engine credits as an away segment. Steps: 1 s during sessions (hand hits on
   their exact ms), `idleStep` (default 10 s) outside them, and every agent/fledgling change on its

@@ -75,6 +75,19 @@ export function cardWidth(width) {
   return Math.floor((inner - CARD.gap * (cols - 1)) / cols);
 }
 
+/** The tier pips row's width: three 8 px pips 2 px apart. */
+export const PIPS_W = 3 * CARD.pip + 2 * 2;
+
+/**
+ * The drawing's side for a card `w` px wide: CARD.draw, smaller only where
+ * the column beside it (w − 2·pad − draw − 4) would be narrower than the
+ * pips (280–331 px and Wide 400–439 px), so the pips, the fold tile and the
+ * count never sit on the drawing. The drawing is in percent, so it scales.
+ */
+export function drawSize(w) {
+  return Math.max(0, Math.min(CARD.draw, Math.floor(num(w, 96)) - 2 * CARD.pad - 4 - PIPS_W));
+}
+
 /** Percent of the drawing for a grid point (0..2): (2c + 1) / 6, as on the Sheet. */
 const cellPct = (c) => `${r1(((2 * num(c) + 1) / 6) * 100)}%`;
 
@@ -122,15 +135,24 @@ function octagon(c, rw, rad) {
  * start dot ringed). The "next" card draws its line dashed; the whole
  * drawing is at 0.6 for it. Hidden cards: the nine dots only.
  */
-function drawing(card, S) {
-  const dots = Array.isArray(card.dots) ? card.dots : null;
+/**
+ * The built paths of every drawing, by its dots, closed and state (built on
+ * first use and kept: a Path is immutable geometry in percent, so a render
+ * only paints it; rebuilding nine cards' paths each render was most of the
+ * all-found Book tab's time in QuickJS). { dots, line | null }.
+ */
+let paths = null;
+
+function drawingPaths(card, dots) {
+  if (!paths) paths = Object.create(null);
+  const key = `${card.state === "next" ? "n" : "f"}${card.closed === true ? "c" : "o"}${dots ? dots.map(([c, r]) => `${c}${r}`).join("") : "-"}`;
+  const hit = paths[key];
+  if (hit) return hit;
   const used = new Set((dots || []).map(([c, r]) => `${c},${r}`));
   const fill = PathBuilder.fill();
   // used dots 6 px octagons, the others 3 px diamonds (a 3 px dot is a dot either way; half the path)
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) fill.add_polygon(used.has(`${c},${r}`) ? octagon(c, r, 3) : diamond(c, r, 1.6));
-  const box = div().id(`cw-book-${card.id}-draw`).relative().flex_none().w(CARD.draw).h(CARD.draw).rounded(4).bg(S.sheet);
-  const dotsEl = paint(fill.build(), Background.solid(validateBackgroundColor(S.ink)));
-  if (dotsEl) box.child(dotsEl.absolute().inset_0());
+  let line = null;
   if (dots && dots.length >= 2) {
     const b = PathBuilder.stroke(2);
     dots.forEach(([c, r], k) => {
@@ -141,7 +163,22 @@ function drawing(card, S) {
     // the start dot ringed (a separate subpath of the same stroke)
     b.add_polygon(octagon(dots[0][0], dots[0][1], 6));
     if (card.state === "next") b.dash_array([4, 3]);
-    const line = paint(b.build(), Background.solid(validateBackgroundColor(S.ink)));
+    line = b.build();
+  }
+  const out = { dots: fill.build(), line };
+  paths[key] = out;
+  return out;
+}
+
+function drawing(card, S, size = CARD.draw) {
+  const dots = Array.isArray(card.dots) ? card.dots : null;
+  const built = drawingPaths(card, dots);
+  const ink = Background.solid(validateBackgroundColor(S.ink));
+  const box = div().id(`cw-book-${card.id}-draw`).relative().flex_none().w(size).h(size).rounded(4).bg(S.sheet);
+  const dotsEl = paint(built.dots, ink);
+  if (dotsEl) box.child(dotsEl.absolute().inset_0());
+  if (built.line) {
+    const line = paint(built.line, ink);
     if (line) box.child(line.absolute().inset_0());
   }
   if (card.state === "next") box.opacity(0.6);
@@ -173,8 +210,10 @@ function card(c, narrow, w, h, ctx) {
   const state = c.state === "found" || c.state === "next" ? c.state : "hidden";
   const name = state === "hidden" ? "???" : clip(str(c.name), BOOK_CLIP.name);
   const sub = clip(str(c.sub), BOOK_CLIP.sub);
-  // Beside the drawing: the fold on its mat tile, the pips and the count (found only).
-  const side = v_flex().flex_1().min_w(0).items_end().gap(4);
+  // Beside the drawing: the fold on its mat tile, the pips and the count (found only),
+  // in a column never narrower than the pips (drawSize).
+  const draw = drawSize(w);
+  const side = v_flex().id(`cw-book-${c.id}-side`).flex_1().min_w(PIPS_W).items_end().gap(4);
   if (state === "found") {
     let tile = null;
     try {
@@ -188,7 +227,8 @@ function card(c, narrow, w, h, ctx) {
     side.child(pipsRow(c, T));
     if (typeof c.count === "string" && c.count) side.child(text(clip(c.count, 8), { size: 11, weight: 600, color: T.foreground }, T));
   }
-  const top = h_flex().w_full().items_start().gap(4).child(drawing(c, S)).child(side);
+  // (the row keeps CARD.draw's height, so a smaller drawing never changes the card's)
+  const top = h_flex().w_full().h(CARD.draw).items_start().gap(4).child(drawing(c, S, draw)).child(side);
   const body = v_flex().w_full().gap(0).pt(CARD.under);
   body.child(text(name, { size: 12, weight: 600, color: state === "hidden" ? T.muted : T.foreground, truncate: true }, T).w_full().h(CARD.name).line_height(`${CARD.name}px`));
   if (state === "found") {

@@ -530,12 +530,13 @@ the rows join the tables the tests parse as §12.6 says.
 | B9 | M15 against `--no-book` (P1, P8, P11, P14) | − 0:15 | `--no-book` − 0:30 to `--no-book` + 0:10 | day 3 (inv. 1) |
 | B10 | `pattern` + `fold` share of live income on days 2 and 3 | 3 % | ≤ 6 % | ≤ 6 % |
 | B11 | effects alone: (P1 − `--no-pattern-fx`) minus the `fold` source, share of live income on each day | 1 % | ≤ 2 % | ≤ 5 % |
-| B12 | one diagram's effect: (P1 − `--fx-off <id>`) minus that diagram's fold pay, each day, seeds 1–5 | ≤ 0.5 % | ≤ 1 % | ≤ 3 % |
+| B12 | one diagram's effect: (`P1~rotate` − `P1~rotate+fxoff:<id>`) minus that diagram's fold pay, each day its fold is clicked at least 3 times (median over seeds); a diagram with no such day is not measured and fails | ≤ 0.5 % | ≤ 1 % | ≤ 3 % |
 | B13 | P15 pattern master first wish | ≈ P1 − 0:03 | ≥ P1 median − 0:45 and ≤ P1 median | 16:00 – 24:00 |
 | B14 | P14 unsteady hand first wish (§5 row, now with fields) | — | ≤ P1 median + 1:30 | 16:00 – 24:00 |
 | B15 | P2 never clicks | = `--no-book` | identical milestones | identical |
 | B16 | run 2 (first wish to M17) click share of live income, provisional; record the `--no-book` value first | ≥ `--no-book` | ≥ 20 % | ≥ 15 % |
 | B17 | B7 for a hand that rotates through the book (`P1~rotate`: the ready diagram traced fewest times) | ≈ B7 | 20 – 38 % and `--no-book` − 0.5 to `--no-book` + 4 points | 20 – 38 % |
+| B18 | inv. 12 with fields left alone: `P12~trace0` (calm) node income over `P1~trace0`'s on days 2–3, both with `traceSuccess` 0 (every chain clicked, no trace ever matches, so each field stays up its whole life); M15 within ±3 % on every seed | 100 % | ≥ 99 % | ≥ 90 % |
 
 **B11 and B12 are judged on the median.** The effect is the median over seeds of each day's
 share (B12: over seeds 1–5), its largest day against the median window. Each seed's own days

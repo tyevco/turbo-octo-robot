@@ -304,7 +304,7 @@ export function renderSettings(vm, ui, ctx) {
   root.child(switchRow("cw-set-gather", "Helpers gather", "Off: the flock is a status board only", s.gather !== false, {
     onChange: (on, cx) => setting("gather", Boolean(on), cx),
   }, ctx));
-  root.child(switchRow("cw-set-nodes", "Crease nodes appear", "Numbered nodes to click in order", s.nodes !== false, {
+  root.child(switchRow("cw-set-nodes", "Crease nodes appear", "Numbered nodes and crease fields", s.nodes !== false, {
     onChange: (on, cx) => setting("nodes", Boolean(on), cx),
   }, ctx));
   const popsDisabled = calm || s.popsDisabled === true;

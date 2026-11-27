@@ -11,7 +11,7 @@
 // against); --no-pattern-fx never clicks a fold piece; --fx-off <id> never
 // clicks that diagram's. Given alone each runs every profile that way (a
 // report, no §12 rows). Without them the run adds the variant runs §12.3 needs
-// (`P1~nobook`, `P1~nofx`, `P1~fxoff:<id>` on seeds 1-5, …) unless
+// (`P1~nobook`, `P1~nofx`, `P1~rotate`, `P1~rotate+fxoff:<id>`, …) unless
 // --no-ablation.
 //
 // --even: the hand hits on a perfect beat with no pauses (the model before
@@ -493,9 +493,12 @@ export function potAttribution(ev, bankAfter, potLeft) {
  */
 export function variantFlags(variant) {
   if (!variant) return {};
+  // "rotate+fxoff:<id>": both (B12's per-diagram ablation runs on the rotating hand)
+  if (variant.includes("+")) return Object.assign({}, ...variant.split("+").map((v) => variantFlags(v)));
   if (variant === "nobook") return { noBook: true };
   if (variant === "nofx") return { noFx: true };
   if (variant === "rotate") return { rotate: true };
+  if (variant === "trace0") return { trace0: true }; // every trace fails: fields stay up their whole life (B18)
   const m = /^fxoff:([a-z]+)$/.exec(variant);
   if (m && PATTERNS.some((x) => x.id === m[1])) return { fxOff: m[1] };
   throw new Error(`unknown variant ${variant}`);
@@ -508,8 +511,9 @@ export function runProfile(profileId, seed, opts = {}) {
     profileId = profileId.slice(0, at);
   }
   if (opts.variant) opts = { ...opts, ...variantFlags(opts.variant) };
-  const prof = typeof profileId === "string" ? PROFILES[profileId] : profileId;
-  if (!prof) throw new Error(`unknown profile ${profileId}`);
+  const prof0 = typeof profileId === "string" ? PROFILES[profileId] : profileId;
+  if (!prof0) throw new Error(`unknown profile ${profileId}`);
+  const prof = opts.trace0 ? Object.freeze({ ...prof0, traceSuccess: 0 }) : prof0;
   const idleStep = Math.round((opts.idleStep ?? 10) * 1000);
   if (!(idleStep >= 1000 && idleStep <= 60000)) throw new Error("idleStep must be 1-60 s");
   const stopAt = opts.stopAt ?? (prof.id === "P1" ? "wish2" : "wish");
@@ -538,6 +542,7 @@ export function runProfile(profileId, seed, opts = {}) {
     onEvents: null,
     atBuy: null, // { p, src }: run 0's sources at the Crease Field purchase (or where --no-book would have made it)
     foldBy: [], // [play-clock hour][diagram] fold-piece pay in run 0 (BALANCE §12.3 B12)
+    foldN: [], // [play-clock hour][diagram] fold-piece clicks in run 0 (B12: is the effect measured?)
     shares2: null, // the second run's sources at the second wish (B16)
     hourly: [], // run 0's sources at the first step at or after each play-clock hour (B11, B12)
   };
@@ -589,6 +594,8 @@ export function runProfile(profileId, seed, opts = {}) {
         const h = Math.floor(p / HOUR);
         const row = sim.foldBy[h] || (sim.foldBy[h] = Object.create(null));
         row[e.pattern] = (row[e.pattern] || 0) + foldPay;
+        const nrow = sim.foldN[h] || (sim.foldN[h] = Object.create(null));
+        nrow[e.pattern] = (nrow[e.pattern] || 0) + 1;
         foldPay = 0;
       } else if (e.kind === "trace" && e.result === "match") traced = true;
     }
@@ -954,6 +961,7 @@ function summarize(prof, seed, sim, finalState, opts) {
     variant: opts.variant || null,
     atBuy: sim.atBuy,
     foldBy: sim.foldBy.map((x) => ({ ...(x || {}) })),
+    foldN: sim.foldN.map((x) => ({ ...(x || {}) })),
     shares2: sim.shares2,
     hourly: sim.hourly,
     finalState: opts.keepState === false ? null : finalState,
@@ -1316,26 +1324,58 @@ function patternRows(runs, bal, medians, rows) {
       pass: within(e.effect, R.B11.median) && e.perSeed.every((v) => within(v, R.B11.every)),
       note: `effect (largest day of the per-day medians) ${pct(e.effect)}; largest seed-day ${pct(e.worst)}` });
   }
-  // B12: one diagram's effect, each day, seeds 1-5
-  {
+  // B12: one diagram's effect, each day, on P1~rotate (every diagram fires there) against
+  // P1~rotate+fxoff:<id> (the same purchases and pauses, that diagram's fold never clicked).
+  // A day counts only where the diagram's fold was clicked at least B12_MIN times (median over
+  // seeds): with fewer, the "effect" is the Confetti reshuffle one click starts, not the effect.
+  if (rot) {
+    const B12_MIN = 3;
     const parts = [];
     let ok = true;
     let n = 0;
     let worst = -Infinity;
+    const clicksOn = (run, id, d) => {
+      let c = 0;
+      for (let h = d * 8; h < (d + 1) * 8; h++) c += (run.foldN && run.foldN[h] ? run.foldN[h][id] || 0 : 0);
+      return c;
+    };
     for (const p of PATTERNS) {
-      const x = runs[`P1~fxoff:${p.id}`];
+      const x = runs[`P1~rotate+fxoff:${p.id}`];
       if (!x) continue;
       n++;
-      const e = effectRow(same(P1, x), (run, lo, hi) => {
+      const pairs = same(rot, x);
+      const fold = (run, lo, hi) => {
         let y = 0;
         for (let h = lo; h < hi; h++) y += (run.foldBy[h] || {})[p.id] || 0;
         return y;
-      });
-      if (!within(e.effect, R.B12.median) || !e.perSeed.every((v) => within(v, R.B12.every))) ok = false;
-      worst = Math.max(worst, e.effect);
-      parts.push(`${p.id} ${pct(e.effect)} (seed-day ≤ ${pct(e.worst)})`);
+      };
+      const clicks = [0, 1, 2].map((d) => median(pairs.map(([r]) => clicksOn(r, p.id, d))));
+      const days = [0, 1, 2].filter((d) => clicks[d] >= B12_MIN);
+      const perDay = [[], [], []];
+      const perSeed = [];
+      for (const [r, y] of pairs) {
+        let m = -Infinity;
+        for (const d of days) {
+          const v = fxShare(r, y, d, fold);
+          if (!Number.isFinite(v)) continue;
+          perDay[d].push(v);
+          m = Math.max(m, v);
+        }
+        perSeed.push(m);
+      }
+      const effect = days.length ? Math.max(...days.map((d) => (perDay[d].length ? median(perDay[d]) : -Infinity))) : NaN;
+      const at = days.find((d) => perDay[d].length && median(perDay[d]) === effect);
+      const clickNote = `clicks/day ${clicks.map((c) => (Number.isFinite(c) ? c : 0)).join("/")}`;
+      if (!Number.isFinite(effect)) {
+        ok = false; // never measured: fewer than B12_MIN clicks on every day
+        parts.push(`${p.id} not measured (${clickNote})`);
+        continue;
+      }
+      if (!within(effect, R.B12.median) || !perSeed.every((v) => !Number.isFinite(v) || within(v, R.B12.every))) ok = false;
+      worst = Math.max(worst, effect);
+      parts.push(`${p.id} ${pct(effect)} day ${at + 1} (seed-day ≤ ${pct(maxOf(perSeed))}; ${clickNote})`);
     }
-    if (n) rows.push({ section: "§12", id: "B12", what: R.B12.what, unit: "text", pass: ok, value: worst, note: `effect per diagram: ${parts.join(", ")}` });
+    if (n) rows.push({ section: "§12", id: "B12", what: R.B12.what, unit: "text", pass: ok, value: worst, note: `effect per diagram on P1~rotate (${rot.length} seeds): ${parts.join(", ")}` });
   }
   // B13, B14: P15 and P14 first wish against P1
   for (const [id, pid] of [["B13", "P15"], ["B14", "P14"]]) {
@@ -1353,6 +1393,28 @@ function patternRows(runs, bal, medians, rows) {
       for (const k of ks) if (k !== "would:crease-field" && r.milestones[k] !== b.milestones[k]) bad.push(`seed ${r.seed} ${k}`);
     }
     rows.push({ section: "§12", id: "B15", what: R.B15.what, unit: "text", pass: bad.length === 0, note: bad.length ? bad.slice(0, 3).join("; ") : "identical milestones on every seed" });
+  }
+  // B18: inv. 12 with fields left alone. Calm's fields live 32 s, not 16; the chain waiting under
+  // one must not wait longer for it (DESIGN §4.7), so node income and M15 match the normal hand's.
+  const t0n = runs["P1~trace0"];
+  const t0c = runs["P12~trace0"];
+  if (t0n && t0c && R.B18) {
+    const nodeOf = (run, lo, hi) => (run.hourly[hi] && run.hourly[lo] ? (run.hourly[hi].src.node || 0) - (run.hourly[lo].src.node || 0) : NaN);
+    const ratios = [];
+    const m15s = [];
+    for (const [c, nrm] of same(t0c, t0n)) {
+      // days 2-3 (fields come from the day-2 purchase), cut at the earlier first wish's whole hour
+      const hi = Math.min(24, Math.floor(Math.min(c.m15 ?? Infinity, nrm.m15 ?? Infinity) / HOUR));
+      const a = nodeOf(c, 8, hi);
+      const b = nodeOf(nrm, 8, hi);
+      ratios.push(b > 0 ? a / b : NaN);
+      m15s.push(Math.abs((c.m15 ?? NaN) - (nrm.m15 ?? NaN)) / Math.max(nrm.m15 ?? NaN, 1));
+    }
+    const rel = bal.invariants.calmRel;
+    const okM15 = m15s.every((v) => Number.isFinite(v) && v <= rel);
+    const ok = within(median(ratios), R.B18.median) && ratios.every((v) => within(v, R.B18.every)) && okM15;
+    add("B18", "", "pct", ratios, ok, `calm / normal node income, days 2–3, median ${pct(median(ratios))} (${pct(minOf(ratios))}–${pct(maxOf(ratios))}); M15 within ±${(rel * 100).toFixed(0)} % on every seed (worst ${pct(maxOf(m15s))})`,
+      { window: { lo: R.B18.median.lo, hi: R.B18.median.hi } });
   }
   // B16: run 2 (first wish to M17) click share of live income
   if (b1) {
@@ -1505,8 +1567,12 @@ export function variantJobs(ids, seeds) {
   if (ids.includes("P1")) {
     for (const seed of seeds) out.push({ id: "P1~nofx", seed, replay: "P1" });
     for (const seed of seeds) out.push({ id: "P1~rotate", seed });
-    for (const p of PATTERNS) for (const seed of seeds.filter((x) => x <= 5)) out.push({ id: `P1~fxoff:${p.id}`, seed, replay: "P1" });
+    // B12: each diagram's effect, on the hand that rounds the book (P1 traces its largest ready
+    // diagram, so five of the nine fire once a run there: no measurement), every seed
+    for (const p of PATTERNS) for (const seed of seeds) out.push({ id: `P1~rotate+fxoff:${p.id}`, seed, replay: "P1~rotate" });
   }
+  // B18 (inv. 12 with fields): a hand that clicks every chain and never finishes a trace, in calm and not
+  if (ids.includes("P1") && ids.includes("P12")) for (const id of ["P1", "P12"]) for (const seed of seeds) out.push({ id: `${id}~trace0`, seed });
   return out;
 }
 

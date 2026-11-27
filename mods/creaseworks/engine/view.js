@@ -1229,8 +1229,11 @@ function boostsVm(state, E, live, t) {
   add("chorus", `Chorus ${times(K.chorusMult)}`, num(b.chorus) - live);
   if (b.tailwind > 0) add("tailwind", `Tailwind ×2 · ${b.tailwind} left`, num(b.tailwindMs) - live);
   // Pattern book (§4.7): named after the diagram that gave them, as the other chips are.
-  // Coil's ×2 runs only while no Rush or Confetti does; Ridge's charge is static.
-  if (!(b.stormEnd > t) && !(b.rushEnd > t)) add("coil", `Coil ${times(K.coilMult)}`, num(b.coilEnd) - t);
+  // Coil's ×2 runs only while no Rush or Confetti does: under one, a Coil still to come
+  // (its 10 s start when they end) is a static chip; Ridge's charge is static too.
+  const over = Math.max(num(b.stormEnd), num(b.rushEnd));
+  if (!(over > t)) add("coil", `Coil ${times(K.coilMult)}`, num(b.coilEnd) - t);
+  else if (num(b.coilEnd) > over) out.push({ type: "coil", label: `Coil ${times(K.coilMult)} · waits`, msLeft: null, msTotal: null, after: num(b.stormEnd) > t ? "Confetti" : "Rush" });
   if (state.hand.steady === 1) out.push({ type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null });
   return out;
 }
@@ -1503,7 +1506,7 @@ function fieldVm(state, t, E) {
     let text;
     if (!pt) {
       const near = lf.near ? patternOf(lf.near) : null;
-      text = near ? `Loose · ${near.name} needs ${lf.more} more` : "Loose crease";
+      text = !near ? "Loose crease" : lf.close === true ? `Loose · ${near.name}: end on the first dot` : `Loose · ${near.name} needs ${lf.more} more`;
     } else {
       const rec = foundOf(state, pt.id);
       const n = rec ? rec.n : 0;
@@ -1511,7 +1514,7 @@ function fieldVm(state, t, E) {
       else if (lf.tier === 3 && n === K.bookMaster) text = `${pt.name} · mastered`;
       else if (lf.tier === 2 && n === K.bookLearn) text = `${pt.name} · learned`;
       else if (typeof lf.rest === "number" && lf.rest > 0) text = `${pt.name} · rests ${mmss(lf.rest)}`;
-      else if (lf.pulled === true) text = `${pt.name} · crane pulled`;
+      else if (lf.pulled === true) text = `${pt.name} · pull used`; // no fold: this crane gap is already pulled
       else text = pt.name;
     }
     fieldResult = { line: lineOf(lf.path), closed: lf.closed === true, style: pt ? TIER_STYLE[lf.tier] || "found" : "loose", text: clip(text, BOOK_CLIP.chip) };
@@ -1529,6 +1532,9 @@ function bookVm(state, t, withCards) {
   if (sp.fieldIn === null || sp.fieldIn === undefined) {
     // (first: the curio is not owned this run, whatever the book holds)
     line = "Buy Crease Field (Curios) to bring fields back this run";
+  } else if (state.settings && state.settings.nodes === false) {
+    // the switch turns fields off with the nodes (§8): say so, never promise a field
+    line = "Crease nodes are off (Settings → Play): no fields come";
   } else if (info.next === null) {
     let near = null;
     for (const p of PATTERNS) {
@@ -1551,7 +1557,7 @@ function bookVm(state, t, withCards) {
       let status = null;
       if (rec) {
         status = sp.fold && sp.fold.kind === p.id ? "fold on the mat" : rec.ready > sp.activeMs ? `rests ${mmss(rec.ready - sp.activeMs)}`
-          : p.fx === "pull" && sp.gullFor === sp.cranesSeen ? "crane pulled" : "ready";
+          : p.fx === "pull" && sp.gullFor === sp.cranesSeen ? "pull used" : "ready";
       }
       const shown = st !== "hidden";
       cards.push({

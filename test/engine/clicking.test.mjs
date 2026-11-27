@@ -713,8 +713,8 @@ test("§4.7 Gull: no fold piece while this crane gap is already pulled; a Gull f
   const r = trace(s, me, dotsOf("gull"), t, dotsOf("gull")[2]);
   assert.ok(r.ev.some((e) => e.kind === "trace" && e.result === "match" && e.pattern === "gull"));
   assert.equal(sp.fold, null, "nothing to pull: no fold piece");
-  assert.equal(engine.view(s, r.t + 10).sheet.fieldResult.text, "Gull · crane pulled");
-  assert.equal(engine.view(s, r.t + 10, { tab: "book" }).book.cards.find((c) => c.id === "gull").status, "crane pulled");
+  assert.equal(engine.view(s, r.t + 10).sheet.fieldResult.text, "Gull · pull used");
+  assert.equal(engine.view(s, r.t + 10, { tab: "book" }).book.cards.find((c) => c.id === "gull").status, "pull used");
   // a Gull fold already on the mat when its pull is spent: the click pays its fold but starts no rest
   sp.fold = { id: "f90", kind: "gull", slot: 1, born: sp.shownMs };
   const before = sp.nextCraneAt;
@@ -842,4 +842,112 @@ test("§4.7 the book hint merges as the larger number of marks seen; a bad one i
   assert.equal(me.act({ t: T0 + 2, type: "hint", key: "book", n: 99 })[0].reason, "hint");
   assert.equal(me.act({ t: T0 + 3, type: "hint", key: "book", n: "7" })[0].reason, "hint");
   assert.equal(s.ui.hints.book, 5);
+});
+
+test("§4.7 a closed diagram traced in full but set open names it with 'end on the first dot' (Napkin; the Hem ring names Hem, not Coil)", () => {
+  const { s, me, t } = withField(9);
+  s.book.found.napkin = { n: 1, at: T0, ready: 0 };
+  // the Napkin square, its last dot clicked again: loose, but one closing click from Napkin
+  const r = trace(s, me, [0, 1, 4, 3], t, 3);
+  assert.ok(r.ev.some((e) => e.kind === "trace" && e.result === "loose"));
+  assert.equal(s.spawn.lastField.near, "napkin");
+  assert.equal(s.spawn.lastField.close, true);
+  assert.equal(s.spawn.lastField.more, 0);
+  const text = engine.view(s, r.t + 10).sheet.fieldResult.text;
+  assert.equal(text, "Loose · Napkin: end on the first dot");
+  assert.ok(engine.graphemeCount(text) <= 40);
+  // the full Hem ring set open: Hem (its closing click), never "Coil needs 1 more"
+  s.book.found.hem = { n: 1, at: T0, ready: 0 };
+  s.book.found.coil = { n: 1, at: T0, ready: 0 };
+  const ring = dotsOf("hem");
+  const r2 = trace(s, me, ring, r.t + 400, ring[ring.length - 1]);
+  assert.equal(s.spawn.lastField.near, "hem");
+  assert.equal(engine.view(s, r2.t + 10).sheet.fieldResult.text, "Loose · Hem: end on the first dot");
+  // a hidden closed diagram is never named this way
+  assert.deepEqual(engine.nearMiss([1, 5, 7, 3], ["ridge"]), null);
+  assert.deepEqual(engine.nearMiss([1, 5, 7, 3], ["lozenge"]), { id: "lozenge", more: 0, close: true });
+  // a closed set is matched or loose on its own: no "end on the first dot" for it
+  assert.equal(engine.nearMiss([0, 1, 4, 3], ["napkin"], true), null);
+});
+
+test("§4.7 Wind-up clicked under Confetti or Rush waits for it to end, then runs its 10 s; its chip says it waits", () => {
+  const { s, me, t } = withField(19);
+  const E = engine.effects(s);
+  const sp = s.spawn;
+  sp.field = null;
+  s.book.found.coil = { n: 1, at: T0, ready: 0 };
+  s.boosts.stormEnd = t + 20000;
+  sp.fold = { id: "f81", kind: "coil", slot: 1, born: sp.shownMs };
+  me.act({ t: t + 300, type: "click", target: "fold", id: "f81" });
+  assert.equal(s.boosts.coilEnd, t + 20000 + K.coilMs, "the 10 s start when Confetti ends");
+  assert.equal(engine.hitBoost(s, E, t + 1000), E.stormMult);
+  assert.equal(engine.hitBoost(s, E, t + 20000 + 5000), K.coilMult, "×2 once Confetti is over");
+  assert.equal(engine.hitBoost(s, E, t + 20000 + K.coilMs), 1);
+  const chip = engine.view(s, t + 1000).boosts.find((b) => b.type === "coil");
+  assert.deepEqual([chip.label, chip.msLeft, chip.after], ["Coil ×2 · waits", null, "Confetti"]);
+  const timed = engine.view(s, t + 22000).boosts.find((b) => b.type === "coil");
+  assert.equal(timed.msLeft, K.coilMs - 2000);
+  // under Rush the same, the later of the two ends first
+  s.boosts.stormEnd = 0;
+  s.boosts.rushEnd = t + 400000;
+  s.book.found.coil.ready = 0;
+  sp.fold = { id: "f82", kind: "coil", slot: 1, born: sp.shownMs };
+  me.act({ t: t + 1300, type: "click", target: "fold", id: "f82" });
+  assert.equal(s.boosts.coilEnd, t + 400000 + K.coilMs);
+  assert.equal(engine.view(s, t + 1400).boosts.find((b) => b.type === "coil").after, "Rush");
+});
+
+test("§4.3/§4.7 Wind-up's end moves with a clock-back and an away segment, like Rush and Confetti", () => {
+  // clock-back: the ×2 never stretches over the hour the clock went back
+  const { s, me, t } = withField(19);
+  const E = engine.effects(s);
+  s.spawn.field = null;
+  s.boosts.coilEnd = s.clock + K.coilMs;
+  const back = s.clock - 3600000;
+  engine.advance(s, back);
+  assert.equal(s.clock, back);
+  assert.ok(s.boosts.coilEnd - s.clock <= K.coilMs);
+  const chip = engine.view(s, back + 1).boosts.find((b) => b.type === "coil");
+  assert.ok(chip && chip.msLeft <= K.coilMs);
+  assert.equal(engine.hitBoost(s, E, back + K.coilMs + 1), 1, "×1 once the 10 s are over on the rebased clock");
+  // away: the time left is kept, not used up
+  const a = withField(21);
+  a.s.spawn.field = null;
+  const left = 7000;
+  a.s.boosts.coilEnd = a.s.clock + left;
+  const c0 = a.s.clock;
+  const away = 10 * 60000;
+  engine.advance(a.s, c0 + away);
+  assert.equal(a.s.boosts.coilEnd - a.s.clock, left, "the coil time left is kept over an absence");
+  void me; void t;
+});
+
+test("§4.7 calm: a field left alone holds the waiting chain no longer than in normal mode (K.fieldLifeMs)", () => {
+  const out = {};
+  for (const calm of [false, true]) {
+    const { s, me, t } = withField(13, { calm });
+    const sp = s.spawn;
+    const born = sp.field.born;
+    sp.nextChainAt = sp.activeMs + 50;
+    let tt = t;
+    let came = null;
+    for (let n = 0; n < 40 && came === null; n++) {
+      tt += 1000;
+      me.act({ t: tt, type: "click", target: "sheet" });
+      if (sp.chain) came = sp.shownMs - born;
+    }
+    out[calm] = { came, field: !!sp.field };
+  }
+  assert.ok(out.false.came !== null && out.true.came !== null);
+  assert.ok(Math.abs(out.true.came - out.false.came) <= 1000, JSON.stringify(out));
+  assert.ok(out.true.came <= K.fieldLifeMs + 2000);
+  assert.equal(out.true.field, true, "in calm the field is still up beside the chain");
+  assert.equal(out.false.field, false);
+});
+
+test("§4.7 with 'Crease nodes appear' off the Book says no fields come", () => {
+  const { s, me, t } = withField(13);
+  me.act({ t: t + 100, type: "setting", key: "nodes", value: false });
+  const line = engine.view(s, t + 200, { tab: "book" }).book.line;
+  assert.equal(line, "Crease nodes are off (Settings → Play): no fields come");
 });

@@ -160,10 +160,18 @@ function patternVariants(p) {
  * that fits on the grid from where it is? → { id, more } (the dots it still
  * needs), the first such diagram in book order, or null. Only found diagrams
  * and the next one to find are passed, so a hidden one is never named.
+ * A closed diagram traced in full but set open (`closed` false: the last dot
+ * clicked again, or the field's life ran out), its last dot next to its
+ * first, comes first → { id, more: 0, close: true }: it needed one closing
+ * click on the first dot, and naming a longer open diagram would mislead.
  */
-export function nearMiss(path, ids) {
+export function nearMiss(path, ids, closed = false) {
   if (!validPath(path) || path.length < 1 || !Array.isArray(ids)) return null;
   const k = path.length;
+  if (closed !== true && k >= 3 && adjacent(path[k - 1], path[0])) {
+    const shut = classifyTrace(path, true);
+    if (shut !== null && ids.indexOf(shut) >= 0) return { id: shut, more: 0, close: true };
+  }
   const own = stepsOf(path, false);
   if (!own) return null;
   let prefix = "";

@@ -85,28 +85,29 @@ export const UPGRADES = f([
 // as [col, row] on the 3 × 3 field, its start first and never the centre;
 // `canon` the classifier's strings (engine/pattern.js canonOf; a test
 // rebuilds them from `dots`); `fold` the fold piece's name; `short` the
-// effect in ≤ 16 graphemes, `text` in full (≤ 44), `hint` the hidden card's
+// effect in ≤ 16 graphemes, `text` in full (≤ 44; a no-break space joins
+// every number to its unit, so a card never wraps "20 / s"), `hint` the hidden card's
 // line (null for Ridge, drawn in full from the start); `fx` the effect key.
 // The ids are part of the save format (book.found, `p:<id>` shelf entries).
 export const PATTERNS = f([
   f({ id: "ridge", name: "Ridge", n: 3, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0])]), canon: f(["o:00", "o:11"]),
-    fold: "Ridge pleat", short: "Pause kept", text: "Your next short pause costs no beats", hint: null, fx: "steady" }),
+    fold: "Ridge pleat", short: "Rhythm kept", text: "One pause of up to 4\u00a0s keeps your rhythm", hint: null, fx: "steady" }),
   f({ id: "gull", name: "Gull", n: 3, closed: false, dots: f([f([0, 0]), f([1, 1]), f([2, 0])]), canon: f(["o:13"]),
-    fold: "Paper gull", short: "Crane sooner", text: "The next crane comes up to 20 s sooner", hint: "Down, then up: a bird far off", fx: "pull" }),
+    fold: "Paper gull", short: "Crane sooner", text: "The next crane comes up to 20\u00a0s sooner", hint: "Down, then up: a bird far off", fx: "pull" }),
   f({ id: "napkin", name: "Napkin", n: 4, closed: true, dots: f([f([0, 0]), f([1, 0]), f([1, 1]), f([0, 1])]), canon: f(["c:0246"]),
-    fold: "Folded napkin", short: "90 s afterglow", text: "Banks 90 s of afterglow", hint: "Four sides, back home", fx: "glow" }),
+    fold: "Folded napkin", short: "90\u00a0s afterglow", text: "Banks 90\u00a0s of afterglow", hint: "Four sides, back home", fx: "glow" }),
   f({ id: "lozenge", name: "Lozenge", n: 4, closed: true, dots: f([f([1, 0]), f([2, 1]), f([1, 2]), f([0, 1])]), canon: f(["c:1357"]),
-    fold: "Lozenge tile", short: "Figure next", text: "Your next fold finishes a figure", hint: "Edge to edge, round the middle", fx: "finish" }),
+    fold: "Lozenge tile", short: "Sheet finish", text: "Your next click on the Sheet finishes it", hint: "Edge to edge, round the middle", fx: "finish" }),
   f({ id: "stair", name: "Stair", n: 5, closed: false, dots: f([f([0, 0]), f([1, 0]), f([1, 1]), f([2, 1]), f([2, 2])]), canon: f(["o:0202"]),
-    fold: "Stair pleat", short: "+6 beats", text: "Your rhythm gains 6 beats", hint: "Across, down, across, down", fx: "lift" }),
+    fold: "Stair pleat", short: "Rhythm up", text: "Your rhythm meter jumps up by 15\u00a0%", hint: "Across, down, across, down", fx: "lift" }),
   f({ id: "sail", name: "Sail", n: 6, closed: true, dots: f([f([0, 0]), f([0, 1]), f([0, 2]), f([1, 2]), f([2, 2]), f([1, 1])]), canon: f(["c:002255"]),
-    fold: "Sail", short: "Longer catches", text: "Scraps and cranes stay longer for 60 s", hint: "Down the side, along the foot, up the slope", fx: "wind" }),
+    fold: "Paper sail", short: "Longer stays", text: "New scraps and cranes stay longer for 60\u00a0s", hint: "Down the side, along the foot, up the slope", fx: "wind" }),
   f({ id: "switchback", name: "Switchback", n: 7, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([1, 1]), f([0, 2]), f([1, 2]), f([2, 2])]), canon: f(["o:003300"]),
-    fold: "Accordion fan", short: "Chain in 2 s", text: "The next chain or field comes within 2 s", hint: "Top, slash, bottom", fx: "hurry" }),
+    fold: "Accordion fan", short: "Chain in 2\u00a0s", text: "The next chain or field comes within 2\u00a0s", hint: "Top, slash, bottom", fx: "hurry" }),
   f({ id: "hem", name: "Hem", n: 8, closed: true, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([2, 1]), f([2, 2]), f([1, 2]), f([0, 2]), f([0, 1])]), canon: f(["c:00224466"]),
     fold: "Paper frame", short: "Field next", text: "The next chain is a crease field again", hint: "Walk the edge and come home", fx: "margin" }),
   f({ id: "coil", name: "Coil", n: 9, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([2, 1]), f([2, 2]), f([1, 2]), f([0, 2]), f([0, 1]), f([1, 1])]), canon: f(["o:00224460"]),
-    fold: "Paper spring", short: "Hands ×2 10 s", text: "Hand hits ×2 for 10 s", hint: "Walk the edge, then turn in", fx: "windup" }),
+    fold: "Paper spring", short: "Hands ×2 10\u00a0s", text: "Hand hits ×2 for 10\u00a0s", hint: "Walk the edge, then turn in", fx: "windup" }),
 ]);
 
 // §8 automations (on when bought).

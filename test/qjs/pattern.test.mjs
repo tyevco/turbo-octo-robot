@@ -139,3 +139,44 @@ test("64 agents with a crease field, a result chip and a fold piece up: renders 
     host.dispose();
   }
 });
+
+test("64 agents, all nine diagrams found (some learned or mastered, one fold on the mat): the Book tab renders at 320 and 440 px, p50 ≤ 16 ms", async () => {
+  for (const width of [320, 440]) {
+    const host = await createHost({ modRoot: MOD, scenario: scenario(64) });
+    try {
+      await host.load();
+      host.advance(0);
+      host.render();
+      host.fire("root", "on_size_change", { width, height: PANEL.height });
+      host.advance(1000);
+      host.render();
+      const setup = inVm(host, `
+        const s = slot.state;
+        s.bought["long-crease"] = true; s.bought["grand-crease"] = true; s.bought["crease-field"] = true;
+        s.book.open = true;
+        const ns = [12, 5, 1, 4, 2, 13, 1, 7, 1];
+        engine.CONTENT.PATTERNS.forEach((p, k) => { s.book.found[p.id] = { n: ns[k], at: s.clock, ready: k % 3 === 0 ? s.spawn.activeMs + 90000 : 0 }; });
+        s.spawn.fieldIn = 3;
+        s.spawn.fold = { id: "f950", kind: "napkin", slot: 9, born: s.spawn.shownMs };
+        s.rev++;
+        export const out = engine.view(s, s.clock, { tab: "book" }).book.cards.filter((c) => c.state === "found").length;`);
+      assert.equal(setup.out, 9);
+      host.render();
+      host.fire("cw-tab-book", "on_click", {});
+      const bookMs = [];
+      for (let i = 0; i < 24; i++) {
+        if (i % 6 === 0) host.advance(1000);
+        bookMs.push(host.render().ms);
+      }
+      assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
+      const tree = JSON.stringify(host.render().tree);
+      assert.ok(tree.includes('"cw-book-coil-fold"') && tree.includes('"cw-book-ridge-fold"'), "every card found, with its fold tile");
+      for (const ms of bookMs) assert.ok(ms < BUDGETS.render, `${width}: Book tab render ${ms} ms`);
+      const p50 = pct(bookMs.slice(4), 0.5);
+      assert.ok(p50 <= 16, `${width}: Book tab render p50 ${p50.toFixed(1)} ms`);
+      console.log(`# qjs Book tab, all nine found, 64 agents, ${width} px: render p50 ${p50.toFixed(1)} ms (max ${Math.max(...bookMs).toFixed(1)})`);
+    } finally {
+      host.dispose();
+    }
+  }
+});

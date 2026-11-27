@@ -25,7 +25,7 @@ import { pickScene, pickHues, S_LIGHT, S_DARK } from "../../mods/creaseworks/ui/
 import { contrast } from "../../mods/creaseworks/ui/color.js";
 import { renderPanel, TAB_ROW, bookOpen } from "../../mods/creaseworks/ui/panel.js";
 import { renderMat, matGeometry, fieldBoxes, fieldChipBox, resultChipBox, clearOf, dotCentre, DOT_LOOK, FIELD, MAT_CLIP, MAT_BANDS } from "../../mods/creaseworks/ui/mat.js";
-import { renderBook, BOOK_CLIP, BOOK_HELP, CARD, bookColumns, cardWidth, cardLines, cardHeight } from "../../mods/creaseworks/ui/book.js";
+import { renderBook, BOOK_CLIP, BOOK_HELP, CARD, PIPS_W, bookColumns, cardWidth, cardLines, cardHeight, drawSize } from "../../mods/creaseworks/ui/book.js";
 import { foldPaths, spritePath } from "../../mods/creaseworks/ui/art.js";
 import { CORPUS, hasLoneSurrogate } from "../text/corpus.js";
 
@@ -400,7 +400,7 @@ test("the boost bar: the field's words when no chip shows; Ridge's charge is a s
     const steady = findById(j, "cw-boostbar-steady");
     assert.ok(steady && texts(steady).includes("Ridge · steady"));
     assert.equal(findById(j, "cw-boostbar-steady-bar"), null, "no countdown");
-    assert.equal(styleVal(steady, "tooltip"), "Ridge: your next short pause costs no beats");
+    assert.equal(styleVal(steady, "tooltip"), "Ridge: your next pause of up to 4 s keeps your rhythm");
     const coil = findById(j, "cw-boostbar-coil");
     assert.ok(texts(coil).includes("Coil ×2"));
     assert.equal(styleVal(coil, "tooltip"), "Coil: hand hits ×2 · 6 s left");
@@ -518,6 +518,68 @@ test("the tab row fits at 226 and 200 px with a three-digit Flock count (measure
 // ---------------------------------------------------------------------------
 // The Book tab
 
+test("Book cards: at every panel width 280-460 the column beside the drawing holds the pips; the drawing gives way, the card height never does", () => {
+  const s = F.scenario("book");
+  for (let width = 280; width <= 460; width++) {
+    const w = cardWidth(width);
+    const draw = drawSize(w);
+    const side = w - 2 * CARD.pad - draw - 4;
+    assert.ok(side >= PIPS_W, `${width}: side ${side} < ${PIPS_W}`);
+    assert.ok(side >= CARD.tile, `${width}: the fold tile fits`);
+    assert.ok(draw <= CARD.draw && draw >= 36, `${width}: drawing ${draw}`);
+    if (w - 2 * CARD.pad - 4 - CARD.draw >= PIPS_W) assert.equal(draw, CARD.draw, `${width}: full size where it fits`);
+  }
+  for (const width of [280, 320, 331, 400, 439, 440]) {
+    const json = renderBook(s.vm, s.ui, makeCtx("paper", { ...s, width })).toJSON();
+    for (const c of s.vm.book.cards) {
+      const el = findById(json, `cw-book-${c.id}`);
+      assert.equal(styleVal(findById(el, `cw-book-${c.id}-draw`), "w"), drawSize(cardWidth(width)));
+      assert.equal(styleVal(findById(el, `cw-book-${c.id}-side`), "min_w"), PIPS_W);
+      assert.ok(styleVal(el, "h") >= cardHeight(cardLines(c, width < 280)), `${width} ${c.id}: as tall as at full size`);
+    }
+  }
+});
+
+test("Book cards: the pips, the fold tile and the count never cross the drawing's right edge, 280-460 px (measured in Chromium)", { skip: !playwright && "playwright is not installed" }, async () => {
+  const { renderDocument } = await import("../../tools/render/html.mjs");
+  const browser = await playwright.chromium.launch();
+  const dir = mkdtempSync(join(tmpdir(), "cw-book-side-"));
+  try {
+    const page = await browser.newPage({ viewport: { width: 460, height: 900 } });
+    for (let width = 280; width <= 460; width += 3) {
+      const s = F.scenario("book");
+      const ctx = makeCtx("paper", { ...s, width });
+      const tree = renderBook(s.vm, s.ui, ctx);
+      const file = join(dir, `${width}.html`);
+      writeFileSync(file, renderDocument(tree, { width, height: 900, background: ctx.T.background, theme: ctx.T, assetRoot: root }));
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(pathToFileURL(file).href);
+      const bad = await page.evaluate(() => {
+        const out = [];
+        for (const d of document.querySelectorAll('[data-id$="-draw"]')) {
+          const id = d.dataset.id.replace(/-draw$/, "");
+          const right = d.getBoundingClientRect().right;
+          const side = document.querySelector(`[data-id="${id}-side"]`);
+          if (!side) continue;
+          // the card's content box ends 6 px (its padding) inside its right edge
+          const edge = document.querySelector(`[data-id="${id}"]`).getBoundingClientRect().right - 6;
+          for (const k of side.querySelectorAll("*")) {
+            const r = k.getBoundingClientRect();
+            if (r.width > 0 && r.left < right - 0.5) out.push(`${id}: ${k.tagName} at ${r.left.toFixed(1)} < ${right.toFixed(1)}`);
+            if (r.width > 0 && r.right > edge + 0.5) out.push(`${id}: ${k.tagName} ends at ${r.right.toFixed(1)} > ${edge.toFixed(1)} (clipped)`);
+          }
+        }
+        return out;
+      });
+      assert.deepEqual(bad, [], `${width} px`);
+    }
+    await page.close();
+  } finally {
+    await browser.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the Book tab renders in both themes: header, line, help until 3 are found (then the info tooltip), nine cards in 2 / 3 / 4 columns", () => {
   for (const name of ["book", "book-narrow"]) {
     for (const th of THEME_NAMES) {
@@ -567,7 +629,7 @@ test("Book cards: found cards name the diagram, status and effect (the short lab
       const el = findById(json, `cw-book-${c.id}`);
       const t = texts(el);
       const draw = findById(el, `cw-book-${c.id}-draw`);
-      assert.ok(draw && styleVal(draw, "w") === CARD.draw && styleVal(draw, "bg") === ctx.S.sheet, `${c.id}: the paper square`);
+      assert.ok(draw && styleVal(draw, "w") === drawSize(cardWidth(width)) && styleVal(draw, "bg") === ctx.S.sheet, `${c.id}: the paper square`);
       const paths = [];
       walk(draw, (n) => n.kind === "path" && paths.push(n));
       if (c.state === "found") {

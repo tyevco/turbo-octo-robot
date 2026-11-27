@@ -151,6 +151,28 @@ test("B17: a save still newer than the reloaded build keeps the window read-only
   assert.equal(w.ctl.readFile(SAVE), text, "never written");
 });
 
+test("B17: a second copy opening in the same code generation keeps a read-only window read-only: banner, no write, nothing recorded", async () => {
+  const s = engine.newGame({ seed: 5, now: Date.now() - 1000 });
+  s.version = 99;
+  const text = engine.serialize(s);
+  w = win({ files: { [SAVE]: text } });
+  const v = await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.readOnly, true);
+  assert.equal(w.slot.notice.kind, "newer");
+  const writes = w.ctl.writes.length;
+  await w.copy("ribbon"); // no reload: the same build adopts the slot
+  assert.equal(w.slot.readOnly, true, "still read-only");
+  assert.equal(w.slot.save.status, "readonly");
+  assert.equal(w.slot.notice.kind, "newer", "the banner stays");
+  await w.hits(v, 3);
+  assert.equal((w.slot.pending || []).length, 0, "read-only play is never recorded");
+  await w.advance(20000);
+  assert.equal(w.ctl.writes.length, writes, "no write attempted");
+  assert.equal(w.slot.readOnly, true);
+  assert.equal(w.ctl.readFile(SAVE), text);
+});
+
 for (const variant of [
   { name: "the old write landed", latency: { write: 200, read: 400 }, cas: 0 },
   { name: "the old write lands after the new read", latency: { write: 600, read: 0 }, cas: 1 },

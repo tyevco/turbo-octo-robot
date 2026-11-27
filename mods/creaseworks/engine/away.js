@@ -27,6 +27,7 @@ export function awaySegment(state, ctx, t0, t1, ev) {
   const bo = state.boosts;
   if (bo.rushEnd > t0) bo.rushEnd += gap;
   if (bo.stormEnd > t0) bo.stormEnd += gap;
+  if ((bo.coilEnd || 0) > t0) bo.coilEnd += gap;
   const sec = a / 1000;
 
   const works = E.awayF * E.Rw * sec;
@@ -222,6 +223,7 @@ export function skipCounted(state, now) {
   const bo = state.boosts;
   if (bo.rushEnd > c) bo.rushEnd += shift;
   if (bo.stormEnd > c) bo.stormEnd += shift;
+  if ((bo.coilEnd || 0) > c) bo.coilEnd += shift;
   if (state.spawn.syncedTo < to) state.spawn.syncedTo = to;
   state.clock = to;
   if (shift > K.awayAfterMs && !state.notices.some((n) => n.kind === "clock")) pushNotice(state, { kind: "clock", at: to });
@@ -243,6 +245,7 @@ export function rebase(state, now, ev) {
   const bo = state.boosts;
   if (bo.rushEnd > state.clock) bo.rushEnd += shift;
   if (bo.stormEnd > state.clock) bo.stormEnd += shift;
+  if ((bo.coilEnd || 0) > state.clock) bo.coilEnd += shift;
   state.clock = now;
   state.away.lastSegmentEnd = state.away.lastSegmentEnd === null ? null : Math.min(state.away.lastSegmentEnd, now);
   // What a later absence below the mark may skip grows by this clock-back (≤ 8 h).

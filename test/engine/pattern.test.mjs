@@ -89,6 +89,10 @@ test("PATTERNS: nine diagrams in book order; every canon is rebuilt from its dot
     assert.ok(engine.graphemeCount(p.name) <= 12, `${p.id} name`);
     assert.equal(p.hint === null, p.id === "ridge", `${p.id} hint`);
     if (p.hint !== null) assert.ok(engine.graphemeCount(p.hint) <= 44, `${p.id} hint`);
+    // a number never wraps away from its unit on a card: a no-break space joins them
+    for (const str of [p.text, p.short]) assert.doesNotMatch(str, /\d[ \t\n](s|%|min)\b/, `${p.id}: "${str}" breaks between a number and its unit`);
+    // the effect words are the player's: no beats, no figure (internal units)
+    assert.doesNotMatch(`${p.text} ${p.short}`, /\bbeats?\b|\bfigure\b/i, `${p.id}: internal words`);
   }
   assert.equal(new Set(all).size, all.length, "no two diagrams share a canon");
   // Ridge's two canons: straight across and corner to corner

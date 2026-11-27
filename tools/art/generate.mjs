@@ -457,10 +457,12 @@ const FOLDS = {
     base: [P(1, "3,3 21,3 21,21 3,21")],
     shade: [P(1, "21,3 21,21 3,21")],
   },
-  // a diamond with one centre crease: two facets shaded
+  // a diamond tile with one crease across its middle: the lower facet shaded
+  // (larger than the Sheet's frame-3 diamond, and split the other way: that
+  // one is creased top to bottom with its right half shaded)
   lozenge: {
     base: [P(1, "12,1 23,12 12,23 1,12")],
-    shade: [P(1, "12,1 23,12 12,12"), P(1, "1,12 12,12 12,23")],
+    shade: [P(1, "1,12 23,12 12,23")],
   },
   // three steps seen from the side: treads shaded, risers in sheet
   stair: {

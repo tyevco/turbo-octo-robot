@@ -4,8 +4,8 @@
 // must differ by at least a minimum number of whole pixels of coverage, and
 // each sprite must cover a sensible share of its square. The nine fold pieces
 // (DESIGN §4.7 "Art"), base and shade drawn together, are held to the same
-// bound against each other and against the scrap, ream, gilded crane, boat
-// and species sprites, and each shade lies on its base.
+// bound against each other and against the scrap, ream, gilded crane, boat,
+// the Sheet's fold frames and the species sprites, and each shade lies on its base.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -105,13 +105,15 @@ test("status glyphs are distinguishable at 12 px in greyscale", { skip }, async 
 const FOLDS = ["ridge", "gull", "napkin", "lozenge", "stair", "sail", "switchback", "hem", "coil"];
 const foldLayers = (id) => [uri(`scene/fold-${id}-base.svg`), uri(`scene/fold-${id}-shade.svg`)];
 
-test("the nine fold pieces are distinct 16 px silhouettes, against each other and the scrap, ream, crane, boat and species sprites", { skip }, async () => {
+test("the nine fold pieces are distinct 16 px silhouettes, against each other and the scrap, ream, crane, boat, Sheet frames and species sprites", { skip }, async () => {
   const folds = Object.fromEntries(FOLDS.map((id) => [`fold-${id}`, foldLayers(id)]));
   const others = {
     scrap: [uri("scene/scrap.svg")],
     ream: [uri("scene/ream.svg")],
     crane: ["body", "shade", "outline"].map((l) => uri(`scene/crane-gilded-${l}.svg`)),
     boat: [uri("scene/boat-hull.svg"), uri("scene/boat-sail.svg")],
+    // the Sheet's own eight fold frames: no fold piece may read as one of them (frame 3 is a diamond)
+    ...Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7].map((k) => [`sheet-${k}`, [uri(`sheet/${k}-base.svg`), uri(`sheet/${k}-shade.svg`)]])),
     ...Object.fromEntries(NAMES.folk.map((n) => [n, ["a", "b", "c"].map((s) => uri(`folk/${n}-${s}.svg`))])),
   };
   const maps = await withPage((page) => coverage(page, { ...folds, ...others }, 16));

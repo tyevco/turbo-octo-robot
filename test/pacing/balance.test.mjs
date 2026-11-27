@@ -214,9 +214,9 @@ test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE
   assert.match(p15[1], /\*\*100 %\*\*/);
   assert.match(table(section(md, "Other profiles")).rows.find((r) => r[0].startsWith("P14"))[1], /\*\*75 %\*\*/);
   assert.match(section(md, "P1 typical"), /success \*\*90 %\*\* per attempt/);
-  // §12.3: seventeen rows, each with a bound the evaluator understands
+  // §12.3: eighteen rows, each with a bound the evaluator understands
   const rows = bal.pattern;
-  assert.deepEqual(rows.map((r) => r.id), Array.from({ length: 17 }, (_, i) => `B${i + 1}`));
+  assert.deepEqual(rows.map((r) => r.id), Array.from({ length: 18 }, (_, i) => `B${i + 1}`));
   const B = Object.fromEntries(rows.map((r) => [r.id, r]));
   assert.equal(B.B2.key, "buy:crease-field");
   assert.deepEqual([B.B2.median.lo, B.B2.median.hi], [parseClock("9:20"), parseClock("13:20")]);
@@ -233,6 +233,8 @@ test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE
   assert.deepEqual([B.B10.median.hi, B.B11.median.hi, B.B12.median.hi], [0.06, 0.02, 0.01]);
   assert.deepEqual([B.B13.median.ref, B.B13.median.lo, B.B13.median.hi], ["P1", -2700, 0]);
   assert.deepEqual([B.B14.median.ref, B.B14.median.hi], ["P1", 5400]);
+  // B18: calm keeps a field-ignoring hand's node income (inv. 12 with fields left alone)
+  assert.deepEqual([B.B18.median.lo, B.B18.every.lo], [0.99, 0.9]);
   assert.equal(B.B1.median.same, true);
   assert.equal(B.B15.median.same, true);
   // P15's §5 row carries B13's lower bound

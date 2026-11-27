@@ -322,8 +322,8 @@ function setTrace(state, ctx, f, closed, t, ev, rt = state.clock, lifeEnd = fals
     const ids = [];
     for (const k in state.book.found) ids.push(k);
     if (info.next) ids.push(info.next);
-    const near = nearMiss(path, ids);
-    sp.lastField = { pattern: null, path, closed, tier: 0, first: false, near: near ? near.id : null, more: near ? near.more : 0, rest: null, at: t };
+    const near = nearMiss(path, ids, closed);
+    sp.lastField = { pattern: null, path, closed, tier: 0, first: false, near: near ? near.id : null, more: near ? near.more : 0, close: !!(near && near.close), rest: null, at: t };
     f.path = [];
     ev.push({ kind: "trace", result: "loose" });
     return;
@@ -356,7 +356,7 @@ function setTrace(state, ctx, f, closed, t, ev, rt = state.clock, lifeEnd = fals
       ev.push({ kind: "spawn", what: "fold", id: fid });
     }
   }
-  sp.lastField = { pattern: id, path, closed, tier, first, near: null, more: 0, rest, pulled: rest === null && pulled, at: t };
+  sp.lastField = { pattern: id, path, closed, tier, first, near: null, more: 0, close: false, rest, pulled: rest === null && pulled, at: t };
   sp.field = null;
   ev.push({ kind: "trace", result: "match", pattern: id, first, tier });
 }
@@ -389,7 +389,14 @@ function foldEffect(state, kind, t, ev) {
       sp.hurry = 1;
       break;
     case "margin": sp.fieldIn = 1; break;
-    case "windup": state.boosts.coilEnd = Math.max(state.boosts.coilEnd || 0, t + K.coilMs); break;
+    case "windup": {
+      // Rush and Confetti take over while they run, so the 10 s start once they end:
+      // a Coil clicked under one is pending, never used up unseen
+      const b = state.boosts;
+      const from = Math.max(t, b.stormEnd || 0, b.rushEnd || 0);
+      b.coilEnd = Math.max(b.coilEnd || 0, from + K.coilMs);
+      break;
+    }
     default: break;
   }
   const rec = Object.hasOwn(state.book.found, kind) ? state.book.found[kind] : null;
@@ -535,8 +542,11 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         // Crease fields (§4.7) take every K.fieldEvery-th primary chain's place;
         // Confetti's chains are always numbered and never count down.
         const fields = !storm && sp.fieldIn !== null && sp.fieldIn !== undefined;
-        if (fields && sp.field && state.settings.nodes !== false) {
-          sp.nextChainAt = sp.activeMs + K.fieldWaitMs; // a field is up: the chain waits
+        // A field is up: the chain waits for it, but never past the field's normal-mode
+        // life (K.fieldLifeMs of mat-shown time), so calm's longer field life (catch
+        // chance only) never costs a player who leaves the field alone a chain.
+        if (fields && sp.field && state.settings.nodes !== false && sp.shownMs - sp.field.born <= K.fieldLifeMs) {
+          sp.nextChainAt = sp.activeMs + K.fieldWaitMs;
           break;
         }
         const key = !sp.chain ? "chain" : storm && !sp.chain2 ? "chain2" : null;
@@ -550,7 +560,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         if (state.settings.nodes === false) break;
         if (!key) break;
         sp.hurry = 0;
-        if (fields && sp.fieldIn === 1) {
+        if (fields && sp.fieldIn === 1 && !sp.field) {
           const id = `p${sp.seq++}`;
           sp.field = { id, born: sp.shownMs, path: [] };
           sp.fieldIn = K.fieldEvery;
@@ -561,7 +571,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         if (!slots) break;
         const id = `c${sp.seq++}`;
         sp[key] = { id, k: E.chainK, next: 0, born: sp.shownMs, nodes: slots.map((slot, i) => ({ i, slot, done: false })) };
-        if (fields) sp.fieldIn -= 1;
+        if (fields && sp.fieldIn > 1) sp.fieldIn -= 1; // (at 1 a field still up keeps the next its turn)
         ev.push({ kind: "spawn", what: "chain", id });
         break;
       }

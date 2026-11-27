@@ -27,7 +27,7 @@ export const RIBBON_COUNTS = Object.freeze([0, 4, 34, 64, 130]);
 /** Window width → ribbon work width W (window − 268 px sidebar, DESIGN §3.10). */
 export const RIBBON_WIDTHS = Object.freeze({ 1100: 832, 1440: 1172 });
 /** The Pattern book's views (DESIGN §4.7, §15.3). */
-export const BOOK_VIEWS = Object.freeze(["field", "field-calm", "fold", "book", "book-narrow"]);
+export const BOOK_VIEWS = Object.freeze(["field", "field-calm", "fold", "book", "book-narrow", "book-280", "book-400"]);
 
 export const VIEW_NAMES = Object.freeze([
   "empty", "first-run", "standard-4", "needs-you-3", "finished-2", "tray-full", "storm", "crane", "boat",
@@ -761,6 +761,10 @@ const BUILDERS = {
     },
   })],
 
+  // the Book tab at the widths where the drawing gives way to the pips (DESIGN §4.7 drawSize)
+  "book-280": () => bookAt("book-280", 280),
+  "book-400": () => bookAt("book-400", 400),
+
   "book-narrow": () => [NARROW, ui({ tab: "book" }), base("book-narrow", {
     roster: STD, short: true, width: 226, bought: BOOK_BOUGHT,
     shelf: ["fox", "p:ridge", "crane"],
@@ -772,6 +776,18 @@ const BUILDERS = {
     settings: { values: { calm: true, pops: false } },
   })],
 };
+
+/** The `book` view at another panel width (book-280: Standard's narrowest; book-400: Wide's). */
+function bookAt(name, width) {
+  return [{ role: "panel", width, height: 784 }, ui({ tab: "book" }), base(name, {
+    roster: STD, bought: BOOK_BOUGHT, width,
+    shelf: ["koi", "p:gull", "crane", "p:stair"],
+    book: {
+      cards: true,
+      found: { ridge: [12, "rests 1:50"], gull: [5, "rests 2:22"], napkin: [2, "ready"], lozenge: [1, "ready"], stair: [1, "rests 2:36"] },
+    },
+  })];
+}
 
 for (const seg of SHOP_SEGMENTS) {
   BUILDERS[`shop-${seg}`] = () => [PANEL, ui({ tab: "shop", segment: seg }), base(`shop-${seg}`, { roster: STD })];

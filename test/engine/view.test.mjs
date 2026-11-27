@@ -1285,7 +1285,7 @@ test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fo
   assert.equal(engine.view(s, t + engine.CONTENT.K.fieldResultMs).sheet.fieldResult, null, "gone after 3 s");
   const fold = vm.mat.fold;
   assert.equal(fold.kind, "ridge");
-  assert.equal(fold.tooltip, "Ridge pleat · your next short pause costs no beats", "the fold piece's one name, as on its book card");
+  assert.equal(fold.tooltip, "Ridge pleat · one pause of up to 4\u00a0s keeps your rhythm", "the fold piece's one name, as on its book card");
   const pos = engine.slotPos(s.spawn.fold.slot, false);
   assert.deepEqual([fold.x, fold.y], [pos.x, pos.y]);
   assert.equal(engine.view(s, t + 100, { short: true }).mat.fold.y, engine.slotPos(s.spawn.fold.slot, true).y);
@@ -1333,7 +1333,7 @@ test("B17 vm.book: counts and marks, the tab dot, the line, the help; cards only
   assert.equal(card("napkin").status, "rests 1:40");
   assert.equal(card("ridge").fold, "Fold piece: Ridge pleat");
   // the tooltip says the tier counts are thresholds, beside the player's own count
-  assert.equal(card("ridge").tooltip, "Your next short pause costs no beats · traced 4 · learned at 4, mastered at 12");
+  assert.equal(card("ridge").tooltip, "One pause of up to 4\u00a0s keeps your rhythm · traced 4 · learned at 4, mastered at 12");
   assert.equal(card("gull").state, "next");
   assert.deepEqual(card("gull").dots, [[0, 0], [1, 1], [2, 0]]);
   assert.equal(card("gull").hint, "Down, then up: a bird far off");

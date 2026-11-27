@@ -661,6 +661,21 @@ add("book", { roster: STD, size: BOOK_SIZE }, async (v, tools) => {
   await trace(v, tools, "napkin", 2, false);
   S(v).handlers.tab("book", undefined);
 });
+// The Book tab at the narrowest Standard width (280 px: three columns of 82)
+// and the narrowest Wide one (400 px: four of 90), where the drawing gives
+// way to the pips (ui/book.js drawSize).
+for (const width of [280, 400]) {
+  add(`book-${width}`, { roster: STD, size: { width, height: 784 } }, async (v, tools) => {
+    bookGame(v);
+    await trace(v, tools, "ridge", 12, true);
+    await trace(v, tools, "gull", 5, true);
+    await trace(v, tools, "stair", 1, true);
+    await trace(v, tools, "lozenge", 1, false);
+    await tools.advance(16000);
+    await trace(v, tools, "napkin", 2, true);
+    S(v).handlers.tab("book", undefined);
+  });
+}
 // The Book tab at 1100 × 700 (Narrow: two columns, the short effect labels,
 // Book as its icon in the tab row): two found, so the help line still shows.
 add("book-narrow", { roster: STD, size: NARROW_SIZE }, async (v, tools) => {

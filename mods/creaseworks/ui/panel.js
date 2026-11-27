@@ -171,11 +171,13 @@ function boostBar(vm, ctx) {
       : type === "coil" ? foldPaths("coil").base
         : type === "steady" ? foldPaths("ridge").base
           : spritePath("ui", type === "song" ? "step" : "arrows");
-    // Ridge's charge is static (msLeft null): no countdown, a tooltip that says what it does.
+    // Ridge's charge and a Coil still waiting for Rush or Confetti to end are static
+    // (msLeft null): no countdown, a tooltip that says what it does.
     const timed = typeof b.msLeft === "number";
     const left = `${Math.ceil(num(b.msLeft) / 1000)} s left`;
     const tip = type === "coil" && timed ? `Coil: hand hits ×2 · ${left}` : timed ? `${b.label ?? type}: ${left}`
-      : type === "steady" ? "Ridge: your next short pause costs no beats" : String(b.label ?? type);
+      : type === "steady" ? "Ridge: your next pause of up to 4 s keeps your rhythm"
+        : type === "coil" ? `Coil: hand hits ×2 for 10 s once ${b.after === "Confetti" ? "Confetti" : "Rush"} ends` : String(b.label ?? type);
     const el = h_flex()
       .id(`cw-boostbar-${type}`)
       .h(22)
