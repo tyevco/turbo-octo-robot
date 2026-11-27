@@ -16,7 +16,8 @@ export function itemRow(id) {
   return findIn(UPGRADES, id) || findIn(AUTOMATIONS, id) || findIn(WORKSHOPS, id);
 }
 
-export const CLICK_SOURCES = Object.freeze(["sheet", "mini", "node", "scrap", "crane", "ream", "boat"]);
+// `pattern` (a matched crease field) and `fold` (a fold piece clicked) are the Pattern book's (DESIGN §4.7).
+export const CLICK_SOURCES = Object.freeze(["sheet", "mini", "node", "scrap", "crane", "ream", "boat", "pattern", "fold"]);
 
 /** Bench pace: eff(n) = n up to the knee (K.knee = 4), then 4·(n/4)^K.crowdExp (0.06). */
 export function eff(n) {
@@ -66,7 +67,7 @@ export function effects(state) {
     restFullMs: K.restFullMin * 60000, restMax: K.restMax, kidBonus: K.kidBonus, awayF: K.awayF,
     envMult: 1, durMult: 1, rushMult: K.rushMult, stormMult: K.stormMult,
     chainK: K.chainK, chainEveryMs: K.chainEveryMs, scrapMult: 1, craneLo: K.craneLo,
-    craneLifeMs: K.craneLifeMs, boat: false,
+    craneLifeMs: K.craneLifeMs, boat: false, field: false,
     envCap: state.wishes >= 250 ? K.envCapPerk : K.envCap,
     life: state.settings && state.settings.calm ? K.calmLife : 1,
     gather: !(state.settings && state.settings.gather === false),
@@ -95,6 +96,7 @@ export function effects(state) {
       case "crane": if (u.v < E.craneLo) E.craneLo = u.v; break;
       case "craneLife": E.craneLifeMs = u.v; break;
       case "boat": E.boat = true; break;
+      case "field": E.field = true; break;
       default: break;
     }
   }
@@ -106,6 +108,8 @@ export function effects(state) {
   E.scrapLifeMs = K.scrapLifeMs * E.life;
   E.craneLifeMs *= E.life;
   E.boatLifeMs = K.boatLifeMs * E.life;
+  E.fieldLifeMs = K.fieldLifeMs * E.life; // §4.7: crease fields and fold pieces live twice as long in calm mode
+  E.foldLifeMs = K.foldLifeMs * E.life;
   E.Rw = workshopRate(state, E.G);
   return E;
 }
@@ -243,6 +247,7 @@ export function estimateDelta(state, E, fl, item, o = {}) {
     case "away": return 0.10 * Rp;
     case "env": case "dur": case "rush": case "storm": return 0.08 * Rp;
     case "gap": case "combo": return 0.3 * activeFrac * hands(E.hand, E.echo, Rp);
+    case "field": return 0; // Crease Field has no estimate: never the best buy (BALANCE §12.1)
     default: return 0.4 * activeFrac * hands(E.hand, E.echo, Rp);
   }
 }

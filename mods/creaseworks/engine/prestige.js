@@ -157,9 +157,11 @@ export function wish(state, ctx, t, ev) {
   state.bank = 0;
   state.runFolds = 0;
   const b = state.boosts;
-  b.rush = 0; b.storm = 0; b.chorus = 0; b.song = 0; b.tailwind = 0; b.tailwindMs = 0; b.rushEnd = 0; b.stormEnd = 0;
+  b.rush = 0; b.storm = 0; b.chorus = 0; b.song = 0; b.tailwind = 0; b.tailwindMs = 0; b.rushEnd = 0; b.stormEnd = 0; b.coilEnd = 0;
   const hand = state.hand;
-  hand.r = 0; hand.frame = 0; hand.figures = []; hand.afterglowMs = 0;
+  hand.r = 0; hand.frame = 0; hand.figures = []; hand.afterglowMs = 0; hand.steady = 0;
+  // The Pattern book (state.book) is kept; Crease Field went with the other
+  // curios, and the new spawn block has no field, no fold piece, fieldIn null (§4.7).
   const sp = state.spawn;
   const craneAt = sp.cranesSeen === 0 ? K.craneFirstMs : sp.activeMs + K.craneFirstMs;
   state.spawn = newSpawn(sp.activeMs, sp.shownMs, sp.seq, sp.cranesSeen, sp.reamDay, craneAt, sp.syncedTo);

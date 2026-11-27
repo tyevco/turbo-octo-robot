@@ -375,16 +375,48 @@ function validateHead(s) {
     if (!isNum(s[k])) return k;
   }
   if (typeof s.day !== "string") return "day";
-  for (const path of MAP_FIELDS) if (!isObj(getPath(s, path))) return path;
+  // A version-1 state has no Pattern book yet (migrate fills an empty one); from 2 on it must be well formed.
+  const book = s.book;
+  if (book === undefined && !(s.version >= 2)) {
+    for (const path of MAP_FIELDS) if (path !== "book.found" && !isObj(getPath(s, path))) return path;
+  } else {
+    for (const path of MAP_FIELDS) if (!isObj(getPath(s, path))) return path;
+    const why = validateBook(book);
+    if (why) return why;
+  }
   for (const k of ["settings", "presence", "hand", "spawn", "boosts", "away", "notify", "stats", "ui"]) {
     if (!isObj(s[k])) return k;
   }
   for (const k of ["notices", "garlands"]) if (!Array.isArray(s[k])) return k;
   if (!Array.isArray(s.hand.figures) || !isNum(s.hand.r) || !isNum(s.hand.lastHitAt)) return "hand";
   if (!Array.isArray(s.spawn.scraps) || !isNum(s.spawn.activeMs)) return "spawn";
+  if (!validField(s.spawn.field)) return "spawn";
   for (const k of Object.keys(s.owned)) if (!isNum(s.owned[k]) || s.owned[k] < 0) return "owned";
   for (const k of Object.keys(s.applied)) if (!isNum(s.applied[k])) return "applied";
   return null;
+}
+
+/** The Pattern book (DESIGN §4.7, ARCHITECTURE B17): null when well formed, else "book". */
+function validateBook(book) {
+  if (!isObj(book) || typeof book.open !== "boolean" || !isObj(book.found)) return "book";
+  for (const k of Object.keys(book.found)) {
+    const f = book.found[k];
+    if (!isObj(f) || !Number.isInteger(f.n) || f.n < 1 || f.n > 9999) return "book";
+    if (!isNum(f.at) || f.at < 0 || !isNum(f.ready) || f.ready < 0) return "book";
+  }
+  return null;
+}
+
+/** A live crease field (spawn.field): absent, or { id, born, path of at most 9 distinct dots 0..8 }. */
+function validField(f) {
+  if (f === undefined || f === null) return true;
+  if (!isObj(f) || typeof f.id !== "string" || !isNum(f.born) || !Array.isArray(f.path) || f.path.length > 9) return false;
+  const seen = Object.create(null);
+  for (const i of f.path) {
+    if (!Number.isInteger(i) || i < 0 || i > 8 || seen[i]) return false;
+    seen[i] = true;
+  }
+  return true;
 }
 
 /** True when helpers entry `h` under key `k` is a valid record. */

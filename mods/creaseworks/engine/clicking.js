@@ -6,6 +6,7 @@ import { K, SPECIES, FREE_SLOTS, SLOT } from "./content.js";
 import { keyed } from "./prng.js";
 import { credit } from "./economy.js";
 import { addBoost } from "./envelopes.js";
+import { classifyTrace, traceMove, deadEnd, nearMiss, bookTier, bookInfo, patternOf } from "./pattern.js";
 
 /**
  * What gilded crane number `n` (0-based, spawn.cranesSeen) holds: "gift"
@@ -41,8 +42,9 @@ export function rhythmAt(state, E, t) {
   if (!(h.lastHitAt > 0)) return 0;
   const gap = t - h.lastHitAt;
   if (gap <= E.gapMs) return h.r;
-  // A short pause (review r8-03) costs K.slipBeats of the streak, not all of it.
-  return gap <= K.slipMs ? slipped(h.r) : 0;
+  // A short pause (review r8-03) costs K.slipBeats of the streak, not all of
+  // it; none with a Steady charge from a Ridge fold (§4.7).
+  return gap <= K.slipMs ? (h.steady === 1 ? h.r : slipped(h.r)) : 0;
 }
 
 /** What a streak of `r` keeps through a short pause: K.slipBeats fewer, at least 1 (§4.2). */
@@ -77,7 +79,9 @@ export function songMult(state) {
 export function hitBoost(state, E, t) {
   const b = state.boosts;
   if (t < b.stormEnd) return E.stormMult;
-  return t < b.rushEnd ? E.rushMult : 1;
+  if (t < b.rushEnd) return E.rushMult;
+  // Wind-up (a Coil fold, §4.7): ×2 while no Rush or Confetti runs; never stacks.
+  return t < (b.coilEnd || 0) ? K.coilMult : 1;
 }
 
 /** combo = 1 + comboMax · min(r, 40)/40. */
@@ -101,8 +105,10 @@ function handHit(state, E, t) {
   } else if (prev > 0 && gap <= K.slipMs) {
     // A short pause (a purchase, an envelope, a glance away) costs part of
     // the streak instead of ending it (review r8-03: a 1.5 s pause every 30 hits
-    // used to cost the whole In step build-up).
-    h.r = slipped(h.r);
+    // used to cost the whole In step build-up). A Steady charge (Ridge fold,
+    // §4.7) makes one such pause cost nothing.
+    if (h.steady === 1) h.steady = 0;
+    else h.r = slipped(h.r);
   } else {
     h.r = 1;
   }
@@ -136,20 +142,28 @@ export function click(state, ctx, action, t, ev) {
   switch (tgt) {
     case "sheet":
     case "mini": {
+      sheetFold(state, ctx, t, ev, tgt);
+      return ev;
+    }
+    case "dot": {
+      // A field dot is exactly a Sheet fold first (§4.7), then a trace step.
+      if (!sheetFold(state, ctx, t, ev, "sheet")) return ev;
+      const id = String(action.id ?? "");
+      const dash = id.lastIndexOf("-");
+      const f = sp.field;
+      if (dash <= 0 || !f || f.id !== id.slice(0, dash)) return ev; // a field that has gone: just the fold
+      const i = Number(id.slice(dash + 1));
+      traceClick(state, ctx, f, i, t, ev);
+      return ev;
+    }
+    case "fold": {
+      const fp = sp.fold;
+      if (!fp || action.id !== fp.id) return ignore(ev, "gone");
       if (!handHit(state, E, t)) return ignore(ev, "fast");
+      sp.fold = null;
       const r = ctx.rates(state.clock);
-      const v = vc(state, E, r, t);
-      const hand = state.hand;
-      hand.frame = (hand.frame + 1) % K.figureEvery;
-      if (hand.frame === 0) {
-        const species = SPECIES[Math.floor(keyed(state, `fig:${state.stats.hits}`) * SPECIES.length)];
-        hand.figures.push(species);
-        if (hand.figures.length > K.shelfMax) hand.figures.splice(0, hand.figures.length - K.shelfMax);
-        earn(state, ev, tgt, K.figureMult * v);
-        ev.push({ kind: "figure", species });
-      } else {
-        earn(state, ev, tgt, v);
-      }
+      earn(state, ev, "fold", K.foldPay * vc(state, E, r, t));
+      foldEffect(state, fp.kind, t, ev);
       return ev;
     }
     case "node": {
@@ -233,6 +247,136 @@ export function click(state, ctx, action, t, ev) {
   }
 }
 
+/** The Sheet's fold (§4.2): a credited hand hit paying Vc, or 5·Vc and a figure on the wrap. False when not credited. */
+function sheetFold(state, ctx, t, ev, src) {
+  const E = ctx.E;
+  if (!handHit(state, E, t)) {
+    ignore(ev, "fast");
+    return false;
+  }
+  const r = ctx.rates(state.clock);
+  const v = vc(state, E, r, t);
+  const hand = state.hand;
+  hand.frame = (hand.frame + 1) % K.figureEvery;
+  if (hand.frame === 0) {
+    const species = SPECIES[Math.floor(keyed(state, `fig:${state.stats.hits}`) * SPECIES.length)];
+    shelve(hand, species);
+    earn(state, ev, src, K.figureMult * v);
+    ev.push({ kind: "figure", species });
+  } else {
+    earn(state, ev, src, v);
+  }
+  return true;
+}
+
+function shelve(hand, item) {
+  hand.figures.push(item);
+  if (hand.figures.length > K.shelfMax) hand.figures.splice(0, hand.figures.length - K.shelfMax);
+}
+
+// ---------------------------------------------------------------------------
+// Crease fields and fold pieces (§4.7, ARCHITECTURE B17)
+
+/** A dot click's trace step on live field `f` (after its fold). */
+function traceClick(state, ctx, f, i, t, ev) {
+  const move = traceMove(f, i);
+  if (move === "none") return;
+  if (move === "start") {
+    f.path = [i];
+    ev.push({ kind: "trace", result: "start" });
+    return;
+  }
+  if (move === "step") {
+    f.path.push(i);
+    ev.push({ kind: "trace", result: "step" });
+    if (deadEnd(f.path) && f.path.length >= 3) setTrace(state, ctx, f, false, t, ev);
+    return;
+  }
+  setTrace(state, ctx, f, move === "close", t, ev);
+}
+
+/**
+ * Set field `f`'s trace (open, or `closed`) at `t`: a match pays
+ * matchPerDot · n · Vc (+ firstFindPerDot · n · Vc on the first find) to
+ * `pattern`, counts in the book, may drop a fold piece and ends the field; a
+ * loose crease pays nothing more and clears the trace for another try.
+ */
+function setTrace(state, ctx, f, closed, t, ev, rt = state.clock) {
+  const sp = state.spawn;
+  const path = f.path.slice();
+  const id = classifyTrace(path, closed);
+  if (id === null) {
+    const info = bookInfo(state);
+    const ids = [];
+    for (const k in state.book.found) ids.push(k);
+    if (info.next) ids.push(info.next);
+    const near = nearMiss(path, ids);
+    sp.lastField = { pattern: null, path, closed, tier: 0, first: false, near: near ? near.id : null, more: near ? near.more : 0, rest: null, at: t };
+    f.path = [];
+    ev.push({ kind: "trace", result: "loose" });
+    return;
+  }
+  const p = patternOf(id);
+  const r = ctx.rates(rt);
+  const v = vc(state, ctx.E, r, t);
+  const book = state.book;
+  let rec = Object.hasOwn(book.found, id) ? book.found[id] : null;
+  const first = !rec;
+  earn(state, ev, "pattern", (K.matchPerDot + (first ? K.firstFindPerDot : 0)) * p.n * v);
+  if (first) {
+    rec = { n: 1, at: t, ready: 0 };
+    book.found[id] = rec;
+  } else {
+    rec.n = Math.min(K.bookCountMax, rec.n + 1);
+  }
+  state.ui.hints.field = true;
+  const tier = bookTier(rec.n);
+  let rest = null;
+  if (rec.ready > sp.activeMs) {
+    rest = rec.ready - sp.activeMs;
+  } else if (!sp.fold) {
+    const slots = pickSlots(state, sp, 1);
+    if (slots) {
+      const fid = `f${sp.seq++}`;
+      sp.fold = { id: fid, kind: id, slot: slots[0], born: sp.shownMs };
+      ev.push({ kind: "spawn", what: "fold", id: fid });
+    }
+  }
+  sp.lastField = { pattern: id, path, closed, tier, first, near: null, more: 0, rest, at: t };
+  sp.field = null;
+  ev.push({ kind: "trace", result: "match", pattern: id, first, tier });
+}
+
+/** A fold piece of diagram `kind` clicked at `t`: its effect, its rest, the shelf. */
+function foldEffect(state, kind, t, ev) {
+  const p = patternOf(kind);
+  if (!p) return;
+  const sp = state.spawn;
+  const hand = state.hand;
+  switch (p.fx) {
+    case "steady": hand.steady = 1; break;
+    case "pull":
+      // at most once per crane, never closer than gullMinMs, never later than it was
+      if (sp.gullFor !== sp.cranesSeen && sp.nextCraneAt - sp.activeMs > K.gullMinMs) {
+        sp.nextCraneAt = Math.max(sp.activeMs + K.gullMinMs, sp.nextCraneAt - K.gullPullMs);
+        sp.gullFor = sp.cranesSeen;
+      }
+      break;
+    case "glow": hand.afterglowMs = Math.min(K.glowMaxMs, hand.afterglowMs + K.napkinGlowMs); break;
+    case "finish": hand.frame = Math.max(hand.frame, K.lozengeFrame); break;
+    case "lift": hand.r = Math.min(K.rMax, hand.r + K.stairBeats); break;
+    case "wind": sp.windUntil = sp.activeMs + K.windMs; break;
+    case "hurry": sp.nextChainAt = Math.min(sp.nextChainAt, sp.activeMs + K.hurryMs); break;
+    case "margin": sp.fieldIn = 1; break;
+    case "windup": state.boosts.coilEnd = Math.max(state.boosts.coilEnd || 0, t + K.coilMs); break;
+    default: break;
+  }
+  const rec = Object.hasOwn(state.book.found, kind) ? state.book.found[kind] : null;
+  if (rec) rec.ready = sp.activeMs + K.patternRestMs;
+  shelve(hand, `p:${kind}`);
+  ev.push({ kind: "fold", pattern: kind, fx: p.fx });
+}
+
 function ignore(ev, reason) {
   ev.push({ kind: "ignored", reason });
   return ev;
@@ -248,6 +392,7 @@ function freeSlots(sp) {
   for (const c of [sp.chain, sp.chain2]) if (c) for (const n of c.nodes) used[n.slot] = true;
   for (const s of sp.scraps) used[s.slot] = true;
   if (sp.crane) used[sp.crane.slot] = true;
+  if (sp.fold) used[sp.fold.slot] = true;
   const out = [];
   for (const i of FREE_SLOTS) if (!used[i]) out.push(i);
   return out;
@@ -310,12 +455,15 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
     for (const key of ["chain", "chain2"]) {
       const c = sp[key];
       if (!c) continue;
-      consider(c.born + E.nodeLifeMs - S0, key);
-      if (creaseHelperOn(state) && !c.helped) consider(c.born + K.creaseHelperAt * E.nodeLifeMs - S0, `help-${key}`);
+      const life = lifeOf(state, E, "chain", c);
+      consider(c.born + life - S0, key);
+      if (creaseHelperOn(state) && !c.helped) consider(c.born + K.creaseHelperAt * life - S0, `help-${key}`);
     }
-    for (const s of sp.scraps) consider(s.born + E.scrapLifeMs - S0, "scrap-out");
-    if (sp.crane) consider(sp.crane.born + E.craneLifeMs - S0, "crane-out");
-    if (sp.boat) consider(sp.boat.born + E.boatLifeMs - S0, "boat-out");
+    for (const s of sp.scraps) consider(s.born + lifeOf(state, E, "scrap", s) - S0, "scrap-out");
+    if (sp.crane) consider(sp.crane.born + lifeOf(state, E, "crane", sp.crane) - S0, "crane-out");
+    if (sp.boat) consider(sp.boat.born + lifeOf(state, E, "boat", sp.boat) - S0, "boat-out");
+    if (sp.field) consider(sp.field.born + lifeOf(state, E, "field", sp.field) - S0, "field-out");
+    if (sp.fold) consider(sp.fold.born + lifeOf(state, E, "fold", sp.fold) - S0, "fold-out");
     if (active) {
       consider(sp.nextChainAt - A0, "chain-in");
       consider(sp.nextScrapAt - A0, "scrap-in");
@@ -348,20 +496,44 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
       }
       case "scrap-out": {
         const lim = S0 + x;
-        sp.scraps = sp.scraps.filter((s) => s.born + E.scrapLifeMs > lim);
+        sp.scraps = sp.scraps.filter((s) => s.born + lifeOf(state, E, "scrap", s) > lim);
         break;
       }
       case "crane-out": sp.crane = null; break;
       case "boat-out": sp.boat = null; break;
+      case "field-out": {
+        // Life end (§4.7): a trace of 3 or more dots sets, open, at Vc of this moment.
+        const f = sp.field;
+        if (f.path.length >= 3) setTrace(state, ctx, f, false, at, ev, at);
+        sp.field = null;
+        ev.push({ kind: "trace", result: "expired" });
+        break;
+      }
+      case "fold-out": sp.fold = null; break; // unclicked: no rest
       case "chain-in": {
+        // Crease fields (§4.7) take every K.fieldEvery-th primary chain's place;
+        // Confetti's chains are always numbered and never count down.
+        const fields = !storm && sp.fieldIn !== null && sp.fieldIn !== undefined;
+        if (fields && sp.field && state.settings.nodes !== false) {
+          sp.nextChainAt = sp.activeMs + K.fieldWaitMs; // a field is up: the chain waits
+          break;
+        }
         sp.nextChainAt = sp.activeMs + (storm ? K.chainStormMs : E.chainEveryMs);
         if (state.settings.nodes === false) break;
         const key = !sp.chain ? "chain" : storm && !sp.chain2 ? "chain2" : null;
         if (!key) break;
+        if (fields && sp.fieldIn === 1) {
+          const id = `p${sp.seq++}`;
+          sp.field = { id, born: sp.shownMs, path: [] };
+          sp.fieldIn = K.fieldEvery;
+          ev.push({ kind: "spawn", what: "field", id });
+          break;
+        }
         const slots = pickSlots(state, sp, E.chainK);
         if (!slots) break;
         const id = `c${sp.seq++}`;
         sp[key] = { id, k: E.chainK, next: 0, born: sp.shownMs, nodes: slots.map((slot, i) => ({ i, slot, done: false })) };
+        if (fields) sp.fieldIn -= 1;
         ev.push({ kind: "spawn", what: "chain", id });
         break;
       }
@@ -371,7 +543,9 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         const slots = pickSlots(state, sp, 1);
         if (!slots) break;
         const id = `s${sp.seq++}`;
-        sp.scraps.push({ id, slot: slots[0], born: sp.shownMs });
+        const sc = { id, slot: slots[0], born: sp.shownMs };
+        if (sp.activeMs < (sp.windUntil || 0)) sc.wind = true; // Fair wind (Sail fold, §4.7)
+        sp.scraps.push(sc);
         ev.push({ kind: "spawn", what: "scrap", id });
         break;
       }
@@ -382,6 +556,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
         const outcome = craneOutcome(state, sp.cranesSeen);
         const id = `g${sp.seq++}`;
         sp.crane = { id, slot: slots[0], born: sp.shownMs, outcome };
+        if (sp.activeMs < (sp.windUntil || 0)) sp.crane.wind = true;
         sp.cranesSeen++;
         sp.nextCraneAt = sp.activeMs + craneInterval(state, E);
         ev.push({ kind: "spawn", what: "crane", id, n: sp.cranesSeen });
@@ -410,9 +585,28 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
   if (active) sp.activeMs = A0 + dt;
 }
 
-/** ms of life left for a live chain / scrap / crane / boat (null for the ream). */
+/**
+ * The one source of piece lives (ARCHITECTURE B17), mat-shown ms: a chain's
+ * nodes, a scrap, a gilded crane, the boat, a crease field or a fold piece
+ * (`what`). Calm mode doubles every one (through E); a scrap or crane born
+ * under Fair wind (`item.wind`, a Sail fold) lives K.windLife times longer.
+ * spawnPiece and lifeLeft (so the view) both read it.
+ */
+export function lifeOf(state, E, what, item) {
+  const wind = item && item.wind === true ? K.windLife : 1;
+  switch (what) {
+    case "chain": return E.nodeLifeMs;
+    case "scrap": return E.scrapLifeMs * wind;
+    case "crane": return E.craneLifeMs * wind;
+    case "boat": return E.boatLifeMs;
+    case "field": return E.fieldLifeMs;
+    case "fold": return E.foldLifeMs;
+    default: return 0;
+  }
+}
+
+/** ms of life left for a live chain / scrap / crane / boat / field / fold (null for the ream). */
 export function lifeLeft(state, E, what, item) {
   if (!item || item.born === undefined) return null;
-  const life = what === "chain" ? E.nodeLifeMs : what === "scrap" ? E.scrapLifeMs : what === "crane" ? E.craneLifeMs : E.boatLifeMs;
-  return Math.max(0, item.born + life - state.spawn.shownMs);
+  return Math.max(0, item.born + lifeOf(state, E, what, item) - state.spawn.shownMs);
 }

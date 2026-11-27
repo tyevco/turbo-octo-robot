@@ -1,5 +1,6 @@
-// The pacing targets (ARCHITECTURE A11, B8; docs/BALANCE.md §2-§7): every
-// profile P1-P13 with seeds 1-20 through the real engine, then one test per
+// The pacing targets (ARCHITECTURE A11, B8; docs/BALANCE.md §2-§7, §12): every
+// profile P1-P15 with seeds 1-20 through the real engine, plus the §12.3
+// variant runs (no-book baselines, effect ablations), then one test per
 // BALANCE row. A row passes when the median lies in its pass window and every
 // seed in its every-seed window (BALANCE §2); provisional rows (M17) report as
 // TODO when they miss. PACING_SEEDS=1-5 runs fewer seeds (a quicker look; the
@@ -7,13 +8,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { availableParallelism } from "node:os";
-import { runAll, evaluate, report, parseSeeds, median } from "../../tools/sim/pacing.mjs";
+import { runAll, evaluate, report, parseSeeds, median, variantJobs } from "../../tools/sim/pacing.mjs";
 import { PROFILE_IDS, parseBalance, fmtClock } from "../../tools/sim/profiles.mjs";
 
 const seeds = parseSeeds(process.env.PACING_SEEDS || "1-20");
 const bal = parseBalance();
 const t0 = Date.now();
-const runs = await runAll(PROFILE_IDS, seeds, { workers: Math.max(1, Math.min(8, availableParallelism())) });
+// with the runs BALANCE §12.3 compares against (no-book baselines, effect ablations)
+const runs = await runAll(PROFILE_IDS, seeds, { workers: Math.max(1, Math.min(8, availableParallelism())), extra: variantJobs([...PROFILE_IDS], seeds) });
 const secs = (Date.now() - t0) / 1000;
 const ev = evaluate(runs, bal);
 
@@ -38,6 +40,29 @@ test("every BALANCE row is evaluated", () => {
     assert.ok(ids.has(`§7 inv2 ${id}`), `inv2 ${id}`);
   }
   for (const k of ["inv1", "inv9", "inv13", "inv14"]) assert.ok(ids.has(`§7 ${k}`), k);
+  for (const r of bal.pattern) assert.ok(ids.has(`§12 ${r.id}`), `§12 ${r.id}`);
+});
+
+// BALANCE §12.3 B1 and B15 hold by construction (no draw is added before the purchase, and P2
+// never buys Crease Field): asserted here seed by seed as well as in the rows.
+test("§12 B1, B15: nothing moves before Crease Field is bought; P2 is the --no-book run", () => {
+  for (const r of runs.P1) {
+    const b = runs["P1~nobook"].find((x) => x.seed === r.seed);
+    const at = r.milestones["buy:crease-field"];
+    assert.ok(Number.isFinite(at), `seed ${r.seed} never bought Crease Field`);
+    assert.equal(b.milestones["would:crease-field"], at, `seed ${r.seed}`);
+    assert.deepEqual(r.atBuy.src, b.atBuy.src, `seed ${r.seed}: sources at the purchase`);
+    for (const k in b.milestones) if (b.milestones[k] < at) assert.equal(r.milestones[k], b.milestones[k], `seed ${r.seed} ${k}`);
+  }
+  for (const r of runs.P2) {
+    const b = runs["P2~nobook"].find((x) => x.seed === r.seed);
+    assert.deepEqual(r.milestones, b.milestones, `P2 seed ${r.seed}`);
+    assert.equal(r.milestones["buy:crease-field"], undefined);
+  }
+  for (const id of ["B1", "B2", "B3", "B4", "B7", "B9", "B10", "B13", "B14", "B15"]) {
+    const row = ev.rows.find((x) => x.section === "§12" && x.id === id);
+    if (seeds.length >= 20) assert.ok(row.pass, `§12 ${id}: ${row.note || ""}`);
+  }
 });
 
 // Review r5-21: a "folds this run" milestone the night pot alone carries over its target says
@@ -130,7 +155,7 @@ const show = (r) => {
 };
 
 for (const r of ev.rows) {
-  const opts = r.provisional && !r.pass ? { todo: "provisional (BALANCE §4 M17: retune the later-wish gate)" } : {};
+  const opts = r.provisional && !r.pass ? { todo: r.section === "§12" ? "provisional (BALANCE §12.3)" : "provisional (BALANCE §4 M17: retune the later-wish gate)" } : {};
   test(`${r.section} ${r.id}: ${r.what}`, opts, () => {
     assert.ok(r.pass, show(r));
   });

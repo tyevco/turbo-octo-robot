@@ -92,7 +92,7 @@ test("upgrade costs match §7.3", () => {
     "night-shift": 500000, "night-owl": 5e7, "wax-seal": 10000, "ribbon-tie": 1e6, "long-ribbon": 100000,
     "longer-ribbon": 1e7, "brisk-charm": 3e6, "gale-charm": 1e8, "long-crease": 20000, "grand-crease": 2e6,
     "quick-creases": 200000, "scrap-basket": 100000, "crane-bait": 50000, "crane-song": 5e6, "slow-wings": 500000,
-    "harbour-ribbon": 1e6,
+    "harbour-ribbon": 1e6, "crease-field": 5e6, // §4.7 (issue #2)
   };
   for (const [id, c] of Object.entries(expect)) assert.equal(cost(id), c, id);
   assert.equal(CONTENT.UPGRADES.length, Object.keys(expect).length);

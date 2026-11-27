@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as engine from "../../mods/creaseworks/engine/index.js";
 import { readFileSync } from "node:fs";
-import { PROFILES, PROFILE_IDS, activeFrac, parseBalance, parseWindow, parseClock, fmtClock, section } from "../../tools/sim/profiles.mjs";
+import { PROFILES, PROFILE_IDS, MASTER_ORDER, activeFrac, parseBalance, parseWindow, parseClock, fmtClock, section, table, parsePatternCell } from "../../tools/sim/profiles.mjs";
 import { SHARE_BUCKETS, handBeat } from "../../tools/sim/pacing.mjs";
 
 const bal = parseBalance();
@@ -162,7 +162,7 @@ test("§6 shares: the four buckets cover every income source the engine credits,
   // day-1 floor, under its all-seed minimum; the others keep the 5 / 10 / 12 % bar
   assert.match(section(readFileSync(new URL("../../docs/BALANCE.md", import.meta.url), "utf8"), "6.2").split("\n")[0], /every seed/);
   assert.deepEqual(bal.dayShares.find((r) => r.id === "P3").mins, [0.045, 0.1, 0.12]);
-  for (const id of ["P4", "P5", "P7", "P8", "P10", "P11", "P14"]) assert.deepEqual(bal.dayShares.find((r) => r.id === id).mins, [0.05, 0.1, 0.12], id);
+  for (const id of ["P4", "P5", "P7", "P8", "P10", "P11", "P14", "P15"]) assert.deepEqual(bal.dayShares.find((r) => r.id === id).mins, [0.05, 0.1, 0.12], id);
   assert.ok(bal.sessions.p1Min > bal.sessions.handsMin);
 });
 
@@ -187,9 +187,54 @@ test("§8 knobs: the current values in BALANCE.md are the constants in engine/co
     5: [K.awayF, ...away],
     6: [C.GROWTH],
     7: [C.PRESTIGE.minGain, C.PRESTIGE.gateShare],
+    8: [K.matchPerDot, K.fieldEvery, K.patternRestMs / 1000],
   };
-  assert.deepEqual(bal.knobs.map((k) => k.order), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(bal.knobs.map((k) => k.order), [1, 2, 3, 4, 5, 6, 7, 8]);
   for (const k of bal.knobs) assert.deepEqual(k.values, want[k.order], `knob ${k.order} (${k.knob}): "${k.text}"`);
   // inv. 4's bound uses the top away factor
   assert.equal(bal.invariants.awayF, Math.max(...want[5]));
+});
+
+test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE §3 and §12.1 state; every §12.3 row parses", () => {
+  // §12.1: P1 90 %, P14 75 %, P11 90 %, P15 100 % with its own order; P2 never traces or buys Crease Field
+  assert.equal(PROFILES.P1.traceSuccess, 0.9);
+  assert.equal(PROFILES.P11.traceSuccess, 0.9);
+  assert.equal(PROFILES.P14.traceSuccess, 0.75);
+  assert.equal(PROFILES.P15.traceSuccess, 1);
+  assert.equal(PROFILES.P15.bookPick, "master");
+  assert.equal(PROFILES.P12.traceSuccess, PROFILES.P1.traceSuccess, "calm traces as P1");
+  assert.equal(PROFILES.P2.traceSuccess, 0);
+  assert.ok(!PROFILES.P2.autoBuy.includes("crease-field"));
+  for (const id of PROFILE_IDS) if (PROFILES[id].hands) assert.ok(PROFILES[id].autoBuy.includes("crease-field"), id);
+  assert.deepEqual([...MASTER_ORDER].sort(), C.PATTERNS.map((p) => p.id).sort());
+  assert.deepEqual([...MASTER_ORDER], ["switchback", "coil", "napkin", "lozenge", "gull", "stair", "ridge", "sail", "hem"]);
+  // §3 states the numbers
+  const md = readFileSync(new URL("../../docs/BALANCE.md", import.meta.url), "utf8");
+  const p15 = table(section(md, "Other profiles")).rows.find((r) => r[0].startsWith("P15"));
+  assert.match(p15[1], /\*\*100 %\*\*/);
+  assert.match(table(section(md, "Other profiles")).rows.find((r) => r[0].startsWith("P14"))[1], /\*\*75 %\*\*/);
+  assert.match(section(md, "P1 typical"), /success \*\*90 %\*\* per attempt/);
+  // §12.3: sixteen rows, each with a bound the evaluator understands
+  const rows = bal.pattern;
+  assert.deepEqual(rows.map((r) => r.id), Array.from({ length: 16 }, (_, i) => `B${i + 1}`));
+  const B = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(B.B2.key, "buy:crease-field");
+  assert.deepEqual([B.B2.median.lo, B.B2.median.hi], [parseClock("9:20"), parseClock("13:20")]);
+  assert.deepEqual([B.B3.median.ref, B.B3.median.hi, B.B3.every.hi], ["B2", 2400, 4800]);
+  assert.deepEqual([B.B4.key, B.B4.every.ref, B.B4.every.strict], ["book:found>=9", "M15", true]);
+  assert.equal(B.B5.provisional, true);
+  assert.equal(B.B6.provisional, true);
+  assert.equal(B.B16.provisional, true);
+  assert.deepEqual([B.B7.median.lo, B.B7.median.hi, B.B7.median.base.lo, B.B7.median.base.hi], [0.2, 0.38, -0.005, 0.04]);
+  assert.deepEqual([B.B9.median.lo, B.B9.median.hi], [-1800, 600]);
+  assert.deepEqual([B.B10.median.hi, B.B11.median.hi, B.B12.median.hi], [0.06, 0.02, 0.01]);
+  assert.deepEqual([B.B13.median.ref, B.B13.median.lo, B.B13.median.hi], ["P1", -2700, 0]);
+  assert.deepEqual([B.B14.median.ref, B.B14.median.hi], ["P1", 5400]);
+  assert.equal(B.B1.median.same, true);
+  assert.equal(B.B15.median.same, true);
+  // P15's §5 row carries B13's lower bound
+  assert.equal(bal.firstWish.find((r) => r.id === "P15").extra[0].text, "median ≥ P1 median − 0:45");
+  // the click bucket has the Pattern book's sources
+  for (const k of ["pattern", "fold"]) assert.ok(SHARE_BUCKETS.click.includes(k), k);
+  assert.throws(() => parsePatternCell("about a minute"));
 });

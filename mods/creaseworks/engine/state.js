@@ -3,7 +3,11 @@
 
 import { K } from "./content.js";
 
-export const VERSION = 1;
+// 2: the Pattern book (DESIGN §4.7, ARCHITECTURE B17): `book`, the crease
+// field and fold piece in `spawn`, hand.steady, boosts.coilEnd, ui.hints.field
+// and .book. A version-1 state migrates through fillDefaults (an empty, closed
+// book); a build that knows only 1 reads a version-2 state as newer.
+export const VERSION = 2;
 
 // Every field (dotted path from the state root) holding a data-keyed map.
 // The save codec and cloneState rebuild each one into Object.create(null).
@@ -17,6 +21,7 @@ export const MAP_FIELDS = Object.freeze([
   "envelopes",
   "stats.bySource",
   "stats.runBySource",
+  "book.found",
 ]);
 
 /** A fresh null-prototype map, optionally filled from `src`'s own keys. */
@@ -54,6 +59,10 @@ export function newSpawn(activeMs, shownMs, seq, cranesSeen, reamDay, craneAt, s
     chain: null, chain2: null, scraps: [], crane: null, boat: null, ream: null,
     reamDay,
     lastChain: null,
+    // §4.7: primary chains left until a crease field (null: Crease Field not bought this run),
+    // the live field and fold piece, the last set trace (its 3 s result), the crane a Gull
+    // fold already pulled (cranesSeen) and the end of Fair wind (active ms)
+    fieldIn: null, field: null, fold: null, lastField: null, gullFor: -1, windUntil: 0,
   };
 }
 
@@ -85,9 +94,9 @@ export function newGame({ seed = 1, now = 0, day = "1970-01-01" } = {}) {
       order: "urgency", density: "auto", style: "short",
     },
     presence: { visible: true, active: true, matShown: true, lastHandAt: 0, handBy: null },
-    hand: { lastHitAt: 0, r: 0, frame: 0, figures: [], afterglowMs: 0 },
+    hand: { lastHitAt: 0, r: 0, frame: 0, figures: [], afterglowMs: 0, steady: 0 },
     spawn: newSpawn(0, 0, 1, 0, day, K.craneFirstMs, now),
-    boosts: { rush: 0, storm: 0, chorus: 0, song: 0, tailwind: 0, tailwindMs: 0, rushEnd: 0, stormEnd: 0 },
+    boosts: { rush: 0, storm: 0, chorus: 0, song: 0, tailwind: 0, tailwindMs: 0, rushEnd: 0, stormEnd: 0, coilEnd: 0 },
     helpers: makeMap(),
     envelopes: makeMap(),
     // highWater: the latest wall time this save has counted (§10.1): after a
@@ -104,7 +113,11 @@ export function newGame({ seed = 1, now = 0, day = "1970-01-01" } = {}) {
     },
     // lastWish { at, fill }: when the last wish was made and how full the
     // String was (0..1), for the §3.5 wish moment (strands rise and fade).
-    ui: { hints: { fold: false, crane: false }, narrowHintDay: null, lastWish: null },
+    ui: { hints: { fold: false, crane: false, field: false, book: 0 }, narrowHintDay: null, lastWish: null },
+    // §4.7 the Pattern book, kept across wishes: open once Crease Field was
+    // bought; found: diagram id → { n traces, at (wall ms of the first find),
+    // ready (spawn.activeMs from which its fold piece may drop again) }
+    book: { open: false, found: makeMap() },
   };
 }
 

@@ -1185,3 +1185,192 @@ test("r7: serializeSteps writes the state as it was at its first step, whatever 
   assert.notEqual(engine.serialize(s), expect);
   assert.equal(engine.parseSave(r.value).ok, true);
 });
+
+// ---------------------------------------------------------------------------
+// State version 2: the Pattern book (DESIGN §4.7, ARCHITECTURE B17)
+
+/** A played game with the Pattern book in use: a few finds, a field mid-trace, a fold piece, Steady, Wind-up. */
+function withBook(s = played()) {
+  const me = writer(s, "wB");
+  s.book.open = true;
+  s.bought["crease-field"] = true;
+  s.book.found.ridge = { n: 5, at: T0 + 1, ready: 120000 };
+  s.book.found.coil = { n: 12, at: T0 + 2, ready: 0 };
+  s.spawn.fieldIn = 3;
+  s.spawn.field = { id: "p40", born: s.spawn.shownMs, path: [0, 1, 2] };
+  s.spawn.fold = { id: "f41", kind: "ridge", slot: 9, born: s.spawn.shownMs };
+  s.spawn.lastField = { pattern: "coil", path: [0, 1, 2, 5, 8, 7, 6, 3, 4], closed: false, tier: 3, first: false, near: null, more: 0, rest: null, at: s.clock };
+  s.hand.steady = 1;
+  s.hand.figures.push("p:coil");
+  s.boosts.coilEnd = s.clock + 5000;
+  s.ui.hints.field = true;
+  s.ui.hints.book = 4;
+  s.stats.bySource.pattern = 1234.5;
+  s.stats.bySource.fold = 6.5;
+  me.act({ t: s.clock + 1, type: "hint", key: "book", n: 6 });
+  return s;
+}
+
+/** The version-1 state of a version-2 one: everything B17 added taken out. */
+function toV1(st) {
+  const x = JSON.parse(JSON.stringify(st));
+  x.version = 1;
+  delete x.book;
+  for (const k of ["fieldIn", "field", "fold", "lastField", "gullFor", "windUntil"]) delete x.spawn[k];
+  delete x.hand.steady;
+  delete x.boosts.coilEnd;
+  delete x.ui.hints.field;
+  delete x.ui.hints.book;
+  return x;
+}
+
+test("state version 2: a full book round-trips exactly; book.found is a null-prototype map after a load", () => {
+  assert.equal(engine.VERSION, 2);
+  assert.equal(SAVE_VERSION, 5, "the packed encoding is unchanged");
+  const s = withBook();
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  assert.equal(doc.version, 5);
+  assert.equal(doc.state.version, 2);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true, back.reason);
+  assert.equal(Object.getPrototypeOf(back.state.book.found), null);
+  assert.deepEqual({ ...back.state.book.found.coil }, { n: 12, at: T0 + 2, ready: 0 });
+  assert.equal(back.state.ui.hints.book, 6);
+  assert.equal(engine.serialize(back.state), text);
+  assert.ok(engine.MAP_FIELDS.includes("book.found"));
+  // a cloned state keeps the map's null prototype too
+  assert.equal(Object.getPrototypeOf(engine.cloneState(s).book.found), null);
+});
+
+test("state version 1 → 2: every older file format migrates to an empty, closed book with no field due, written as 2 at the next save", () => {
+  const s = played();
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text);
+  const v1 = toV1(doc.state);
+  const v1text = (version) => {
+    if (version < 3) {
+      const body = JSON.stringify(v1);
+      return `{"format":"creaseworks-save","version":${version},"check":"${engine.fnv1a32(body)}","state":${body}}`;
+    }
+    return JSON.stringify({ format: "creaseworks-save", version, check: saveCheck(v1), state: v1 });
+  };
+  for (const version of [1, 2, 3, 4, 5]) {
+    const r = engine.parseSave(v1text(version));
+    assert.equal(r.ok, true, `format ${version}: ${r.reason}`);
+    const st = r.state;
+    assert.equal(st.version, 2, `format ${version}`);
+    assert.equal(st.book.open, false);
+    assert.equal(Object.keys(st.book.found).length, 0, "no find is credited after the fact");
+    assert.equal(Object.getPrototypeOf(st.book.found), null);
+    assert.deepEqual([st.spawn.fieldIn, st.spawn.field, st.spawn.fold, st.spawn.lastField, st.spawn.gullFor, st.spawn.windUntil], [null, null, null, null, -1, 0]);
+    assert.deepEqual([st.hand.steady, st.boosts.coilEnd, st.ui.hints.field, st.ui.hints.book], [0, 0, false, 0]);
+    assert.equal(st.bank, s.bank);
+    const again = JSON.parse(engine.serialize(st));
+    assert.equal(again.version, 5);
+    assert.equal(again.state.version, 2);
+  }
+  // a game that already owns Grand Crease sees fields only after buying Crease Field
+  const g = engine.parseSave(v1text(5)).state;
+  g.bought["long-crease"] = true;
+  g.bought["grand-crease"] = true;
+  assert.equal(g.spawn.fieldIn, null);
+  // hot reload adopts a live version-1 state and migrates it in place (no disk read, no rollback)
+  const live = engine.migrate(engine.cloneState(toV1(JSON.parse(text).state)));
+  assert.equal(live.version, 2);
+  assert.equal(live.bank, s.bank);
+});
+
+test("a build that knows only state version 1 reads a version-2 save as newer: read-only, never damaged, never written", async () => {
+  // that build: this engine with VERSION 1 (everything else as today), loaded from a copy
+  const { mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const src = new URL("../../mods/creaseworks/engine/", import.meta.url);
+  const dir = mkdtempSync(path.join(tmpdir(), "cw-v1-"));
+  for (const f of readdirSync(src)) {
+    let text = readFileSync(new URL(f, src), "utf8");
+    if (f === "state.js") text = text.replace("export const VERSION = 2;", "export const VERSION = 1;");
+    writeFileSync(path.join(dir, f), text);
+  }
+  let old;
+  try {
+    old = await import(path.join(dir, "index.js"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(old.VERSION, 1);
+  const text = engine.serialize(withBook());
+  const r = old.parseSave(text);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "newer");
+  assert.ok(r.state, "shown read-only");
+  assert.equal(r.state.book.found.coil.n, 12);
+});
+
+test("a malformed book or field is 'shape' (the damaged path), never clamped; prototype-named diagram ids stay plain keys", () => {
+  const good = JSON.parse(engine.serialize(withBook())).state;
+  const wrap = (st) => JSON.stringify({ format: "creaseworks-save", version: 5, check: saveCheck(st), state: st });
+  assert.equal(engine.parseSave(wrap(good)).ok, true);
+  for (const mutate of [
+    (x) => { x.book = 5; },
+    (x) => { delete x.book; }, // a version-2 state must have one
+    (x) => { x.book.open = "yes"; },
+    (x) => { x.book.found = []; },
+    (x) => { x.book.found.ridge.n = 0; },
+    (x) => { x.book.found.ridge.n = 10000; },
+    (x) => { x.book.found.ridge.n = 2.5; },
+    (x) => { x.book.found.ridge.at = -1; },
+    (x) => { x.book.found.ridge.ready = "soon"; },
+    (x) => { x.book.found.ridge = null; },
+    (x) => { x.spawn.field = { id: 4, born: 0, path: [] }; },
+    (x) => { x.spawn.field.path = [0, 0, 1]; },
+    (x) => { x.spawn.field.path = [0, 9]; },
+    (x) => { x.spawn.field.path = [0, 1, 2, 3, 4, 5, 6, 7, 8, 3]; },
+    (x) => { x.spawn.field.born = "now"; },
+    (x) => { x.spawn.field = "p1"; },
+  ]) {
+    const y = JSON.parse(JSON.stringify(good));
+    mutate(y);
+    const r = engine.parseSave(wrap(y));
+    assert.equal(r.reason, "shape", mutate.toString());
+  }
+  // __proto__ and constructor as diagram ids: plain keys, never prototypes, never counted
+  const y = JSON.parse(JSON.stringify(good));
+  const text = wrap(y).replace(`"found":{`, `"found":{"__proto__":{"n":2,"at":0,"ready":0},"constructor":{"n":1,"at":0,"ready":0},`);
+  const r = engine.parseSave(text.replace(/"check":"[0-9a-f]+"/, `"check":"${saveCheck(JSON.parse(text).state)}"`));
+  assert.equal(r.ok, true, r.reason);
+  const found = r.state.book.found;
+  assert.equal(Object.getPrototypeOf(found), null);
+  assert.ok(Object.hasOwn(found, "__proto__"));
+  assert.equal(found.constructor.n, 1);
+  assert.equal(engine.bookInfo(r.state).found, 2, "only real diagrams count");
+  assert.equal(engine.view(r.state, r.state.clock, { tab: "book" }).book.cards.length, 9);
+});
+
+test("format 5 + state 2: 4,000 present helpers with a full Pattern book still save under K.saveBudget, every helper with its game state; the book is < 1 KiB", () => {
+  const K = engine.CONTENT.K;
+  const s = seeded(35);
+  const me = writer(s, "w-7f3a9c2e41");
+  const { list } = bigRoster(1000, 3);
+  play(s, me, list, T0);
+  const plain = bytesOf(engine.serialize(s));
+  // the whole book, mastered at the count cap, a field mid-trace, a fold piece, the last result
+  withBook(s);
+  for (const p of engine.CONTENT.PATTERNS) s.book.found[p.id] = { n: K.bookCountMax, at: 1767225600000 + 123456789, ready: 9876543210 };
+  s.spawn.field.path = [0, 1, 2, 5, 8, 7, 6, 3];
+  const text = engine.serialize(s);
+  const bytes = bytesOf(text);
+  assert.ok(bytes <= K.saveBudget, `${bytes} bytes over the budget`);
+  assert.ok(saveBytes(s) >= bytes, `estimate ${saveBytes(s)} below ${bytes}`);
+  const book = bytesOf(JSON.stringify(JSON.parse(text).state.book));
+  assert.ok(book < 600, `the book is ${book} bytes`);
+  assert.ok(bytes - plain < 1024, `everything new is ${bytes - plain} bytes`);
+  const written = JSON.parse(text).state.helpers;
+  const present = presentOf(s);
+  assert.equal(present.length, 4000);
+  assert.equal(present.map((h) => tierOf(written[h.id])).filter((x) => x === "slim" || x === "stub" || x === undefined).length, 0);
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true, back.reason);
+  assert.equal(engine.serialize(back.state), text);
+});

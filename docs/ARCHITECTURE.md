@@ -540,10 +540,11 @@ long-streak endless-streak`. Folk: `rice-treats soft-brushes snug-bench paper-ha
 shared-rhythm deep-rest dreamy-rest warm-hands fledgling-wings flight-school night-shift
 night-owl`. Charms: `wax-seal ribbon-tie long-ribbon longer-ribbon brisk-charm gale-charm`.
 Curios: `long-crease grand-crease quick-creases scrap-basket crane-bait crane-song slow-wings
-harbour-ribbon`. Automations: `mail-sorter thrifty-fox boost-keeper crease-helper`.
+harbour-ribbon crease-field`. Automations: `mail-sorter thrifty-fox boost-keeper crease-helper`.
 Envelope types: `bundle rush storm chorus`. Boost kinds: `rush storm chorus song tailwind`.
 Species (index order): `crane frog fox koi rabbit turtle butterfly whale owl boat mouse snail`.
 Shop segments: `works tools folk charms curios auto`.
+Pattern book diagrams (book order, B17): `ridge gull napkin lozenge stair sail switchback hem coil`.
 
 ### B4. GameState (plain JSON; `MAP` fields are null-prototype objects in memory)
 
@@ -586,7 +587,7 @@ Shop segments: `works tools folk charms curios auto`.
 DESIGN §15.1, with these exact shapes:
 
 ```js
-{ type: "click", target: "sheet"|"mini"|"node"|"scrap"|"crane"|"boat"|"ream", id?, x?, y? }
+{ type: "click", target: "sheet"|"mini"|"node"|"scrap"|"crane"|"boat"|"ream"|"dot"|"fold", id?, x?, y? }  // dot, fold: B17
 { type: "open", helperId }                // opens that helper's envelope
 { type: "buy", item, count }              // count: 1 | 10 | "max" (workshops); 1 otherwise
 { type: "switch", id, on }                // automations
@@ -594,7 +595,7 @@ DESIGN §15.1, with these exact shapes:
 { type: "wish" }  { type: "collect" }  { type: "rebase" }
 { type: "observe", helpers: Observation[] | null, visible, active, matShown, day }
 { type: "dismiss", notice }  { type: "notified", event, day }
-{ type: "hint", key }                     // first-run hints seen
+{ type: "hint", key, n? }                 // first-run hints seen; key "book" carries n, the marks seen (B17)
 ```
 
 `Observation` (from `glue/observe.js buildObservation`): `{ addr, created, status
@@ -1403,3 +1404,202 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   (`creaseworks/album-memo`, `creaseworks/album-count`), non-enumerable, each entry tagged with the
   module generation (a memo from another generation is rebuilt), and the first set drops an older
   build's per-generation symbols, so a hot reload never leaves a memo behind on the state.
+
+### B17. Pattern book (issue #2; DESIGN §4.7, BALANCE §12; A2–A12 and B1–B16 still hold)
+
+The contract for crease fields, the nine diagrams, fold pieces and the Book tab. The engine owns
+every rule and number; the glue adds no timer and no herdr call; the UI only draws what the vm
+says.
+
+**Content (`engine/content.js`; literals only, A2 rule 2).**
+* `UPGRADES` gains `f({ id: "crease-field", seg: "curios", name: "Crease Field", cost: 5e6, fx:
+  "field", req: "grand-crease", text: "every 5th chain is a crease field on the Sheet" })`.
+* `PATTERNS`, frozen, in book order: `{ id, name, n, closed, dots: [[col, row]…], canon: ["o:…" |
+  "c:…"…], fold, short, text, hint, fx }`. `dots` is one tracing, its start first and never the
+  centre; `canon` the classifier's strings (Ridge has two); `fold` the fold's name; `short` the
+  effect in ≤ 16 graphemes (Narrow cards), `text` in full, `hint` the hidden card's line (null for
+  Ridge); `fx` the effect key (`steady pull glow finish lift wind hurry margin windup`). Ids are
+  part of the save format: `ridge gull napkin lozenge stair sail switchback hem coil`.
+* `K` gains the DESIGN §4.7 constants (`fieldEvery` … `coilMult`).
+* `economy.js CLICK_SOURCES` gains `pattern` and `fold` (so garlands' "your hands" stripe, the
+  §6.1 click row and the sim's click bucket count them).
+
+**Engine (`engine/pattern.js`, new; `engine/clicking.js`).** `pattern.js` imports only
+`content.js` and is pure:
+
+```js
+canonOf(path, closed) → "o:…" | "c:…"   // ≤ 144 candidate strings (8 symmetries × 2 directions × starts)
+classifyTrace(path, closed) → diagramId | null
+traceMove(field, i) → "start" | "step" | "set" | "close" | "none"   // what a click on dot i would do
+deadEnd(path) → bool                    // no unused neighbour of the last dot, first dot not next to it
+nearMiss(path, ids) → { id, more } | null   // path is the start of a tracing of one of ids (found + next)
+bookTier(n) → 0 | 1 | 2 | 3             // none, found (1), learned (4), mastered (12)
+bookInfo(state) → { found, marks, next: diagramId | null }
+```
+
+`clicking.js`:
+* **One source of piece lives**: `lifeOf(state, E, what, item)` for `chain scrap crane boat field
+  fold` (calm ×2 through `E.life`, Fair wind ×1.5 on a scrap or crane with `wind: true`).
+  `spawnPiece`'s `consider()` (including the Crease Helper's `creaseHelperAt` timing) and
+  `lifeLeft` both read it, so the engine and the view never disagree on a life.
+* **`chain-in`**: Confetti or `fieldIn === null` → as today. Otherwise, primary key only: a field
+  up → `nextChainAt = activeMs + K.fieldWaitMs` and nothing placed; `fieldIn === 1` → `spawn.field
+  = { id: "p<seq>", born: shownMs, path: [] }`, `fieldIn = K.fieldEvery`, event `spawn field`;
+  else a numbered chain as today and `fieldIn -= 1`. No keyed draw is added or consumed, so
+  numbered chains stay seed-for-seed identical.
+* **`field-out`** (life end): a trace of ≥ 3 dots is set open (a match pays at `Vc` of that
+  moment); then `spawn.field = null`. **`fold-out`**: `spawn.fold = null`, no rest started.
+* **`click` target `dot`** (`id` = `<fieldId>-<i>`): first exactly the `sheet` fold (hand hit,
+  frame, figure, `sheet` source; `ignored fast` when not credited, and then nothing else happens).
+  Then, if `spawn.field` has that id, `traceMove` decides: start (never `i === 4`), step, set
+  (open), close, or none; a dead end after a step sets open. A field that is gone leaves just the
+  fold. On a set: `classifyTrace`; a match pays `matchPerDot · n · Vc` (+ `firstFindPerDot · n · Vc`
+  on the first find) to `pattern`, bumps `book.found[id]` (`n` up to `bookCountMax`; `at` and
+  `ready: 0` on the first find; `ui.hints.field = true`), sets `lastField`, drops a fold when
+  `ready ≤ activeMs` and `spawn.fold` is null (`pickSlots(state, sp, 1)`, id `f<seq>`), and ends the
+  field; a loose set sets `lastField` (with `near`) and clears `path`.
+* **`click` target `fold`** (`id` = the fold's id): a hand hit (`ignored gone` / `fast` as for a
+  scrap) paying `foldPay · Vc` to `fold`; applies the diagram's `fx` (DESIGN §4.7 table:
+  `hand.steady = 1`; `nextCraneAt = max(activeMs + gullMinMs, nextCraneAt − gullPullMs)` once per
+  `cranesSeen` via `gullFor`; `afterglowMs += napkinGlowMs` to the cap; `frame = max(frame,
+  lozengeFrame)`; `r = min(40, r + stairBeats)`; `windUntil = activeMs + windMs`; `nextChainAt =
+  min(nextChainAt, activeMs + hurryMs)`; `fieldIn = 1`; `coilEnd = max(coilEnd, t + coilMs)`);
+  sets `book.found[id].ready = activeMs + patternRestMs`; pushes `p:<id>` onto `hand.figures`.
+* `handHit`: a pause over the rhythm gap but ≤ `K.slipMs` with `hand.steady === 1` keeps `r` and
+  clears `steady`. `hitBoost`: Confetti, else Rush, else `coilMult` while `t < coilEnd`, else 1.
+  Scrap and crane spawns made while `activeMs < windUntil` carry `wind: true`.
+* **Buying** `crease-field` sets `book.open = true` and `spawn.fieldIn = 1` (every purchase, so a
+  rebuy after a wish brings a field at the next chain). `effects()` gains `field` (bool),
+  `fieldLifeMs`, `foldLifeMs`; `estimate()` returns 0 for it (no best-buy dot, BALANCE §12.1).
+* **Wish** (`prestige.js`): keeps `book`; clears `crease-field` with the other curios; the new
+  spawn block has `fieldIn: null`, no field, no fold, `gullFor: -1`, `windUntil: 0`;
+  `hand.steady = 0`; `boosts.coilEnd = 0`.
+* The Crease Helper never reads `spawn.field`.
+
+**Actions (B5).** No new type. `click` gains targets `dot` and `fold` (`x, y`: the press in
+mat px, for the pop only). `hint` with `key: "book"` and `n` sets `ui.hints.book = max(ui.hints.book,
+n)`, so two windows merge to the larger. Every book change comes from a replayed click (A5), so
+merges and replays give the same book; there is no union rule.
+
+**Events (B2).** `{ kind: "spawn", what: "field" | "fold", id }`; `{ kind: "trace", result:
+"start" | "step" | "match" | "loose" | "expired", pattern?, first?, tier? }`; `{ kind: "fold",
+pattern, fx }`; `earn` sources `pattern` and `fold`.
+
+**State (B4; state `VERSION` 2).**
+
+```js
+book: { open: false, found: MAP<diagramId, { n, at, ready }> },  // n 1..9999; at wall ms of the
+                                                                  // first find; ready spawn.activeMs
+spawn: { …, fieldIn: null | 1..5,
+         field: null | { id: "p<seq>", born, path: [0..8, …] },  // distinct, ≤ 9
+         fold:  null | { id: "f<seq>", kind: diagramId, slot, born },
+         lastField: null | { pattern: diagramId | null, path, closed, tier, first, near: diagramId | null, at },
+         gullFor: -1, windUntil: 0 },                             // scrap / crane items: wind?: true
+hand:  { …, steady: 0 | 1 },                                      // figures may hold "p:<diagramId>"
+boosts: { …, coilEnd: 0 },                                        // wall ms on the hand timeline, like rushEnd
+ui: { hints: { …, field: false, book: 0 } },
+stats.bySource / stats.runBySource: + pattern, fold
+```
+
+`MAP_FIELDS` gains `"book.found"`. `bought["crease-field"]` is an ordinary upgrade.
+
+**Save format and migration.**
+* The state `VERSION` goes 1 → 2. `SAVE_VERSION` stays **5**: the packed encoding of helpers and
+  envelopes is unchanged, and the new fields are plain JSON outside them, counted in
+  `K.saveBytesRest` (16 KiB; the book is < 600 bytes full, everything new < 1 KiB), so the 896 KiB
+  budget and herdr's 1 MiB limit are untouched and `saveBytes*` need no change.
+* A version-1 save loads through `migrate()` → `fillDefaults(newGame())`: an empty, closed book,
+  `fieldIn: null` (a game that already owns Grand Crease sees fields only after buying Crease
+  Field), and is written as version 2 at its next save. No find is credited after the fact.
+* A build that knows only version 1 reads a version-2 state as **newer** (the existing
+  `st.version > VERSION` path, A4): read-only with the banner, never silent, never written, so it
+  can never misread a field, a `dot` action or a `p:` shelf entry. Two windows on mixed builds
+  therefore show the banner in the old one until it reloads.
+* Hot reload (A6): the new generation adopts the slot and migrates the live state in place; no
+  disk read, no rollback.
+* `validateHead` checks that `book` is an object with a boolean `open` and that every
+  `book.found` entry has an integer `n` in 1..9,999 and finite `at ≥ 0` and `ready ≥ 0`; otherwise
+  it returns `"book"`. A present `spawn.field` must have a string `id`, a finite `born` and a
+  `path` of at most 9 distinct integers 0..8, else `"spawn"`. Both reach `parseSave` as `shape`,
+  the damaged path (kept aside, backup used, banner, A4); nothing is clamped silently.
+* Determinism (BALANCE inv. 10): fields need no draw; the fold slot is `slot:<seq>:0` like any
+  `pickSlots` piece; spawn clocks belong to `presence.handBy` as today, and `dot` / `fold` clicks
+  are hand inputs, so the owner's spawn clocks run up to them first (`syncedTo`).
+
+**ViewModel (B6 additions; strings pre-clipped).**
+
+```js
+sheet: { …,
+  field: null | { id, dots: [{ i, col, row, state: "free"|"centre"|"next"|"used"|"last"|"close", tip }],
+                  line: [[col, row]…], fading: bool, hint: string | null },
+  fieldResult: null | { line: [[col, row]…], closed, style: "found"|"learned"|"mastered"|"loose", text } },
+mat: { …, fold: null | { id, kind, x, y, tooltip, fading }, shelf: [species | "p:<diagramId>"…] },
+boosts: [ …, { type: "coil", label: "Wind-up ×2", msLeft, msTotal: 10000 },
+             { type: "steady", label: "Steady", msLeft: null, msTotal: null } ],   // static chip
+book: { open, newMarks, found, of: 9, marks, marksOf: 27, count: "5 / 9 · 14 / 27 marks",
+        line, help: string | null, cards: [Card] }     // cards only when opts.tab === "book"
+Card = { id, name, state: "found"|"next"|"hidden", n, closed, dots: [[col, row]…] | null,
+         sub: "4 dots · closed", tier: 0..3, pips: [bool, bool, bool], count: "×7",
+         status: "ready"|"rests 1:40"|"fold on the mat"|null, effect, short, hint, fold, tooltip }
+```
+
+Field dots are given as grid `col, row`, not px: the drawn Sheet is 96 or 112 px by the panel's
+width as well as the vm's `short` (`matGeometry`), so `ui/mat.js` places dot centres at
+`sheet · (2·col + 1) / 6` inside the Sheet it draws. The fold piece is a slot centre like a scrap.
+`opts.tab` accepts `"book"`; the glue's vm cache already keys on `tab`.
+
+**UI (B11).**
+* `ui/book.js` exports `renderBook(vm, ui, ctx)` and `BOOK_CLIP` (`name 12, short 16, effect 44,
+  hint 40, line 60, chip 40`); 9 cards, 2 paint_paths each, built only on the Book tab.
+* `ui/panel.js`: `TABS` gains `{ key: "book", label: "Book", icon: "book" }`, shown when
+  `vm.book.open`; `RENDER.book`; with four tabs and `ctx.width < 280` every tab is `px(6)` and Book
+  is its icon, and below 220 the Flock tab drops its count; the `T.accent` dot when
+  `vm.book.newMarks`; Settings' back may be `"book"`.
+* `ui/mat.js`: after the Sheet and its ticks, one paint_path for the trace (or `fieldResult`)
+  line and nine `div#cw-dot-<fieldId>-<i>` (28×28) with `on_mouse_down("left", …)` and
+  `cx.stop_propagation()` calling `click("dot", id, pos)`; the result chip and the first-field
+  hint in the first-run chip's place; `div#cw-fold-<id>` like a scrap calling `click("fold", id,
+  pos)`; `p:` shelf entries drawn with the fold's base layer. No `.loop()` or `.spin()`; the dots'
+  2 s fade only when not calm.
+* Mat cost while a field is up: ≤ 9 dots, 1 path, 1 chip and 1 fold piece.
+
+**Glue.** No new timer, command or herdr call. `session.js` passes `click("dot" | "fold", id,
+pos)` as click actions and pops; opening the Book tab dispatches `hint` `book` with
+`vm.book.marks` when it is higher than `ui.hints.book`. `glue/views.js` gains the views `field`,
+`field-calm`, `fold`, `book`, `book-narrow` (with `test/fixtures/vm-fixtures.mjs VIEW_NAMES` and
+DESIGN §15.3's list, in one commit).
+
+**Simulator (B12).** BALANCE §12.1: the hit order, the tracer (`trace:<activeMs>:<attempt>`
+draws, success per profile), fold clicks, P15, the flags `--no-book`, `--no-pattern-fx` and
+`--fx-off <id>`, the keys `buy:crease-field` and `book:found|learned|mastered>=N`, and
+`SHARE_BUCKETS.click` with `pattern` and `fold`. §3's table, §8's knob list and
+`test/pacing/balance.test.mjs` change in the same commit as the sim (BALANCE §12.6).
+
+**Tests.**
+* `test/engine/pattern.test.mjs`: every `canon` rebuilt from its `dots`; the nine diagrams' canons
+  distinct; every one of 8 symmetries × 2 directions (× every start when closed) of every diagram
+  classifies to it, in every position it fits on 3 × 3; every 3-dot shape but Ridge and Gull is
+  loose; every diagram has a tracing from a non-centre start. The full enumeration of king-move
+  paths on 3 × 3 runs in Node only, never in the QuickJS harness.
+* `test/engine/clicking.test.mjs`: a dot click is exactly a Sheet fold plus the trace; the centre
+  never starts; each set rule; a loose set keeps the field and clears the path; a life-end set
+  pays; a dot click on a gone field is a fold; a chain due under a field waits and comes when it
+  ends; Confetti chains never count down; the Crease Helper leaves fields alone; each effect; the
+  rest; one fold piece at a time; `steady`, `coilEnd` and `wind` cleared or kept by a wish as
+  above; the book kept by a wish.
+* `test/engine/merge.test.mjs`: two lineages tracing different diagrams stay within the 1 % rule
+  and replay to the same book.
+* `test/engine/save-codec.test.mjs`: v1 → v2 migration (empty book, `fieldIn: null`); a v2 save read
+  by a v1 build is `newer`; a malformed book or field is `shape`; `book.found` has a null
+  prototype after a load; `__proto__` and `constructor` as diagram ids are rejected or kept as plain
+  keys, never as prototypes.
+* `test/engine/view.test.mjs` and the fixtures: the B6 additions; `cards` empty off the Book tab.
+* UI: one press on each dot centre and in each gap gives exactly one action (96 and 112 px Sheets,
+  zoom 1 and 1.5); the tab row fits at 226 and 200 px with three-digit Flock counts; loop budget 0
+  in calm and in steady state with a field and a fold piece up; every book string through `clip()`
+  and the emoji corpus.
+* `npm run test:qjs`: render with a field, a result chip and a fold piece up and 64 agents in the
+  Flock within the existing budgets (target ≤ 8 ms, limit 50 ms); the Book tab's render; a set
+  click (classifier included) far under the 500 ms callback limit.
+* Art: the 19 new SVGs through the checker, the theme-true tests in both scene halves and the 16 px
+  silhouette test. `npm run shots`: the new views at 1100×700 and 1440×900, paper and graphite.

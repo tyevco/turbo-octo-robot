@@ -372,3 +372,396 @@ test("r1-19: a missed first crane does not bring the line back on later cranes",
   assert.equal(s.ui.hints.crane, false);
   assert.equal(engine.view(s, T0 + 20, { role: "panel", width: 320 }).mat.crane.hint, null);
 });
+
+// ---------------------------------------------------------------------------
+// Crease fields, fold pieces and the Pattern book (DESIGN §4.7, ARCHITECTURE B17)
+
+const PAT = (id) => engine.CONTENT.PATTERNS.find((p) => p.id === id);
+const dotsOf = (id) => PAT(id).dots.map(([c, r]) => r * 3 + c);
+const earned = (ev, src) => ev.filter((e) => e.kind === "earn" && e.source === src).reduce((a, e) => a + e.amount, 0);
+
+/** A game with Crease Field bought and a crease field up (a click at `t` brought it in). */
+function withField(seed = 5, { calm = false } = {}) {
+  const s = seeded(seed);
+  const me = writer(s);
+  if (calm) me.act({ t: T0, type: "setting", key: "calm", value: true });
+  me.act({ t: T0 + 1, type: "click", target: "sheet" });
+  s.bought["long-crease"] = true;
+  s.bought["grand-crease"] = true;
+  s.bank += 1e8;
+  const ev = me.act({ t: T0 + 2, type: "buy", item: "crease-field", count: 1 });
+  assert.equal(ev[0].kind, "buy");
+  s.spawn.nextChainAt = s.spawn.activeMs + 100;
+  const t = T0 + 600;
+  const ev2 = me.act({ t, type: "click", target: "sheet" });
+  assert.ok(s.spawn.field, "the next chain is a field");
+  assert.ok(ev2.some((e) => e.kind === "spawn" && e.what === "field"));
+  return { s, me, t };
+}
+
+/** Click dot i of the live field (or of `fieldId`) at t. */
+const dot = (s, me, i, t, fieldId) => me.act({ t, type: "click", target: "dot", id: `${fieldId || s.spawn.field.id}-${i}` });
+
+/** Trace `dots` from t, 300 ms apart, then the setting click; returns { ev of the last click, t }. */
+function trace(s, me, dots, t, finish) {
+  const id = s.spawn.field.id;
+  let ev = [];
+  for (const i of dots) { t += 300; ev = dot(s, me, i, t, id); }
+  if (finish !== undefined) { t += 300; ev = dot(s, me, finish, t, id); }
+  return { ev, t };
+}
+
+test("§4.7 Crease Field: needs Grand Crease; opens the book; the next chain is a field; no estimate, so never the best buy", () => {
+  const s = seeded(2);
+  const me = writer(s);
+  s.bank = 1e9;
+  assert.equal(me.act({ t: T0 + 1, type: "buy", item: "crease-field", count: 1 })[0].reason, "locked");
+  s.bought["long-crease"] = true;
+  s.bought["grand-crease"] = true;
+  assert.equal(engine.estimate(s, "crease-field"), 0);
+  assert.equal(s.book.open, false);
+  assert.equal(s.spawn.fieldIn, null);
+  me.act({ t: T0 + 2, type: "buy", item: "crease-field", count: 1 });
+  assert.equal(s.book.open, true);
+  assert.equal(s.spawn.fieldIn, 1);
+  assert.equal(engine.view(s, T0 + 2, { tab: "shop" }).shop.segments.curios.find((r) => r.id === "crease-field").best, false);
+  assert.equal(engine.effects(s).field, true);
+});
+
+test("§4.7 a dot click is exactly a Sheet fold, then a trace step; the centre never starts", () => {
+  const { s, me, t } = withField();
+  const twin = engine.cloneState(s);
+  const tw = writer(twin);
+  // the same writer seq on both copies
+  for (let k = 0; k < me.seq; k++) tw.make({});
+  const a = dot(s, me, 4, t + 300);
+  const b = tw.act({ t: t + 300, type: "click", target: "sheet" });
+  assert.deepEqual(a.filter((e) => e.kind === "earn"), b.filter((e) => e.kind === "earn"), "the centre: only its fold");
+  assert.equal(s.bank, twin.bank);
+  assert.equal(s.hand.frame, twin.hand.frame);
+  assert.equal(s.stats.hits, twin.stats.hits);
+  assert.deepEqual(s.spawn.field.path, [], "the centre never starts a trace");
+  const c = dot(s, me, 0, t + 600);
+  const d = tw.act({ t: t + 600, type: "click", target: "sheet" });
+  assert.deepEqual(c.filter((e) => e.kind === "earn"), d.filter((e) => e.kind === "earn"), "a start pays its fold and nothing else");
+  assert.deepEqual(s.spawn.field.path, [0]);
+  assert.ok(c.some((e) => e.kind === "trace" && e.result === "start"));
+  // a dot that is not a step is only its fold
+  dot(s, me, 8, t + 900);
+  assert.deepEqual(s.spawn.field.path, [0]);
+  // a click too fast is ignored outright: no fold, no step
+  const fast = dot(s, me, 1, t + 920);
+  assert.equal(fast[0].reason, "fast");
+  assert.deepEqual(s.spawn.field.path, [0]);
+});
+
+test("§4.7 a match pays matchPerDot·n·Vc (+ firstFindPerDot·n·Vc the first time), counts in the book, drops a fold piece and ends the field", () => {
+  const { s, me, t } = withField();
+  const { ev } = trace(s, me, dotsOf("ridge"), t, dotsOf("ridge")[2]);
+  const m = ev.find((e) => e.kind === "trace" && e.result === "match");
+  assert.deepEqual([m.pattern, m.first, m.tier], ["ridge", true, 1]);
+  // the setting click's own fold pays Vc (5·Vc on a figure), so the match is a multiple of it
+  const fig = ev.some((e) => e.kind === "figure");
+  const vc = earned(ev, "sheet") / (fig ? K.figureMult : 1);
+  close(earned(ev, "pattern"), (K.matchPerDot + K.firstFindPerDot) * 3 * vc);
+  assert.equal(s.spawn.field, null, "a match ends the field");
+  assert.equal(s.book.found.ridge.n, 1);
+  assert.equal(s.book.found.ridge.ready, 0);
+  assert.equal(s.ui.hints.field, true);
+  assert.ok(s.spawn.fold && s.spawn.fold.kind === "ridge", "a fold piece landed");
+  assert.ok(engine.CONTENT.FREE_SLOTS.includes(s.spawn.fold.slot));
+  assert.equal(s.spawn.lastField.pattern, "ridge");
+  // a second Ridge pays without the first-find part
+  s.spawn.field = { id: "p999", born: s.spawn.shownMs, path: [] };
+  const r2 = trace(s, me, [6, 4, 2], t + 3000, 2);
+  const vc2 = earned(r2.ev, "sheet") / (r2.ev.some((e) => e.kind === "figure") ? K.figureMult : 1);
+  close(earned(r2.ev, "pattern"), K.matchPerDot * 3 * vc2);
+  assert.equal(s.book.found.ridge.n, 2);
+  assert.ok(r2.ev.every((e) => !(e.kind === "spawn" && e.what === "fold")), "one fold piece at a time");
+});
+
+test("§4.7 the four ways to set: last dot again, close on the first, a dead end, the field's life end (it pays)", () => {
+  // close: a Napkin
+  {
+    const { s, me, t } = withField(7);
+    const { ev } = trace(s, me, [0, 1, 4, 3], t, 0);
+    assert.equal(ev.find((e) => e.kind === "trace" && e.result === "match").pattern, "napkin");
+  }
+  // a dead end sets at once, open: all nine round the grid, ending away from the first
+  {
+    const { s, me, t } = withField(7);
+    const { ev } = trace(s, me, [0, 3, 6, 7, 4, 1, 2, 5, 8], t);
+    const set = ev.find((e) => e.kind === "trace" && (e.result === "match" || e.result === "loose"));
+    assert.ok(set, "the step onto 8 set the trace");
+    assert.equal(set.result, "loose", "a 9-dot S is no diagram");
+    assert.deepEqual(s.spawn.field.path, [], "loose: the trace clears and the field stays");
+  }
+  // life end with 3+ dots: sets open and pays at that moment's Vc
+  {
+    const { s, me, t } = withField(7);
+    trace(s, me, dotsOf("stair"), t);
+    assert.equal(s.spawn.field.path.length, 5);
+    const ev = engine.advance(s, t + 1500 + K.fieldLifeMs);
+    assert.ok(ev.some((e) => e.kind === "trace" && e.result === "match" && e.pattern === "stair"));
+    assert.ok(ev.some((e) => e.kind === "trace" && e.result === "expired"));
+    assert.ok(earned(ev, "pattern") > 0);
+    assert.equal(s.spawn.field, null);
+  }
+  // life end with fewer than 3 dots: nothing set, the field just goes
+  {
+    const { s, me, t } = withField(7);
+    trace(s, me, [0, 1], t);
+    const ev = engine.advance(s, t + 1500 + K.fieldLifeMs);
+    assert.ok(ev.some((e) => e.kind === "trace" && e.result === "expired"));
+    assert.ok(!ev.some((e) => e.kind === "trace" && (e.result === "match" || e.result === "loose")));
+    assert.equal(s.book.found.stair, undefined);
+  }
+});
+
+test("§4.7 a loose crease pays nothing more, keeps the field and clears the trace; its near miss names only found or next diagrams", () => {
+  const { s, me, t } = withField(9);
+  const { ev } = trace(s, me, [0, 1, 4], t, 4);
+  assert.ok(ev.some((e) => e.kind === "trace" && e.result === "loose"));
+  assert.equal(earned(ev, "pattern"), 0);
+  assert.ok(s.spawn.field, "the field stays up");
+  assert.deepEqual(s.spawn.field.path, []);
+  // the next to find is Ridge: an L is not its start, and Napkin is hidden, so nothing is named
+  assert.equal(s.spawn.lastField.near, null);
+  const vm = engine.view(s, t + 1300);
+  assert.equal(vm.sheet.fieldResult.text, "Loose crease");
+  assert.equal(vm.sheet.fieldResult.style, "loose");
+  // once Napkin is found, the same L is "Napkin needs 1 more"
+  s.book.found.napkin = { n: 1, at: T0, ready: 0 };
+  trace(s, me, [0, 1, 4], t + 1500, 4);
+  assert.equal(s.spawn.lastField.near, "napkin");
+  assert.equal(engine.view(s, t + 2900).sheet.fieldResult.text, "Loose · Napkin needs 1 more");
+});
+
+test("§4.7 a dot click on a field that has gone is a plain Sheet fold", () => {
+  const { s, me, t } = withField(11);
+  const id = s.spawn.field.id;
+  engine.advance(s, t + K.fieldLifeMs + 100);
+  assert.equal(s.spawn.field, null);
+  const ev = dot(s, me, 0, t + K.fieldLifeMs + 200, id);
+  assert.ok(ev.some((e) => e.kind === "earn" && e.source === "sheet"));
+  assert.ok(!ev.some((e) => e.kind === "ignored"));
+  assert.ok(!ev.some((e) => e.kind === "trace"));
+});
+
+test("§4.7 a chain due under a field waits a second at a time and comes when the field ends; then every 5th primary chain is a field", () => {
+  const { s, me, t } = withField(13);
+  assert.equal(s.spawn.fieldIn, K.fieldEvery);
+  const sp = s.spawn;
+  sp.nextChainAt = sp.activeMs + 50;
+  let tt = t + 300;
+  me.act({ t: tt, type: "click", target: "sheet" });
+  assert.equal(sp.chain, null, "no numbered chain shares the mat with a field");
+  assert.ok(sp.nextChainAt - sp.activeMs <= K.fieldWaitMs && sp.nextChainAt > sp.activeMs);
+  // finish the field: the chain comes within a second
+  trace(s, me, dotsOf("ridge"), tt, dotsOf("ridge")[2]);
+  tt += 1200;
+  assert.equal(sp.field, null);
+  tt += 1100;
+  me.act({ t: tt, type: "click", target: "sheet" });
+  assert.ok(sp.chain, "the waiting chain came");
+  assert.equal(sp.fieldIn, K.fieldEvery - 1);
+  // count primary chains down to the next field
+  const kinds = [];
+  for (let n = 0; n < 5; n++) {
+    sp.chain = null;
+    sp.field = null;
+    sp.nextChainAt = sp.activeMs + 50;
+    tt += 300;
+    const ev = me.act({ t: tt, type: "click", target: "sheet" });
+    kinds.push(ev.filter((e) => e.kind === "spawn").map((e) => e.what).join(""));
+  }
+  assert.deepEqual(kinds, ["chain", "chain", "chain", "field", "chain"]);
+});
+
+test("§4.7 Confetti chains are always numbered and never count down; 'Crease nodes appear' off turns fields off", () => {
+  const { s, me, t } = withField(15);
+  const sp = s.spawn;
+  sp.field = null;
+  sp.fieldIn = 1;
+  s.boosts.stormEnd = t + 60000;
+  s.boosts.storm = 60000;
+  sp.nextChainAt = sp.activeMs + 50;
+  me.act({ t: t + 300, type: "click", target: "sheet" });
+  assert.ok(sp.chain, "a numbered chain during Confetti");
+  assert.equal(sp.field, null);
+  assert.equal(sp.fieldIn, 1, "Confetti never counts down");
+  s.boosts.stormEnd = 0;
+  s.boosts.storm = 0;
+  sp.chain = null;
+  me.act({ t: t + 400, type: "setting", key: "nodes", value: false });
+  sp.nextChainAt = sp.activeMs + 50;
+  me.act({ t: t + 700, type: "click", target: "sheet" });
+  assert.equal(sp.field, null);
+  assert.equal(sp.chain, null);
+});
+
+test("§4.7 the Crease Helper never touches a field", () => {
+  const { s, me, t } = withField(17);
+  s.bought["crease-helper"] = true;
+  s.auto["crease-helper"] = true;
+  trace(s, me, [0, 1], t);
+  const ev = engine.advance(s, t + 1000 + K.fieldLifeMs);
+  assert.ok(!ev.some((e) => e.kind === "earn" && (e.source === "node" || e.source === "pattern")));
+  assert.equal(Object.keys(s.book.found).length, 0);
+  assert.equal(engine.view(s, s.clock, { tab: "shop" }).shop.segments.auto.find((r) => r.id === "crease-helper").note, "Only your own hands fill the book");
+});
+
+test("§4.7 each fold piece's effect; it pays 1·Vc to `fold`, rests its diagram 3 active minutes and hops onto the shelf", () => {
+  for (const p of engine.CONTENT.PATTERNS) {
+    const { s, me, t } = withField(19);
+    const sp = s.spawn;
+    sp.field = null;
+    s.book.found[p.id] = { n: 1, at: T0, ready: 0 };
+    sp.fold = { id: "f77", kind: p.id, slot: 1, born: sp.shownMs };
+    const before = { r: s.hand.r, frame: s.hand.frame, glow: s.hand.afterglowMs, crane: sp.nextCraneAt, chain: sp.nextChainAt };
+    const ev = me.act({ t: t + 300, type: "click", target: "fold", id: "f77" });
+    assert.ok(earned(ev, "fold") > 0, p.id);
+    assert.deepEqual(ev.find((e) => e.kind === "fold"), { kind: "fold", pattern: p.id, fx: p.fx });
+    assert.equal(sp.fold, null);
+    assert.equal(s.book.found[p.id].ready, sp.activeMs + K.patternRestMs, `${p.id} rests`);
+    assert.equal(s.hand.figures[s.hand.figures.length - 1], `p:${p.id}`);
+    switch (p.fx) {
+      case "steady": assert.equal(s.hand.steady, 1); break;
+      case "pull":
+        assert.equal(sp.nextCraneAt, Math.max(sp.activeMs + K.gullMinMs, before.crane - K.gullPullMs));
+        assert.equal(sp.gullFor, sp.cranesSeen);
+        break;
+      case "glow": assert.equal(s.hand.afterglowMs, Math.min(K.glowMaxMs, before.glow + K.napkinGlowMs)); break;
+      case "finish": assert.equal(s.hand.frame, K.lozengeFrame); break;
+      case "lift": assert.equal(s.hand.r, Math.min(K.rMax, before.r + 1 + K.stairBeats)); break;
+      case "wind": assert.equal(sp.windUntil, sp.activeMs + K.windMs); break;
+      case "hurry": assert.equal(sp.nextChainAt, Math.min(before.chain, sp.activeMs + K.hurryMs)); break;
+      case "margin": assert.equal(sp.fieldIn, 1); break;
+      case "windup": assert.equal(s.boosts.coilEnd, t + 300 + K.coilMs); break;
+      default: assert.fail(p.fx);
+    }
+    // a gone fold is ignored
+    assert.equal(me.act({ t: t + 600, type: "click", target: "fold", id: "f77" })[0].reason, "gone");
+  }
+});
+
+test("§4.7 rests and fold pieces: a resting diagram's match drops nothing (\"rests 1:40\"); an unclicked fold piece starts no rest", () => {
+  const { s, me, t } = withField(21);
+  trace(s, me, dotsOf("gull"), t, dotsOf("gull")[2]);
+  const fold = s.spawn.fold;
+  assert.equal(fold.kind, "gull");
+  // it expires unclicked: no rest
+  engine.advance(s, t + 2000 + K.foldLifeMs);
+  assert.equal(s.spawn.fold, null);
+  assert.equal(s.book.found.gull.ready, 0);
+  // the next Gull drops one again; clicking it rests Gull
+  s.spawn.field = { id: "p500", born: s.spawn.shownMs, path: [] };
+  let tt = t + 3000 + K.foldLifeMs;
+  me.act({ t: tt, type: "click", target: "sheet" });
+  ({ t: tt } = trace(s, me, dotsOf("gull"), tt, dotsOf("gull")[2]));
+  assert.equal(s.spawn.fold.kind, "gull");
+  tt += 300;
+  me.act({ t: tt, type: "click", target: "fold", id: s.spawn.fold.id });
+  const ready = s.book.found.gull.ready;
+  assert.equal(ready, s.spawn.activeMs + K.patternRestMs);
+  s.spawn.field = { id: "p501", born: s.spawn.shownMs, path: [] };
+  const r = trace(s, me, dotsOf("gull"), tt, dotsOf("gull")[2]);
+  assert.ok(r.ev.some((e) => e.kind === "trace" && e.result === "match"));
+  assert.equal(s.spawn.fold, null, "a resting diagram drops nothing");
+  assert.ok(s.spawn.lastField.rest > 0);
+  assert.match(engine.view(s, r.t + 10).sheet.fieldResult.text, /^Gull · rests \d:\d\d$/);
+  const card = engine.view(s, r.t + 10, { tab: "book" }).book.cards.find((c) => c.id === "gull");
+  assert.match(card.status, /^rests \d:\d\d$/);
+});
+
+test("§4.7 Steady keeps the streak through one short pause; Wind-up doubles hand hits only without Rush or Confetti; Fair wind lengthens scrap and crane lives", () => {
+  const s = seeded(23);
+  const me = writer(s);
+  let t = T0 + 1;
+  for (let i = 0; i < 45; i++, t += 800) me.act({ t, type: "click", target: "sheet" });
+  assert.equal(s.hand.r, 40);
+  s.hand.steady = 1;
+  const E = engine.effects(s);
+  assert.equal(engine.rhythmAt(s, E, t + 1500), 40, "the meter keeps it during the pause");
+  me.act({ t: t + 1500, type: "click", target: "sheet" });
+  assert.equal(s.hand.r, 40, "no beats lost");
+  assert.equal(s.hand.steady, 0, "the charge is used");
+  me.act({ t: t + 3500, type: "click", target: "sheet" });
+  assert.equal(s.hand.r, 30, "the next pause costs as usual");
+  // Wind-up
+  s.boosts.coilEnd = t + 20000;
+  assert.equal(engine.hitBoost(s, E, t + 5000), K.coilMult);
+  s.boosts.rushEnd = t + 10000;
+  assert.equal(engine.hitBoost(s, E, t + 5000), E.rushMult, "Rush takes over; no stacking");
+  s.boosts.stormEnd = t + 10000;
+  assert.equal(engine.hitBoost(s, E, t + 5000), E.stormMult);
+  assert.equal(engine.hitBoost(s, E, t + 30000), 1);
+  // Fair wind: lifeOf is the one source of lives; calm doubles every one
+  assert.equal(engine.lifeOf(s, E, "scrap", { wind: true }), K.scrapLifeMs * K.windLife);
+  assert.equal(engine.lifeOf(s, E, "crane", { wind: true }), K.craneLifeMs * K.windLife);
+  assert.equal(engine.lifeOf(s, E, "field", {}), K.fieldLifeMs);
+  assert.equal(engine.lifeOf(s, E, "fold", {}), K.foldLifeMs);
+  me.act({ t: t + 40000, type: "setting", key: "calm", value: true });
+  const Ec = engine.effects(s);
+  for (const what of ["chain", "scrap", "crane", "boat", "field", "fold"]) assert.equal(engine.lifeOf(s, Ec, what, {}), 2 * engine.lifeOf(s, E, what, {}), what);
+  // a scrap spawned under Fair wind carries the flag (a hand input first: spawns run on active time)
+  me.act({ t: t + 40100, type: "click", target: "sheet" });
+  s.spawn.windUntil = s.spawn.activeMs + 60000;
+  s.spawn.nextScrapAt = s.spawn.activeMs + 50;
+  me.act({ t: t + 40300, type: "click", target: "sheet" });
+  assert.equal(s.spawn.scraps[s.spawn.scraps.length - 1].wind, true);
+  assert.equal(engine.lifeLeft(s, Ec, "scrap", s.spawn.scraps[0]), 2 * K.scrapLifeMs * K.windLife - (s.spawn.shownMs - s.spawn.scraps[0].born));
+});
+
+test("§4.7 a wish keeps the book and clears Crease Field, the field, the fold piece, Steady and Wind-up", () => {
+  const { s, me, t } = withField(25);
+  trace(s, me, dotsOf("ridge"), t, dotsOf("ridge")[2]);
+  s.hand.steady = 1;
+  s.boosts.coilEnd = t + 1e6;
+  s.spawn.field = { id: "p42", born: s.spawn.shownMs, path: [0] };
+  s.lifetime = engine.lifetimeFor(1000);
+  const book = JSON.stringify(s.book);
+  const ev = me.act({ t: t + 5000, type: "wish" });
+  assert.ok(ev.some((e) => e.kind === "wish"));
+  assert.equal(JSON.stringify(s.book), book, "the book is kept");
+  assert.equal(s.book.open, true);
+  assert.equal(s.bought["crease-field"], undefined);
+  assert.deepEqual([s.spawn.fieldIn, s.spawn.field, s.spawn.fold, s.spawn.gullFor, s.spawn.windUntil], [null, null, null, -1, 0]);
+  assert.equal(s.hand.steady, 0);
+  assert.equal(s.boosts.coilEnd, 0);
+  assert.equal(engine.view(s, t + 5000).book.line, "Buy Crease Field (Curios) to bring fields back this run");
+  // a rebuy brings a field at the next chain
+  s.bought["long-crease"] = true;
+  s.bought["grand-crease"] = true;
+  s.bank = 1e8;
+  me.act({ t: t + 6000, type: "buy", item: "crease-field", count: 1 });
+  assert.equal(s.spawn.fieldIn, 1);
+});
+
+test("§4.7 determinism: the same seed and inputs, fields traced, give byte-identical saves; fields use no draw", () => {
+  const play = () => {
+    const { s, me, t } = withField(27);
+    let tt = t;
+    ({ t: tt } = trace(s, me, dotsOf("coil"), tt, dotsOf("coil")[8]));
+    if (s.spawn.fold) me.act({ t: tt + 300, type: "click", target: "fold", id: s.spawn.fold.id });
+    for (let i = 0; i < 200; i++) me.act({ t: tt + 600 + i * 700, type: "click", target: "sheet" });
+    engine.advance(s, tt + 600 + 200 * 700 + 5000);
+    return s;
+  };
+  const a = play();
+  const b = play();
+  assert.equal(engine.serialize(a), engine.serialize(b));
+  assert.equal(a.rng, a.seed, "no stream draw (every roll is keyed)");
+  assert.equal(a.book.found.coil.n, 1);
+});
+
+test("§4.7 the book hint merges as the larger number of marks seen; a bad one is ignored", () => {
+  const s = seeded(29);
+  const me = writer(s);
+  me.act({ t: T0, type: "hint", key: "book", n: 5 });
+  me.act({ t: T0 + 1, type: "hint", key: "book", n: 3 });
+  assert.equal(s.ui.hints.book, 5);
+  assert.equal(me.act({ t: T0 + 2, type: "hint", key: "book", n: 99 })[0].reason, "hint");
+  assert.equal(me.act({ t: T0 + 3, type: "hint", key: "book", n: "7" })[0].reason, "hint");
+  assert.equal(s.ui.hints.book, 5);
+});

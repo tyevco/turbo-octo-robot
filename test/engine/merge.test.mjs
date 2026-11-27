@@ -196,3 +196,50 @@ test("notification counter: per-day count across writers, day merged by max", ()
   assert.equal(s.notify.day, "2026-11-26");
   assert.equal(s.notify.sent, 1);
 });
+
+// Pattern book (ARCHITECTURE B17): every book change comes from a replayed click, so a merge
+// gives the book a single writer with the combined input would have (no union rule).
+test("two lineages tracing different diagrams on one field merge to the book of the combined input, within the 1 % rule", () => {
+  const s0 = engine.newGame({ seed: 17, now: T0, day: DAY });
+  const me0 = writer(s0, "w0");
+  me0.act({ t: T0 + 1, type: "click", target: "sheet" });
+  s0.bought["long-crease"] = true;
+  s0.bought["grand-crease"] = true;
+  s0.bank = 1e8;
+  me0.act({ t: T0 + 2, type: "buy", item: "crease-field", count: 1 });
+  s0.spawn.nextChainAt = s0.spawn.activeMs + 100;
+  me0.act({ t: T0 + 600, type: "click", target: "sheet" });
+  assert.ok(s0.spawn.field);
+  const fid = s0.spawn.field.id;
+  const base = engine.serialize(s0);
+  const A = engine.parseSave(base).state;
+  const B = engine.parseSave(base).state;
+  const wa = writer(A, "wA");
+  const wb = writer(B, "wB");
+  const actsA = [];
+  const actsB = [];
+  let t = T0 + 900;
+  for (const i of [0, 1, 2, 2]) actsA.push(wa.make({ t: (t += 300), type: "click", target: "dot", id: `${fid}-${i}` }));
+  for (const i of [0, 1, 4, 3, 0]) actsB.push(wb.make({ t: (t += 300), type: "click", target: "dot", id: `${fid}-${i}` }));
+  engine.replay(A, actsA);
+  engine.replay(B, actsB);
+  assert.deepEqual(Object.keys(A.book.found), ["ridge"], "lineage A found Ridge");
+  assert.deepEqual(Object.keys(B.book.found), ["napkin"], "lineage B found Napkin on its copy of the same field");
+  // B merges into A's save: A's match ended the field, so B's dot clicks are plain folds there
+  const merged = engine.parseSave(engine.serialize(A)).state;
+  engine.replay(merged, actsB);
+  engine.advance(merged, t + 1000, "wB");
+  // one writer with the combined input
+  const one = engine.parseSave(base).state;
+  engine.replay(one, [...actsA, ...actsB]);
+  engine.advance(one, t + 1000, "wB");
+  assert.deepEqual(JSON.parse(JSON.stringify(merged.book)), JSON.parse(JSON.stringify(one.book)));
+  assert.deepEqual(Object.keys(merged.book.found), ["ridge"]);
+  assert.deepEqual(merged.spawn.fold, one.spawn.fold, "the fold piece's slot is a seq-keyed draw");
+  assert.ok(Math.abs(merged.bank - one.bank) <= 0.01 * one.bank);
+  assert.equal(engine.serialize(merged), engine.serialize(one));
+  // and replaying the merged input twice changes nothing (idempotent by (w, s))
+  const again = engine.cloneState(merged);
+  engine.replay(again, [...actsA, ...actsB]);
+  assert.deepEqual(JSON.parse(JSON.stringify(again.book)), JSON.parse(JSON.stringify(merged.book)));
+});

@@ -10,7 +10,7 @@
 //   dense       boolean override of the Roster density setting
 //   style       "short" | "sci" override of the number style
 //   writer      this window's writerId (Elsewhere grouping, stale helpers)
-//   tab         the panel tab on show: "flock" (default) | "shop" | "string" | "settings"
+//   tab         the panel tab on show: "flock" (default) | "shop" | "string" | "book" | "settings"
 //   short       the short mat variant (304 × 184, DESIGN §2.3)
 //   matShown    override of "the mat is on screen" (default: the presence flags)
 //   buyCount    the Works toggle: 1 (default) | 10 | "max"
@@ -18,12 +18,13 @@
 //   album       false when the Flock's Album section is folded: its rows are
 //               not built (helpers.album []); helpers.albumCount still counts
 
-import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRESTIGE } from "./content.js";
+import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRESTIGE, PATTERNS } from "./content.js";
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
 import { indexHelpers, flock } from "./helpers.js";
 import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicking.js";
 import { stackFactor, envUnit, freshBoostMs } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
+import { traceMove, bookTier, bookInfo, patternOf, colRow } from "./pattern.js";
 import { rates } from "./engine.js";
 import { bestSince } from "./away.js";
 import { formatCount, formatRate, formatDuration, formatEta, formatInt } from "./format.js";
@@ -49,7 +50,7 @@ const RAIL_BELOW = 200;
 /** The narrow panel below this width (DESIGN §2.4: icon-only shop, dense Flock tiles; ui/shop.js NARROW). */
 const NARROW_BELOW = 280;
 /** Boost bar totals: the remaining-time caps (DESIGN §6.2; Flock Song 120 s; Tailwind 10 min). */
-const BOOST_CAP = { rush: 90000, storm: 30000, chorus: 240000, song: 120000, tailwind: 600000 };
+const BOOST_CAP = { rush: 90000, storm: 30000, chorus: 240000, song: 120000, tailwind: 600000, coil: 10000 };
 const SAVE_TEXT = {
   recovered: "Save was damaged. Loaded the backup. Damaged copy kept.",
   fresh: "Save and backup were damaged. Started fresh; both files kept.",
@@ -232,7 +233,7 @@ export function view(state, now, opts = undefined) {
     rev: state.rev,
     calm,
     header,
-    sheet: { frame: state.hand.frame, ticks: state.hand.frame, firstRunHint, hintBob: loops.hint, short },
+    sheet: { frame: state.hand.frame, ticks: state.hand.frame, firstRunHint, hintBob: loops.hint, short, ...fieldVm(state, t, E) },
     mat: matVm(state, t, E, loops, short, calm, roster),
     tray: trayVm(state, t, E, r, idx, loops, style),
     streak: streakVm(state, E, t),
@@ -240,6 +241,7 @@ export function view(state, now, opts = undefined) {
     helpers: helpersVm(state, t, roster, loops, o, style, idx, tilesShown),
     shop: shopVm(state, E, r, idx, writer, o, style),
     string: stringVm(state, style, t),
+    book: bookVm(state, t, o.tab === "book"),
     settings: settingsVm(state),
     away,
     notices: noticesVm(state, t, saveNotice, style),
@@ -1121,6 +1123,17 @@ function matVm(state, t, E, loops, short, calm, roster) {
     const pos = slotPos(typeof sp.ream.slot === "number" ? sp.ream.slot : SLOT.ream, short);
     ream = { id: sp.ream.id, x: pos.x, y: pos.y };
   }
+  let fold = null;
+  if (sp.fold) {
+    const pos = slotPos(sp.fold.slot, short);
+    const pt = patternOf(sp.fold.kind);
+    const left = lifeLeft(state, E, "fold", sp.fold);
+    fold = {
+      id: sp.fold.id, kind: sp.fold.kind, x: pos.x, y: pos.y,
+      tooltip: pt ? clip(`${pt.name} fold · ${lowerFirst(pt.text)}`, CLIP.notice) : "Fold",
+      fading: left !== null && left <= 2000,
+    };
+  }
   let creaseLine = null;
   const lc = sp.lastChain;
   if (lc && lc.result === "done" && t - lc.at >= 0 && t - lc.at < 3000 && Array.isArray(lc.slots)) {
@@ -1140,6 +1153,7 @@ function matVm(state, t, E, loops, short, calm, roster) {
     ream,
     storm: loops.storm,
     creaseLine,
+    fold,
   };
 }
 
@@ -1212,6 +1226,9 @@ function boostsVm(state, E, live, t) {
   add("song", `Flock Song ${times(K.songMult)}`, num(b.song) - live);
   add("chorus", `Chorus ${times(K.chorusMult)}`, num(b.chorus) - live);
   if (b.tailwind > 0) add("tailwind", `Tailwind ×2 · ${b.tailwind} left`, num(b.tailwindMs) - live);
+  // Pattern book (§4.7): Wind-up runs only while no Rush or Confetti does; Steady is a static charge
+  if (!(b.stormEnd > t) && !(b.rushEnd > t)) add("coil", `Wind-up ${times(K.coilMult)}`, num(b.coilEnd) - t);
+  if (state.hand.steady === 1) out.push({ type: "steady", label: "Steady", msLeft: null, msTotal: null });
   return out;
 }
 
@@ -1311,6 +1328,7 @@ function shopVm(state, E, r, idx, writer, o, style) {
       locked: !info.unlocked,
     };
     if (auto) row.on = have && state.auto[u.id] !== false;
+    if (u.id === "crease-helper" && state.book && state.book.open === true) row.note = "Only your own hands fill the book";
     return row;
   };
   for (const u of UPGRADES) {
@@ -1393,6 +1411,168 @@ function stringVm(state, style, t) {
     // null, or for 3 s after a wish { phase: "rise" | "settle", strands }:
     // the String as it was wished away (§3.5 wish moment).
     wishMoment,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Crease fields and the Pattern book (§4.7, ARCHITECTURE B17)
+
+const BOOK_HELP = "Join neighbouring dots on the Sheet's crease field. Click the last dot again to set, or end on the first to close. Any turn or mirror counts.";
+const FIELD_HINT = "Join neighbouring dots. Click the last one again to set.";
+const DOT_TIP = { free: "Crease field", centre: "Start on any other dot", next: "Next", used: null, last: "Click again to set", close: "Click to close" };
+const TIER_STYLE = ["found", "found", "learned", "mastered"];
+const BOOK_CLIP = { name: 12, short: 16, effect: 44, hint: 44, line: 60, chip: 40 };
+
+const lowerFirst = (x) => (x ? x.charAt(0).toLowerCase() + x.slice(1) : x);
+
+/** "1:40" for a rest of ms (whole seconds, rounded up). */
+function mmss(ms) {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(sec / 60);
+  const x = sec - 60 * m;
+  return `${m}:${x < 10 ? "0" : ""}${x}`;
+}
+
+const foundOf = (state, id) => {
+  const f = state.book && state.book.found;
+  return f && Object.hasOwn(f, id) ? f[id] : null;
+};
+
+/** A diagram is ready when its effect is not resting and its fold piece is not on the mat. */
+function readyOf(state, id) {
+  const f = foundOf(state, id);
+  const sp = state.spawn;
+  if (!f) return false;
+  return !(f.ready > sp.activeMs) && !(sp.fold && sp.fold.kind === id);
+}
+
+/** The found, ready diagram with the most dots (the boost bar's "· Coil ready"), or null. */
+function bestReady(state) {
+  let best = null;
+  for (const p of PATTERNS) if (readyOf(state, p.id) && (!best || p.n >= best.n)) best = p;
+  return best;
+}
+
+const lineOf = (path) => path.map((i) => colRow(i));
+
+/** sheet.field and sheet.fieldResult (the field's dots as grid col / row, never px). */
+function fieldVm(state, t, E) {
+  const sp = state.spawn;
+  const info = bookInfo(state);
+  let field = null;
+  const f = sp.field;
+  if (f) {
+    const path = Array.isArray(f.path) ? f.path : [];
+    const n = path.length;
+    const dots = [];
+    for (let i = 0; i < 9; i++) {
+      const [col, row] = colRow(i);
+      const at = path.indexOf(i);
+      const move = traceMove(f, i);
+      let st;
+      if (n === 0) st = i === 4 ? "centre" : "free";
+      else if (at === n - 1) st = "last";
+      else if (move === "close") st = "close";
+      else if (at >= 0) st = "used";
+      else st = move === "step" ? "next" : "free";
+      const tip = st === "last" && n < 3 ? null : DOT_TIP[st];
+      dots.push({ i, col, row, state: st, tip });
+    }
+    const left = lifeLeft(state, E, "field", f);
+    const ready = info.next === null ? bestReady(state) : null;
+    field = {
+      id: f.id,
+      dots,
+      line: lineOf(path),
+      fading: left !== null && left <= 2000,
+      hint: state.ui.hints.field === true ? null : FIELD_HINT,
+      barHint: clip(info.next !== null ? `Crease field · next to find: ${patternOf(info.next).name}`
+        : ready ? `Crease field · ${ready.name} ready` : "Crease field", BOOK_CLIP.chip),
+    };
+  }
+  let fieldResult = null;
+  const lf = sp.lastField;
+  if (lf && typeof lf.at === "number" && t - lf.at >= 0 && t - lf.at < K.fieldResultMs && Array.isArray(lf.path)) {
+    const pt = lf.pattern ? patternOf(lf.pattern) : null;
+    let text;
+    if (!pt) {
+      const near = lf.near ? patternOf(lf.near) : null;
+      text = near ? `Loose · ${near.name} needs ${lf.more} more` : "Loose crease";
+    } else {
+      const rec = foundOf(state, pt.id);
+      const n = rec ? rec.n : 0;
+      if (lf.first) text = `${pt.name} · new diagram`;
+      else if (lf.tier === 3 && n === K.bookMaster) text = `${pt.name} · mastered`;
+      else if (lf.tier === 2 && n === K.bookLearn) text = `${pt.name} · learned`;
+      else if (typeof lf.rest === "number" && lf.rest > 0) text = `${pt.name} · rests ${mmss(lf.rest)}`;
+      else text = pt.name;
+    }
+    fieldResult = { line: lineOf(lf.path), closed: lf.closed === true, style: pt ? TIER_STYLE[lf.tier] || "found" : "loose", text: clip(text, BOOK_CLIP.chip) };
+  }
+  return { field, fieldResult };
+}
+
+/** vm.book (§4.7 "The Book tab"); its cards are built only while the tab shows. */
+function bookVm(state, t, withCards) {
+  const book = state.book || { open: false, found: Object.create(null) };
+  const sp = state.spawn;
+  const info = bookInfo(state);
+  const seen = num(state.ui.hints.book);
+  let line;
+  if (info.next === null) {
+    let near = null;
+    for (const p of PATTERNS) {
+      const rec = foundOf(state, p.id);
+      if (rec.n < K.bookMaster && (!near || rec.n > near[1])) near = [p, rec.n];
+    }
+    line = near ? `All nine found · next mastery: ${near[0].name} ${near[1]} / ${K.bookMaster}` : "All nine mastered";
+  } else {
+    const next = `next to find: ${patternOf(info.next).name}`;
+    if (sp.fieldIn === null || sp.fieldIn === undefined) line = "Buy Crease Field (Curios) to bring fields back this run";
+    else if (sp.field) line = `A field is on the Sheet · ${next}`;
+    else line = `${sp.fieldIn === 1 ? "Next chain is a field" : `Next field in ${sp.fieldIn} chains`} · ${next}`;
+  }
+  const cards = [];
+  if (withCards) {
+    for (const p of PATTERNS) {
+      const rec = foundOf(state, p.id);
+      const n = rec ? rec.n : 0;
+      const st = rec ? "found" : p.id === info.next || p.id === "ridge" ? "next" : "hidden";
+      const tier = bookTier(n);
+      let status = null;
+      if (rec) status = sp.fold && sp.fold.kind === p.id ? "fold on the mat" : rec.ready > sp.activeMs ? `rests ${mmss(rec.ready - sp.activeMs)}` : "ready";
+      const shown = st !== "hidden";
+      cards.push({
+        id: p.id,
+        name: shown ? clip(p.name, BOOK_CLIP.name) : "???",
+        state: st,
+        n: p.n,
+        closed: p.closed,
+        dots: shown ? p.dots.map(([c, r]) => [c, r]) : null,
+        sub: `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+        tier,
+        pips: [tier >= 1, tier >= 2, tier >= 3],
+        count: rec ? `×${formatInt(n)}` : null,
+        status,
+        effect: shown ? clip(p.text, BOOK_CLIP.effect) : null,
+        short: shown ? clip(p.short, BOOK_CLIP.short) : null,
+        hint: st === "found" || p.hint === null ? null : clip(p.hint, BOOK_CLIP.hint),
+        fold: rec ? p.fold : null,
+        tooltip: shown ? clip(`${p.text} · found 1 · learned ${K.bookLearn} · mastered ${K.bookMaster}`, CLIP.notice) : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+      });
+    }
+  }
+  return {
+    open: book.open === true,
+    newMarks: book.open === true && info.marks > seen,
+    found: info.found,
+    of: PATTERNS.length,
+    marks: info.marks,
+    marksOf: 3 * PATTERNS.length,
+    count: `${info.found} / ${PATTERNS.length} · ${info.marks} / ${3 * PATTERNS.length} marks`,
+    line: clip(line, BOOK_CLIP.line),
+    help: info.found < 3 ? BOOK_HELP : null,
+    cards,
   };
 }
 

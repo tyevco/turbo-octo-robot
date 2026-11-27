@@ -19,7 +19,8 @@ export { newGame, cloneState, migrate, VERSION, MAP_FIELDS };
 export { effects, itemInfo, workshopCost, maxAffordable, tierOf, eff, crowd, CLICK_SOURCES } from "./economy.js";
 export { cranes, lifetimeFor, wishInfo, stringInfo } from "./prestige.js";
 export { groupFor, helperId, lookOf } from "./helpers.js";
-export { nodeId, slotXY, lifeLeft, inStep, combo, rhythmAt, hitBoost, giftFolds } from "./clicking.js";
+export { nodeId, slotXY, lifeLeft, lifeOf, inStep, combo, rhythmAt, hitBoost, giftFolds } from "./clicking.js";
+export { canonOf, classifyTrace, traceMove, deadEnd, nearMiss, bookTier, bookInfo, patternOf, adjacent } from "./pattern.js";
 export { stackFactor, envelopeDef } from "./envelopes.js";
 export { isOn } from "./automations.js";
 export { fnv1a32, fnv1a32n } from "./hash.js";
@@ -79,6 +80,12 @@ export function estimate(state, item, o) {
 function afterBuy(state, item) {
   if (item === "harbour-ribbon" && state.spawn.nextBoatAt === null) {
     state.spawn.nextBoatAt = state.spawn.activeMs + (K.boatLo + K.boatSpread * keyed(state, "boat:first")) * 1000;
+  }
+  // §4.7: Crease Field opens the Pattern book for good, and the next chain is a field
+  // (every purchase, so a rebuy after a wish brings one at the next chain).
+  if (item === "crease-field") {
+    state.book.open = true;
+    state.spawn.fieldIn = 1;
   }
 }
 
@@ -373,6 +380,10 @@ export function apply(state, action) {
     case "hint":
       if (action.key === "fold" || action.key === "crane") state.ui.hints[action.key] = true;
       else if (action.key === "narrow") state.ui.narrowHintDay = state.day;
+      else if (action.key === "book" && Number.isInteger(action.n) && action.n >= 0 && action.n <= 27) {
+        // the Book tab's marks seen (§4.7): merged as the larger, so two windows agree
+        state.ui.hints.book = Math.max(state.ui.hints.book || 0, action.n);
+      }
       else ev.push({ kind: "ignored", reason: "hint" });
       break;
     case "checkin": {

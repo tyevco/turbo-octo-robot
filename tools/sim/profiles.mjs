@@ -47,8 +47,14 @@ export const P1 = Object.freeze({
   freshKids: false, // true or n: every block starts 1 (or n, one after another) new sub-agents (new addresses), gone when the block ends
   calm: false,
   buyEvery: null, // null = every second of a session (§3.1); P2: every 5 min of open time
-  autoBuy: Object.freeze(["mail-sorter", "thrifty-fox"]),
+  // Crease Field (BALANCE §12.1) has no estimate: bought by the same rule as the automations
+  autoBuy: Object.freeze(["mail-sorter", "thrifty-fox", "crease-field"]),
   autoShare: 0.25, // bought as soon as cost ≤ 25 % of the bank
+  // Crease fields (BALANCE §12.1): each attempt at a diagram succeeds with this chance; the
+  // diagram is the next to find, then the ready one with the most dots ("next"), or P15's
+  // order of the largest effect first ("master")
+  traceSuccess: 0.9,
+  bookPick: "next",
   neverBuy: Object.freeze(["slow-wings", "harbour-ribbon", "boost-keeper", "crease-helper"]),
 });
 
@@ -57,7 +63,8 @@ const p = (id, name, change) => Object.freeze({ ...P1, id, name, ...change });
 /** Every profile, P1-P13 (BALANCE §3 "Other profiles"). */
 export const PROFILES = Object.freeze({
   P1,
-  P2: p("P2", "never clicks", { hands: false, cps: 0, scraps: false, ream: false, craneCatch: 0, chainSuccess: 0, buyEvery: 300 }),
+  P2: p("P2", "never clicks", { hands: false, cps: 0, scraps: false, ream: false, craneCatch: 0, chainSuccess: 0, buyEvery: 300,
+    autoBuy: Object.freeze(["mail-sorter", "thrifty-fox"]), traceSuccess: 0 }),
   P3: p("P3", "no agents", { agents: 0 }),
   P4: p("P4", "one agent", { agents: 1 }),
   P5: p("P5", "eight agents", { agents: 8 }),
@@ -77,8 +84,13 @@ export const PROFILES = Object.freeze({
   }),
   // r8-03: a much less even hand (σ 0.3: about 1 interval in 5 over the 1.0 s
   // rhythm gap, 1 in 46 over Steady Rhythm's 1.4 s), still on day 3
-  P14: p("P14", "unsteady hand", { hitJitter: 0.3 }),
+  P14: p("P14", "unsteady hand", { hitJitter: 0.3, traceSuccess: 0.75 }),
+  // BALANCE §12.1: a perfect tracer that picks the ready diagram with the largest effect
+  P15: p("P15", "pattern master", { traceSuccess: 1, bookPick: "master" }),
 });
+
+/** P15's choice among ready diagrams, largest estimated effect first (BALANCE §12.1). */
+export const MASTER_ORDER = Object.freeze(["switchback", "coil", "napkin", "lozenge", "gull", "stair", "ridge", "sail", "hem"]);
 
 export const PROFILE_IDS = Object.freeze(Object.keys(PROFILES));
 
@@ -281,7 +293,57 @@ export function parseBalance(md = readFileSync(BALANCE_PATH, "utf8")) {
     text: r[2],
     values: [...r[2].replace(/·[A-Za-z]+/g, "").matchAll(/\d+(?:\.\d+)?(?:e\d+)?/g)].map((m) => Number(m[0])),
   }));
-  return { profilesListed, p1ActiveFrac, milestones, firstWish, monotonic, shares, dayShares, sessions, invariants, knobs };
+  const pattern = parsePatternRows(md);
+  return { profilesListed, p1ActiveFrac, milestones, firstWish, monotonic, shares, dayShares, sessions, invariants, knobs, pattern };
+}
+
+/**
+ * One §12.3 cell → a bound: { lo, hi } clock or percent windows, relative ones
+ * ({ ref: "B2" | "M15" | "M17" | "P1" | "base", lo, hi }, seconds or points),
+ * { same: true } ("identical", "unchanged", "= `--no-book`"), or null ("—").
+ * Anything else throws, so a doc edit is never skipped.
+ */
+export function parsePatternCell(cell) {
+  const c = cell.replace(/\*\*/g, "").replace(/`/g, "").replace(/\(.*?\)/g, "").trim();
+  let m;
+  const T = TIME;
+  const sgn = (x, t) => (x === "+" ? 1 : -1) * t;
+  if (c === "" || c === "—") return null;
+  if (/^(identical|unchanged|= --no-book)$/.test(c) || /^identical milestones$/.test(c)) return { same: true };
+  if (c === "≥ --no-book") return { ref: "base", lo: 0, hi: Infinity, unit: "pts" };
+  if ((m = new RegExp(`^≤ (B2|M15|M17)(?: \\+ (${T}))?$`).exec(c))) return { ref: m[1], lo: -Infinity, hi: m[2] ? parseClock(m[2]) : 0, unit: "s" };
+  if ((m = /^before (M15|M17)$/.exec(c))) return { ref: m[1], lo: -Infinity, hi: 0, strict: true, unit: "s" };
+  if ((m = new RegExp(`^≥ P1 median ([+−-]) (${T}) and ≤ P1 median$`).exec(c))) return { ref: "P1", lo: sgn(m[1], parseClock(m[2])), hi: 0, unit: "s" };
+  if ((m = new RegExp(`^≤ P1 median ([+−-]) (${T})$`).exec(c))) return { ref: "P1", lo: -Infinity, hi: sgn(m[1], parseClock(m[2])), unit: "s" };
+  if ((m = new RegExp(`^--no-book ([+−-]) (${T}) to --no-book ([+−-]) (${T})$`).exec(c))) {
+    return { ref: "base", lo: sgn(m[1], parseClock(m[2])), hi: sgn(m[3], parseClock(m[4])), unit: "s" };
+  }
+  if ((m = /^(\d+(?:\.\d+)?) – (\d+(?:\.\d+)?) % and --no-book ([+−-]) (\d+(?:\.\d+)?) to --no-book ([+−-]) (\d+(?:\.\d+)?) points$/.exec(c))) {
+    return { lo: Number(m[1]) / 100, hi: Number(m[2]) / 100, unit: "pct",
+      base: { lo: sgn(m[3], Number(m[4])) / 100, hi: sgn(m[5], Number(m[6])) / 100 } };
+  }
+  if ((m = /^≤ (\d+(?:\.\d+)?) %$/.exec(c))) return { lo: -Infinity, hi: Number(m[1]) / 100, unit: "pct" };
+  if ((m = /^≥ (\d+(?:\.\d+)?) %$/.exec(c))) return { lo: Number(m[1]) / 100, hi: Infinity, unit: "pct" };
+  if ((m = /^(\d+(?:\.\d+)?) – (\d+(?:\.\d+)?) %$/.exec(c))) return { lo: Number(m[1]) / 100, hi: Number(m[2]) / 100, unit: "pct" };
+  if (/^day 3$/.test(c)) return { day3: true };
+  if (/^16:00 – 24:00$/.test(c) || new RegExp(`^${T}${DASH}${T}$`).test(c)) return { ...parseWindow(c), unit: "s" };
+  throw new Error(`BALANCE §12.3: cannot parse "${cell}"`);
+}
+
+/** BALANCE §12.3's rows B1-B16: { id, what, key, median, every, provisional }. */
+export function parsePatternRows(md) {
+  const rows = table(section(md, "12.3")).rows.map((r) => ({
+    id: r[0].trim(),
+    what: r[1].replace(/\s*\(`[^)]*`\)/g, "").replace(/`/g, "").trim(),
+    key: keysIn(r[1])[0] || null,
+    target: r[2].trim(),
+    median: parsePatternCell(r[3]),
+    every: parsePatternCell(r[4]),
+    provisional: /provisional/.test(r[1]),
+  }));
+  const ids = rows.map((r) => r.id);
+  for (let i = 1; i <= 16; i++) if (!ids.includes(`B${i}`)) throw new Error(`BALANCE §12.3: no row B${i}`);
+  return rows;
 }
 
 /**

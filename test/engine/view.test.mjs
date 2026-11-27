@@ -1211,3 +1211,151 @@ test("r7-09: 250 short sub-agents of one long-lived agent: the Album count never
   me.act(observeAction((t += 1000), []));
   counts("the parent leaves", 251);
 });
+
+// ---------------------------------------------------------------------------
+// Pattern book (ARCHITECTURE B17 view-model additions)
+
+function bookState() {
+  const s = seeded(8);
+  const me = writer(s, "wA");
+  me.act({ t: T0 + 1, type: "click", target: "sheet" });
+  s.bought["long-crease"] = true;
+  s.bought["grand-crease"] = true;
+  s.bank = 1e8;
+  me.act({ t: T0 + 2, type: "buy", item: "crease-field", count: 1 });
+  s.spawn.nextChainAt = s.spawn.activeMs + 100;
+  me.act({ t: T0 + 600, type: "click", target: "sheet" });
+  return { s, me, fid: s.spawn.field.id };
+}
+
+test("B17 sheet.field: nine dots as grid col / row with shape states and tips; the line; the first-field hint and the boost-bar line", () => {
+  const { s, me, fid } = bookState();
+  let vm = engine.view(s, T0 + 600);
+  const f = vm.sheet.field;
+  assert.equal(f.id, fid);
+  assert.equal(f.dots.length, 9);
+  assert.deepEqual(f.dots.map((d) => [d.col, d.row]), [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [0, 2], [1, 2], [2, 2]]);
+  assert.deepEqual(f.dots.map((d) => d.state), ["free", "free", "free", "free", "centre", "free", "free", "free", "free"]);
+  assert.equal(f.dots[4].tip, "Start on any other dot");
+  assert.equal(f.dots[0].tip, "Crease field");
+  assert.deepEqual(f.line, []);
+  assert.equal(f.fading, false);
+  assert.equal(f.hint, "Join neighbouring dots. Click the last one again to set.");
+  assert.equal(f.barHint, "Crease field · next to find: Ridge");
+  for (const [k, i] of [[0, 0], [1, 1], [2, 4]]) me.act({ t: T0 + 900 + 300 * k, type: "click", target: "dot", id: `${fid}-${i}` });
+  vm = engine.view(s, T0 + 1500);
+  const st = vm.sheet.field.dots.map((d) => d.state);
+  assert.equal(st[0], "close", "the first dot can close (3 dots, next to the last)");
+  assert.equal(st[1], "used");
+  assert.equal(st[4], "last");
+  assert.equal(vm.sheet.field.dots[4].tip, "Click again to set");
+  assert.deepEqual([st[3], st[5], st[6], st[7], st[8], st[2]], ["next", "next", "next", "next", "next", "next"]);
+  assert.deepEqual(vm.sheet.field.line, [[0, 0], [1, 0], [1, 1]]);
+  // in its last 2 s the field fades
+  assert.equal(engine.view(s, s.clock + 0).sheet.field.fading, false);
+  engine.advance(s, T0 + 600 + engine.CONTENT.K.fieldLifeMs - 1500);
+  assert.equal(engine.view(s, s.clock).sheet.field.fading, true);
+  // the rail and the ribbon draw no field (they read only the frame)
+  assert.equal(typeof engine.view(s, s.clock, { role: "ribbon" }).sheet.frame, "number");
+});
+
+test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fold; the shelf's p: entries; Wind-up and Steady chips", () => {
+  const { s, me, fid } = bookState();
+  let t = T0 + 900;
+  for (const i of [0, 1, 2, 2]) me.act({ t: (t += 300), type: "click", target: "dot", id: `${fid}-${i}` });
+  let vm = engine.view(s, t + 100);
+  assert.deepEqual(vm.sheet.fieldResult, { line: [[0, 0], [1, 0], [2, 0]], closed: false, style: "found", text: "Ridge · new diagram" });
+  assert.equal(vm.sheet.field, null);
+  assert.equal(engine.view(s, t + engine.CONTENT.K.fieldResultMs).sheet.fieldResult, null, "gone after 3 s");
+  const fold = vm.mat.fold;
+  assert.equal(fold.kind, "ridge");
+  assert.equal(fold.tooltip, "Ridge fold · your next short pause costs no beats");
+  const pos = engine.slotPos(s.spawn.fold.slot, false);
+  assert.deepEqual([fold.x, fold.y], [pos.x, pos.y]);
+  assert.equal(engine.view(s, t + 100, { short: true }).mat.fold.y, engine.slotPos(s.spawn.fold.slot, true).y);
+  me.act({ t: (t += 300), type: "click", target: "fold", id: fold.id });
+  vm = engine.view(s, t);
+  assert.equal(vm.mat.fold, null);
+  assert.equal(vm.mat.shelf[vm.mat.shelf.length - 1], "p:ridge");
+  assert.deepEqual(vm.boosts.find((b) => b.type === "steady"), { type: "steady", label: "Steady", msLeft: null, msTotal: null });
+  s.boosts.coilEnd = t + 10000;
+  assert.deepEqual(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), { type: "coil", label: "Wind-up ×2", msLeft: 6000, msTotal: 10000 });
+  s.boosts.rushEnd = t + 30000;
+  assert.equal(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), undefined, "no Wind-up chip while Rush runs");
+  // the learned / mastered words and styles
+  s.book.found.ridge.n = 3;
+  s.spawn.field = { id: "p88", born: s.spawn.shownMs, path: [] };
+  for (const i of [6, 7, 8, 8]) me.act({ t: (t += 300), type: "click", target: "dot", id: `p88-${i}` });
+  assert.deepEqual([engine.view(s, t).sheet.fieldResult.style, engine.view(s, t).sheet.fieldResult.text], ["learned", "Ridge · learned"]);
+  s.book.found.ridge.n = 11;
+  s.spawn.field = { id: "p89", born: s.spawn.shownMs, path: [] };
+  for (const i of [6, 7, 8, 8]) me.act({ t: (t += 300), type: "click", target: "dot", id: `p89-${i}` });
+  assert.deepEqual([engine.view(s, t).sheet.fieldResult.style, engine.view(s, t).sheet.fieldResult.text], ["mastered", "Ridge · mastered"]);
+});
+
+test("B17 vm.book: counts and marks, the tab dot, the line, the help; cards only on the Book tab, found / next / hidden", () => {
+  const { s } = bookState();
+  let b = engine.view(s, s.clock).book;
+  assert.equal(b.open, true);
+  assert.deepEqual(b.cards, [], "no cards off the Book tab");
+  assert.equal(b.count, "0 / 9 · 0 / 27 marks");
+  assert.equal(b.line, "A field is on the Sheet · next to find: Ridge");
+  assert.ok(b.help.startsWith("Join neighbouring dots"));
+  assert.equal(b.newMarks, false);
+  s.book.found.ridge = { n: 4, at: T0, ready: 0 };
+  s.book.found.napkin = { n: 1, at: T0, ready: s.spawn.activeMs + 100000 };
+  s.spawn.field = null;
+  s.spawn.fieldIn = 3;
+  b = engine.view(s, s.clock, { tab: "book" }).book;
+  assert.equal(b.count, "2 / 9 · 3 / 27 marks");
+  assert.equal(b.newMarks, true, "marks earned since the tab was last opened");
+  assert.equal(b.line, "Next field in 3 chains · next to find: Gull");
+  assert.equal(b.cards.length, 9);
+  const card = (id) => b.cards.find((c) => c.id === id);
+  assert.deepEqual([card("ridge").state, card("ridge").tier, card("ridge").pips, card("ridge").count, card("ridge").status], ["found", 2, [true, true, false], "×4", "ready"]);
+  assert.equal(card("napkin").status, "rests 1:40");
+  assert.equal(card("ridge").fold, "Ridge pleat");
+  assert.equal(card("gull").state, "next");
+  assert.deepEqual(card("gull").dots, [[0, 0], [1, 1], [2, 0]]);
+  assert.equal(card("gull").hint, "Down, then up: a bird far off");
+  assert.equal(card("sail").state, "hidden");
+  assert.equal(card("sail").name, "???");
+  assert.equal(card("sail").dots, null, "a hidden diagram is never drawn");
+  assert.equal(card("sail").sub, "6 dots · closed");
+  assert.equal(card("sail").effect, null);
+  assert.equal(card("ridge").hint, null);
+  // the hint action clears the dot
+  writer(s, "wH").act({ t: s.clock + 1, type: "hint", key: "book", n: b.marks });
+  assert.equal(engine.view(s, s.clock).book.newMarks, false);
+  // all nine found: the mastery line; no help past 3
+  for (const p of engine.CONTENT.PATTERNS) if (!s.book.found[p.id]) s.book.found[p.id] = { n: 2, at: T0, ready: 0 };
+  s.book.found.hem.n = 9;
+  b = engine.view(s, s.clock, { tab: "book" }).book;
+  assert.equal(b.line, "All nine found · next mastery: Hem 9 / 12");
+  assert.equal(b.help, null);
+  // a fold piece on the mat
+  s.spawn.fold = { id: "f1", kind: "coil", slot: 1, born: s.spawn.shownMs };
+  assert.equal(engine.view(s, s.clock, { tab: "book" }).book.cards.find((c) => c.id === "coil").status, "fold on the mat");
+  // every string is pre-clipped and the view is pure
+  const before = engine.serialize(s);
+  const vm = engine.view(s, s.clock, { tab: "book" });
+  assert.equal(engine.serialize(s), before);
+  for (const c of vm.book.cards) for (const k of ["name", "effect", "short", "hint", "tooltip", "sub"]) if (c[k] !== null) assert.equal(engine.clip(c[k], 200), c[k]);
+  // a game before the book: closed, nothing new
+  const fresh = engine.view(seeded(1), T0, { tab: "book" }).book;
+  assert.deepEqual([fresh.open, fresh.newMarks, fresh.found, fresh.marks], [false, false, 0, 0]);
+  assert.equal(fresh.cards.length, 9);
+});
+
+test("B17 the view with a field, a result and a fold piece up stays within the view budget", () => {
+  const { s, me, fid } = bookState();
+  let t = T0 + 900;
+  for (const i of [0, 1, 4, 3]) me.act({ t: (t += 300), type: "click", target: "dot", id: `${fid}-${i}` });
+  s.spawn.fold = { id: "f9", kind: "gull", slot: 3, born: s.spawn.shownMs };
+  s.spawn.lastField = { pattern: null, path: [0, 1, 2], closed: false, tier: 0, first: false, near: null, more: 0, rest: null, at: t };
+  engine.view(s, t, { tab: "book" });
+  const t0 = performance.now();
+  for (let i = 0; i < 50; i++) engine.view(s, t, { tab: i % 2 ? "book" : "flock" });
+  const ms = (performance.now() - t0) / 50;
+  assert.ok(ms < 3, `${ms.toFixed(2)} ms a view`);
+});

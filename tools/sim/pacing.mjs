@@ -4,6 +4,15 @@
 //
 //   node tools/sim/pacing.mjs [--profile P1[,P2…]] [--seeds 1-20] [--assert] [--json out.json]
 //                             [--idle-step 10] [--workers 4] [--even]
+//                             [--no-book] [--no-pattern-fx] [--fx-off <id>] [--no-ablation]
+//
+// Pattern book (BALANCE §12.1): --no-book never buys Crease Field (the engine
+// as it was before the feature, the baseline every §12.3 delta is measured
+// against); --no-pattern-fx never clicks a fold piece; --fx-off <id> never
+// clicks that diagram's. Given alone each runs every profile that way (a
+// report, no §12 rows). Without them the run adds the variant runs §12.3 needs
+// (`P1~nobook`, `P1~nofx`, `P1~fxoff:<id>` on seeds 1-5, …) unless
+// --no-ablation.
 //
 // --even: the hand hits on a perfect beat with no pauses (the model before
 // review r8-03); the asserted model is BALANCE §3's jittered hand.
@@ -17,7 +26,7 @@
 // depend on the step (test/pacing/step.test.mjs).
 
 import * as engine from "../../mods/creaseworks/engine/index.js";
-import { PROFILES, PROFILE_IDS, activeFrac, parseBalance, fmtClock } from "./profiles.mjs";
+import { PROFILES, PROFILE_IDS, MASTER_ORDER, activeFrac, parseBalance, fmtClock } from "./profiles.mjs";
 
 export const T0 = Date.UTC(2026, 0, 5, 9, 0, 0); // day 1, 09:00 (the sim's local time is UTC)
 const DAY_MS = 86400000;
@@ -182,6 +191,7 @@ const obsKey = (list) => list.map((o) => `${o.addr}:${o.status[0]}${o.turn}`).jo
 // The player
 
 const UPGRADES = engine.CONTENT.UPGRADES;
+const PATTERNS = engine.CONTENT.PATTERNS;
 const WORKSHOPS = engine.CONTENT.WORKSHOPS;
 const TIERS = engine.CONTENT.TIERS;
 
@@ -224,11 +234,17 @@ export function bestBuy(state, prof) {
  * payback first while affordable. `act(action)` applies; `mark(id, payback)`
  * is told before each purchase.
  */
-export function playerBuys(state, prof, t, act, mark) {
+export function playerBuys(state, prof, t, act, mark, o = {}) {
   for (const id of prof.autoBuy) {
     if (state.bought[id] === true) continue;
     const info = engine.itemInfo(state, id, 1);
     if (info.unlocked && info.cost <= prof.autoShare * state.bank) {
+      // --no-book (BALANCE §12.1): Crease Field is never bought; the moment it would be is noted
+      if (id === "crease-field" && o.noBook) {
+        if (o.would) o.would(id);
+        continue;
+      }
+      if (o.atBuy) o.atBuy(id);
       if (mark) mark(id, null);
       act({ t, type: "buy", item: id, count: 1 });
     }
@@ -247,11 +263,72 @@ export function playerBuys(state, prof, t, act, mark) {
  * order or the lineage of a merged save.
  */
 export class Player {
-  constructor(prof, seed) {
+  constructor(prof, seed, o = {}) {
     this.prof = prof;
     this.seed = seed;
+    this.o = o; // { noBook, noFx, fxOff }
     this.craneSeen = new Set();
     this.chainPlan = new Map();
+    this.fieldPlan = new Map();
+  }
+
+  /** The diagram a profile traces now (BALANCE §12.1 "Which diagram"). */
+  target(s) {
+    const info = engine.bookInfo(s);
+    if (info.next) return info.next;
+    const sp = s.spawn;
+    const ready = (id) => {
+      const f = s.book.found[id];
+      return f && !(f.ready > sp.activeMs) && !(sp.fold && sp.fold.kind === id);
+    };
+    if (this.prof.bookPick === "master") {
+      for (const id of MASTER_ORDER) if (ready(id)) return id;
+    } else {
+      let best = null;
+      for (const p of PATTERNS) if (ready(p.id) && (!best || p.n > best.n)) best = p;
+      if (best) return best.id;
+    }
+    return "coil";
+  }
+
+  /** One attempt's plan: the dots in order and the setting click; a failure stops one dot short (or takes a wrong last dot) so its set is loose. */
+  plan(s, at, attempt) {
+    const id = this.target(s);
+    const p = engine.patternOf(id);
+    const dots = p.dots.map(([c, r]) => r * 3 + c);
+    const ok = draw(this.seed, `trace:${at}:${attempt}`) < this.prof.traceSuccess;
+    if (ok) return { id, ok, seq: dots, finish: p.closed ? dots[0] : dots[dots.length - 1] };
+    const short = dots.slice(0, -1);
+    if (short.length >= 3 && engine.classifyTrace(short, false) === null) return { id, ok, seq: short, finish: short[short.length - 1] };
+    const base = dots.slice(0, Math.max(2, dots.length - 2));
+    const last = base[base.length - 1];
+    for (let j = 0; j < 9; j++) {
+      if (base.includes(j) || !engine.adjacent(last, j)) continue;
+      const path = [...base, j];
+      if (engine.classifyTrace(path, false) === null) return { id, ok, seq: path, finish: j };
+    }
+    return { id, ok, seq: short, finish: short[short.length - 1] };
+  }
+
+  /** The dot of field `f` to click next (state-driven: an auto-set or a loose set starts the next attempt). */
+  nextDot(s, f) {
+    let fp = this.fieldPlan.get(f.id);
+    if (!fp) {
+      fp = { at: Math.round(s.spawn.activeMs), attempt: 0, plan: null, started: false };
+      this.fieldPlan.set(f.id, fp);
+    }
+    const path = f.path;
+    if (path.length === 0) {
+      if (fp.started || !fp.plan) {
+        if (fp.started) fp.attempt++;
+        fp.plan = this.plan(s, fp.at, fp.attempt);
+      }
+      fp.started = true;
+      return fp.plan.seq[0];
+    }
+    const seq = fp.plan.seq;
+    for (let k = 0; k < path.length; k++) if (path[k] !== seq[k]) return path[path.length - 1];
+    return path.length < seq.length ? seq[path.length] : fp.plan.finish;
   }
 
   /** Session start: collect the away pot, open every Bundle, then the largest of each boost type not running. */
@@ -286,6 +363,11 @@ export class Player {
       act({ t, type: "click", target: "scrap", id: sp.scraps[0].id });
       return;
     }
+    // fold pieces (BALANCE §12.1): clicked like scraps, unless the run turns effects off
+    if (sp.fold && !this.o.noFx && sp.fold.kind !== this.o.fxOff) {
+      act({ t, type: "click", target: "fold", id: sp.fold.id });
+      return;
+    }
     const c = sp.chain || sp.chain2;
     if (c) {
       let plan = this.chainPlan.get(c.id);
@@ -300,11 +382,16 @@ export class Player {
       act({ t, type: "click", target: "node", id: engine.nodeId(c, i) });
       return;
     }
+    const f = sp.field;
+    if (f && this.prof.traceSuccess > 0) {
+      act({ t, type: "click", target: "dot", id: `${f.id}-${this.nextDot(s, f)}` });
+      return;
+    }
     act({ t, type: "click", target: "sheet" });
   }
 
-  buys(s, t, act, mark) {
-    playerBuys(s, this.prof, t, act, mark);
+  buys(s, t, act, mark, o) {
+    playerBuys(s, this.prof, t, act, mark, { ...o, noBook: this.o.noBook });
   }
 }
 
@@ -329,7 +416,7 @@ class Win {
     const action = { w: this.w, s: ++this.seq, ...a };
     const ev = engine.apply(this.state, action);
     if (this.sim.multi) this.pending.push(action);
-    for (const e of ev) if (e.kind === "ignored") this.sim.ignored[`${a.type}:${e.reason}`] = (this.sim.ignored[`${a.type}:${e.reason}`] || 0) + 1;
+    for (const e of ev) if (e.kind === "ignored") this.sim.ignored[`${a.type}:${a.target || ""}:${e.reason}`] = (this.sim.ignored[`${a.type}:${a.target || ""}:${e.reason}`] || 0) + 1;
     this.sim.onEvents(this, ev, a.t, false);
     return ev;
   }
@@ -388,7 +475,26 @@ export function potAttribution(ev, bankAfter, potLeft) {
  * Returns { milestones, active, shares, dayShares, sessionRatios, purchases, nights, dayEnd,
  * units, finalState, … }; milestone values are play-clock seconds.
  */
+/**
+ * The run flags of a variant key (BALANCE §12.1): "nobook" → { noBook }, "nofx" → { noFx },
+ * "fxoff:<id>" → { fxOff: id }. A job id "P1~nobook" runs P1 with them.
+ */
+export function variantFlags(variant) {
+  if (!variant) return {};
+  if (variant === "nobook") return { noBook: true };
+  if (variant === "nofx") return { noFx: true };
+  const m = /^fxoff:([a-z]+)$/.exec(variant);
+  if (m && PATTERNS.some((x) => x.id === m[1])) return { fxOff: m[1] };
+  throw new Error(`unknown variant ${variant}`);
+}
+
 export function runProfile(profileId, seed, opts = {}) {
+  if (typeof profileId === "string" && profileId.includes("~")) {
+    const at = profileId.indexOf("~");
+    opts = { ...opts, variant: profileId.slice(at + 1) };
+    profileId = profileId.slice(0, at);
+  }
+  if (opts.variant) opts = { ...opts, ...variantFlags(opts.variant) };
   const prof = typeof profileId === "string" ? PROFILES[profileId] : profileId;
   if (!prof) throw new Error(`unknown profile ${profileId}`);
   const idleStep = Math.round((opts.idleStep ?? 10) * 1000);
@@ -417,6 +523,10 @@ export function runProfile(profileId, seed, opts = {}) {
     pauses: [], // [play-clock ms, ms] the hand left the Sheet (review r8-03)
     ignored: Object.create(null),
     onEvents: null,
+    atBuy: null, // { p, src }: run 0's sources at the Crease Field purchase (or where --no-book would have made it)
+    foldBy: [], // [play-clock hour][diagram] fold-piece pay in run 0 (BALANCE §12.3 B12)
+    shares2: null, // the second run's sources at the second wish (B16)
+    hourly: [], // run 0's sources at the first step at or after each play-clock hour (B11, B12)
   };
   const disk = { text: null };
   const startState = engine.newGame({ seed, now: T0, day: dayKey(0) });
@@ -457,6 +567,33 @@ export function runProfile(profileId, seed, opts = {}) {
     // a purchase the bank could pay only with a night pot's money (review r7-13: P1 buys its
     // first Crane Loft at the day-3 open from the pot on every seed)
     const pot = potAttribution(ev, s.bank, potLeft);
+    // Pattern book (BALANCE §12.1 keys): finds and tiers, and each fold piece's pay by diagram and day
+    let foldPay = 0;
+    let traced = false;
+    for (const e of ev) {
+      if (e.kind === "earn" && e.source === "fold") foldPay += e.amount;
+      else if (e.kind === "fold" && s.wishCount === 0) {
+        const h = Math.floor(p / HOUR);
+        const row = sim.foldBy[h] || (sim.foldBy[h] = Object.create(null));
+        row[e.pattern] = (row[e.pattern] || 0) + foldPay;
+        foldPay = 0;
+      } else if (e.kind === "trace" && e.result === "match") traced = true;
+    }
+    if (traced) {
+      let found = 0;
+      let learned = 0;
+      let mastered = 0;
+      for (const id in s.book.found) {
+        const tier = engine.bookTier(s.book.found[id].n);
+        if (tier >= 1) found++;
+        if (tier >= 2) learned++;
+        if (tier >= 3) mastered++;
+      }
+      if (found >= 1) hit("book:found>=1", p);
+      if (found >= 9) hit("book:found>=9", p);
+      if (learned >= 9) hit("book:learned>=9", p);
+      if (mastered >= 9) hit("book:mastered>=9", p);
+    }
     potLeft = pot.potLeft;
     // workshops owned after each buy of this call (the state holds them all at the end)
     let owned = 0;
@@ -503,13 +640,22 @@ export function runProfile(profileId, seed, opts = {}) {
         sim.daySnaps.push({ p: sim.milestones["wish:available"], src: { ...s.stats.runBySource }, m15: true });
       }
     }
-    if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) hit("wish2:available", p, awayNow);
+    if (s.wishCount === 1 && !("wish2:available" in sim.milestones) && engine.wishInfo(s).can) {
+      hit("wish2:available", p, awayNow);
+      sim.shares2 = { ...s.stats.runBySource };
+    }
     awayNow = false;
     last = { p, run: s.runFolds, live, life: s.lifetime, wishCount: s.wishCount };
   };
 
   // -- the player's actions
-  const player = new Player(prof, seed);
+  const player = new Player(prof, seed, { noBook: opts.noBook === true, noFx: opts.noFx === true, fxOff: opts.fxOff || null });
+  // B1 (BALANCE §12.3): run 0's sources at the purchase, or where --no-book would have bought
+  const noteBuy = (win, key) => {
+    if (win !== primary || sim.multi || win.state.wishCount !== 0 || sim.atBuy) return;
+    sim.atBuy = { p: sim.p / 1000, src: { ...win.state.stats.runBySource } };
+    if (key) hit(key, sim.p / 1000);
+  };
   // opts.buys: a purchase script ({ item, p } of an earlier run's player purchases, in order)
   // replayed instead of the policy, at every step (not only in sessions, so a purchase
   // the merged save can afford a moment later does not wait 40 min for the next session);
@@ -518,7 +664,10 @@ export function runProfile(profileId, seed, opts = {}) {
   const script = opts.buys ? opts.buys.filter((x) => x.by === "player").map((x) => ({ item: x.item, p: x.p * 1000 })) : null;
   const buyPolicy = (win, t) => {
     if (!script) {
-      player.buys(win.state, t, (a) => win.act(a), (id, payback) => markBuy(win, id, payback));
+      player.buys(win.state, t, (a) => win.act(a), (id, payback) => markBuy(win, id, payback), {
+        would: () => noteBuy(win, "would:crease-field"),
+        atBuy: (id) => { if (id === "crease-field") noteBuy(win, null); },
+      });
       return;
     }
     while (script.length && script[0].p <= sim.p) {
@@ -702,6 +851,10 @@ export function runProfile(profileId, seed, opts = {}) {
             : session.anchor + Math.round((session.hitN - session.anchorN) * hitIv);
         }
       }
+      // (B11, B12: the same step times in every run of a profile, so the same windows)
+      if (!sim.multi && primary.state.wishCount === 0 && t >= sim.hourly.length * HOUR * 1000) {
+        sim.hourly.push({ p: t / 1000, src: { ...primary.state.stats.runBySource } });
+      }
       // 6. advance every window to tn
       sim.p = tn;
       if (session) sim.sessionSec += (tn - t) / 1000;
@@ -733,7 +886,7 @@ export function runProfile(profileId, seed, opts = {}) {
 
 const sumKeys = (src, keys) => keys.reduce((a, k) => a + (src[k] || 0), 0);
 export const SHARE_BUCKETS = Object.freeze({
-  click: Object.freeze(["sheet", "mini", "node", "scrap", "crane", "ream", "boat"]),
+  click: Object.freeze(["sheet", "mini", "node", "scrap", "crane", "ream", "boat", "pattern", "fold"]),
   helpers: Object.freeze(["helpers", "env", "overflow"]),
   workshops: Object.freeze(["workshops"]),
   away: Object.freeze(["away"]),
@@ -762,12 +915,12 @@ function summarize(prof, seed, sim, finalState, opts) {
       live[k] = snap.src[k] - (prev[k] || 0);
       tot += live[k];
     }
-    dayShares.push({ day: Math.ceil(snap.p / (prof.openHours * HOUR)) || 1, upTo: snap.p, click: tot > 0 ? sumKeys(live, SHARE_BUCKETS.click) / tot : 0, live: tot });
+    dayShares.push({ day: Math.ceil(snap.p / (prof.openHours * HOUR)) || 1, upTo: snap.p, click: tot > 0 ? sumKeys(live, SHARE_BUCKETS.click) / tot : 0, live: tot, src: live });
     prev = snap.src;
     if (snap.m15) break;
   }
   return {
-    profile: prof.id, seed,
+    profile: opts.variant ? `${prof.id}~${opts.variant}` : prof.id, seed,
     milestones: { ...ms },
     byAway: { ...sim.byAway },
     active: { ...sim.active },
@@ -785,6 +938,11 @@ function summarize(prof, seed, sim, finalState, opts) {
     m15,
     // BALANCE inv. 9: envelope units created = opened + converted + waiting
     units: { ...finalState.stats.units, waiting: Object.values(finalState.envelopes).reduce((a, e) => a + e.units, 0) },
+    variant: opts.variant || null,
+    atBuy: sim.atBuy,
+    foldBy: sim.foldBy.map((x) => ({ ...(x || {}) })),
+    shares2: sim.shares2,
+    hourly: sim.hourly,
     finalState: opts.keepState === false ? null : finalState,
   };
 }
@@ -974,7 +1132,214 @@ export function evaluate(runs, bal = parseBalance()) {
     add({ section: "§7", id: "inv9", what: "no envelope is lost: units created = opened + converted + waiting (all runs)", unit: "text",
       note: worst < 1e-9 ? "exact in every run" : `off by ${worst} (${where})`, pass: worst < 1e-9 });
   }
+  if (bal.pattern) patternRows(runs, bal, medians, rows);
   return { rows, pass: rows.every((r) => r.pass || r.provisional), medians };
+}
+
+/** The live (away-free) income of run `r` on 0-based day `d` up to M15, by source. */
+const dayLive = (r, d) => (r.dayShares[d] ? r.dayShares[d].src : null);
+const totalOf = (src) => {
+  let x = 0;
+  for (const k in src) x += src[k];
+  return x;
+};
+const liveShareOf = (src, keys) => {
+  if (!src) return NaN;
+  let tot = 0;
+  for (const k in src) if (k !== "away") tot += src[k];
+  return tot > 0 ? sumKeys(src, keys) / tot : NaN;
+};
+
+/**
+ * BALANCE §12.3 rows B1-B16 (the Pattern book). Each row is added only when
+ * the runs it compares exist (the `~nobook`, `~nofx` and `~fxoff:<id>`
+ * variants of variantJobs()).
+ */
+function patternRows(runs, bal, medians, rows) {
+  const R = Object.create(null);
+  for (const r of bal.pattern) R[r.id] = r;
+  const P1 = runs.P1;
+  if (!P1 || !P1.length) return;
+  const base = (id) => runs[`${id}~nobook`] || null;
+  const same = (rs, b) => rs.map((r) => [r, b.find((x) => x.seed === r.seed)]).filter((x) => x[1]);
+  const within = (v, w) => Number.isFinite(v) && v >= (w.lo ?? -Infinity) && v <= (w.hi ?? Infinity);
+  const minOf = (xs) => Math.min(...xs.filter(Number.isFinite));
+  const maxOf = (xs) => Math.max(...xs.filter(Number.isFinite));
+  const add = (id, what, unit, vals, pass, note, extra = {}) => {
+    const row = R[id];
+    rows.push({ section: "§12", id, what: row ? row.what : what, unit, vals, median: median(vals), min: minOf(vals), max: maxOf(vals),
+      pass, provisional: row ? row.provisional : false, note, ...extra });
+  };
+  const fmtD = (x) => (Number.isFinite(x) ? (x < 0 ? "−" : "+") + fmtClock(Math.abs(x)) : "—");
+  const pts = (x) => (Number.isFinite(x) ? `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(2)} pts` : "—");
+  const pct = (x) => (Number.isFinite(x) ? (x * 100).toFixed(2) + " %" : "—");
+  const buyAt = (r) => r.milestones["buy:crease-field"] ?? NaN;
+
+  // B1: nothing moves before the purchase (the --no-book run of the same seed, where it would have bought)
+  const b1 = base("P1");
+  if (b1) {
+    const bad = [];
+    for (const [r, b] of same(P1, b1)) {
+      const at = buyAt(r);
+      const would = b.milestones["would:crease-field"];
+      if (at !== would) { bad.push(`seed ${r.seed}: bought ${fmtClock(at)}, --no-book ${fmtClock(would)}`); continue; }
+      for (const k in b.milestones) if (b.milestones[k] < at && r.milestones[k] !== b.milestones[k]) bad.push(`seed ${r.seed} ${k}`);
+      for (const k in r.milestones) if (r.milestones[k] < at && r.milestones[k] !== b.milestones[k]) bad.push(`seed ${r.seed} ${k}`);
+      const a1 = r.atBuy ? r.atBuy.src : null;
+      const a2 = b.atBuy ? b.atBuy.src : null;
+      if (!a1 || !a2 || JSON.stringify(a1) !== JSON.stringify(a2)) bad.push(`seed ${r.seed}: sources at the purchase`);
+    }
+    rows.push({ section: "§12", id: "B1", what: R.B1.what, unit: "text", pass: bad.length === 0,
+      note: bad.length ? bad.slice(0, 3).join("; ") : `identical on ${same(P1, b1).length} seeds (milestones, per-source income and click share up to the purchase)` });
+  }
+  // B2: the purchase
+  {
+    const vals = P1.map(buyAt);
+    add("B2", "", "clock", vals, within(median(vals), R.B2.median) && vals.every((v) => within(v, R.B2.every)), undefined, { window: R.B2.median, every: R.B2.every });
+  }
+  // B3-B6: the book's milestones, relative to the purchase, M15 or M17
+  const refOf = (r, ref) => (ref === "B2" ? buyAt(r) : ref === "M15" ? r.m15 ?? NaN : ref === "M17" ? r.milestones["wish2:available"] ?? NaN : NaN);
+  for (const id of ["B3", "B4", "B5", "B6"]) {
+    const row = R[id];
+    const vals = P1.map((r) => (r.milestones[row.key] ?? NaN) - refOf(r, row.median.ref));
+    const okMed = within(median(vals), row.median);
+    let okEvery = true;
+    if (row.every) {
+      okEvery = P1.every((r) => {
+        const d = (r.milestones[row.key] ?? NaN) - refOf(r, row.every.ref);
+        return row.every.strict ? Number.isFinite(d) && d < row.every.hi : within(d, row.every);
+      });
+    }
+    const reached = P1.filter((r) => Number.isFinite(r.milestones[row.key])).length;
+    add(id, "", "rel", vals, okMed && okEvery, `${row.median.ref} ${fmtD(median(vals))} (median); reached on ${reached} of ${P1.length} seeds`);
+  }
+  // B7: whole first run click share, against --no-book
+  if (b1) {
+    const vals = P1.map((r) => (r.shares ? r.shares.click : NaN));
+    const deltas = same(P1, b1).map(([r, b]) => (r.shares && b.shares ? r.shares.click - b.shares.click : NaN));
+    const w = R.B7.median;
+    const ok = within(median(vals), w) && within(median(deltas), w.base) && vals.every((v) => within(v, R.B7.every));
+    add("B7", "", "pct", vals, ok, `--no-book median ${pct(median(b1.map((r) => (r.shares ? r.shares.click : NaN))))}; delta ${pts(median(deltas))} (median)`, { window: { lo: w.lo, hi: w.hi } });
+  }
+  // B8: §6.2 per-day floors, every profile (the §6.2 rows, with fields on)
+  {
+    const d62 = rows.filter((x) => x.section === "§6.2");
+    rows.push({ section: "§12", id: "B8", what: R.B8.what, unit: "text", pass: d62.length > 0 && d62.every((x) => x.pass),
+      note: `${d62.filter((x) => x.pass).length} of ${d62.length} §6.2 rows pass` });
+  }
+  // B9: M15 against --no-book (P1, P8, P11, P14); every seed inside its §5 every-seed window
+  {
+    const parts = [];
+    let ok = true;
+    let n = 0;
+    for (const id of ["P1", "P8", "P11", "P14"]) {
+      const b = base(id);
+      if (!runs[id] || !b) continue;
+      n++;
+      const deltas = same(runs[id], b).map(([r, x]) => r.m15 - x.m15);
+      const md = median(deltas);
+      const fw = bal.firstWish.find((x) => x.id === id);
+      const every = runs[id].every((r) => (fw && fw.every ? within(r.m15, fw.every) : true)) && (id !== "P1" || runs[id].every((r) => r.m15 > 16 * HOUR && r.m15 < 24 * HOUR));
+      if (!within(md, R.B9.median) || !every) ok = false;
+      parts.push(`${id} ${fmtD(md)} (${fmtD(minOf(deltas))}…${fmtD(maxOf(deltas))})`);
+    }
+    if (n) rows.push({ section: "§12", id: "B9", what: R.B9.what, unit: "text", pass: ok, note: `M15 − --no-book, median (range): ${parts.join("; ")}` });
+  }
+  // B10: pattern + fold share of live income on days 2 and 3
+  {
+    const vals = [];
+    for (const r of P1) for (const d of [1, 2]) vals.push(liveShareOf(dayLive(r, d), ["pattern", "fold"]));
+    const perSeed = P1.map((r) => Math.max(liveShareOf(dayLive(r, 1), ["pattern", "fold"]), liveShareOf(dayLive(r, 2), ["pattern", "fold"])));
+    add("B10", "", "pct", perSeed, within(median(perSeed), R.B10.median) && vals.every((v) => !Number.isFinite(v) || within(v, R.B10.every)), "the larger of days 2 and 3 per seed");
+  }
+  // B11: effects alone, each day: (P1 − --no-pattern-fx − P1's fold pay) / P1 live. Both runs
+  // over the same play-clock window: day d's hours, the last one cut at the whole hour before
+  // the earlier of the two first wishes (a day 3 that ends at each run's own M15 would count the
+  // time one run reaches it sooner as lost income)
+  const fxShare = (r, x, d, foldKey) => {
+    const lo = d * 8;
+    const cap = Math.floor(Math.min(r.m15 ?? Infinity, x.m15 ?? Infinity) / HOUR);
+    const hi = Math.min((d + 1) * 8, cap);
+    if (!(hi > lo) || !r.hourly[hi] || !x.hourly[hi]) return NaN;
+    const live = (run, k) => totalOf(run.hourly[k].src) - (run.hourly[k].src.away || 0);
+    const la = live(r, hi) - live(r, lo);
+    const lb = live(x, hi) - live(x, lo);
+    const fold = foldKey(r, lo, hi);
+    return la > 0 ? (la - lb - fold) / la : NaN;
+  };
+  // The effect is the median over seeds of each day's share, its largest day against the
+  // median window; each seed's own days against the every-seed bound, which is the
+  // ablation's noise floor (BALANCE §12.3: an effect that moves a crane or a chain reshuffles
+  // the Confetti cranes that follow, about a point of a day's income each).
+  const effectRow = (pairs, foldKey) => {
+    const perDay = [[], [], []];
+    const perSeed = [];
+    for (const [r, x] of pairs) {
+      let m = -Infinity;
+      for (let d = 0; d < 3; d++) {
+        const v = fxShare(r, x, d, foldKey);
+        if (!Number.isFinite(v)) continue;
+        perDay[d].push(v);
+        m = Math.max(m, v);
+      }
+      perSeed.push(m);
+    }
+    const effect = Math.max(...perDay.map((xs) => (xs.length ? median(xs) : -Infinity)));
+    return { effect, perSeed, worst: maxOf(perSeed) };
+  };
+  const nofx = runs["P1~nofx"];
+  if (nofx) {
+    const e = effectRow(same(P1, nofx), (run, lo, hi) => (run.hourly[hi].src.fold || 0) - (run.hourly[lo].src.fold || 0));
+    rows.push({ section: "§12", id: "B11", what: R.B11.what, unit: "text", value: e.effect,
+      pass: within(e.effect, R.B11.median) && e.perSeed.every((v) => within(v, R.B11.every)),
+      note: `effect (largest day of the per-day medians) ${pct(e.effect)}; largest seed-day ${pct(e.worst)}` });
+  }
+  // B12: one diagram's effect, each day, seeds 1-5
+  {
+    const parts = [];
+    let ok = true;
+    let n = 0;
+    let worst = -Infinity;
+    for (const p of PATTERNS) {
+      const x = runs[`P1~fxoff:${p.id}`];
+      if (!x) continue;
+      n++;
+      const e = effectRow(same(P1, x), (run, lo, hi) => {
+        let y = 0;
+        for (let h = lo; h < hi; h++) y += (run.foldBy[h] || {})[p.id] || 0;
+        return y;
+      });
+      if (!within(e.effect, R.B12.median) || !e.perSeed.every((v) => within(v, R.B12.every))) ok = false;
+      worst = Math.max(worst, e.effect);
+      parts.push(`${p.id} ${pct(e.effect)} (seed-day ≤ ${pct(e.worst)})`);
+    }
+    if (n) rows.push({ section: "§12", id: "B12", what: R.B12.what, unit: "text", pass: ok, value: worst, note: `effect per diagram: ${parts.join(", ")}` });
+  }
+  // B13, B14: P15 and P14 first wish against P1
+  for (const [id, pid] of [["B13", "P15"], ["B14", "P14"]]) {
+    const rs = runs[pid];
+    if (!rs) continue;
+    const vals = rs.map((r) => r.m15 ?? NaN);
+    const d = median(vals) - medians.P1;
+    add(id, "", "clock", vals, within(d, R[id].median) && vals.every((v) => within(v, R[id].every)), `${pid} median − P1 median ${fmtD(d)}`, { every: R[id].every });
+  }
+  // B15: P2 identical to --no-book
+  if (runs.P2 && base("P2")) {
+    const bad = [];
+    for (const [r, b] of same(runs.P2, base("P2"))) {
+      const ks = new Set([...Object.keys(r.milestones), ...Object.keys(b.milestones)]);
+      for (const k of ks) if (k !== "would:crease-field" && r.milestones[k] !== b.milestones[k]) bad.push(`seed ${r.seed} ${k}`);
+    }
+    rows.push({ section: "§12", id: "B15", what: R.B15.what, unit: "text", pass: bad.length === 0, note: bad.length ? bad.slice(0, 3).join("; ") : "identical milestones on every seed" });
+  }
+  // B16: run 2 (first wish to M17) click share of live income
+  if (b1) {
+    const share2 = (r) => liveShareOf(r.shares2, SHARE_BUCKETS.click);
+    const vals = P1.map(share2);
+    const bm = median(b1.map(share2));
+    const ok = within(median(vals), R.B16.median) && median(vals) >= bm && vals.every((v) => within(v, R.B16.every));
+    add("B16", "", "pct", vals, ok, `--no-book median ${pct(bm)}`, { window: { lo: R.B16.median.lo, hi: 1 } });
+  }
 }
 
 function bucketOf(keys) {
@@ -1018,7 +1383,8 @@ export function report(runs, ev) {
     if (w.hi === Infinity) return `≥ ${f(w.lo)}`;
     return `${f(w.lo)}–${f(w.hi)}`;
   };
-  const val = (x, unit) => (unit === "pct" ? pct(x) : unit === "clock" || unit === "M15+" ? fmtClock(x) : Number.isFinite(x) ? String(+x.toFixed(3)) : "—");
+  const val = (x, unit) => (unit === "pct" ? pct(x) : unit === "clock" || unit === "M15+" ? fmtClock(x)
+    : unit === "rel" ? (Number.isFinite(x) ? (x < 0 ? "−" : "+") + fmtClock(Math.abs(x)) : "—") : Number.isFinite(x) ? String(+x.toFixed(3)) : "—");
   L(`| Row | What | Median | Min | Max | Pass window (median) | Every seed | Result |`);
   L(`|---|---|---|---|---|---|---|---|`);
   for (const r of ev.rows) {
@@ -1055,18 +1421,41 @@ export async function runAll(ids = PROFILE_IDS, seeds = parseSeeds("1-20"), o = 
   for (const id of ids) for (const seed of seeds) jobs.push({ id, seed });
   const runs = {};
   for (const id of ids) runs[id] = [];
-  const workers = Math.max(1, Math.min(o.workers ?? 4, jobs.length));
   const strip = (r) => ({ ...r, finalState: null });
-  if (workers === 1) {
-    for (const j of jobs) runs[j.id].push(strip(runProfile(j.id, j.seed, { idleStep: o.idleStep, even: o.even, keepState: false })));
-  } else {
+  const flags = o.flags || {};
+  for (const j of o.extra || []) {
+    if (!runs[j.id]) runs[j.id] = [];
+    jobs.push(j);
+  }
+  // A job with `replay` (BALANCE §12.1 effect ablations) replays that profile's run of the same
+  // seed: its purchases and hand pauses, so the two runs differ by the effects, not by a
+  // reshuffled purchase order. Those run after the rest.
+  const first = jobs.filter((j) => !j.replay);
+  const later = jobs.filter((j) => j.replay);
+  const withReplay = (j) => {
+    const base = (runs[j.replay] || []).find((r) => r.seed === j.seed);
+    if (!base) throw new Error(`${j.id} seed ${j.seed}: no ${j.replay} run to replay`);
+    return { id: j.id, seed: j.seed, buys: base.purchases, pauses: base.pauses };
+  };
+  const optsOf = (j) => ({ idleStep: o.idleStep, even: o.even, keepState: false, ...flags, ...(j.buys ? { buys: j.buys, pauses: j.pauses } : {}) });
+  const pool = async (list) => {
+    const workers = Math.max(1, Math.min(o.workers ?? 4, list.length));
+    if (!list.length) return;
+    if (workers === 1) {
+      for (const j of list) {
+        const r = strip(runProfile(j.id, j.seed, optsOf(j)));
+        runs[j.id].push(r);
+        if (o.progress) o.progress(r);
+      }
+      return;
+    }
     const { Worker } = await import("node:worker_threads");
     let next = 0;
     await Promise.all(Array.from({ length: workers }, () => new Promise((resolve, reject) => {
-      const wk = new Worker(new URL(import.meta.url), { workerData: { idleStep: o.idleStep, even: o.even } });
+      const wk = new Worker(new URL(import.meta.url), { workerData: { idleStep: o.idleStep, even: o.even, flags } });
       const feed = () => {
-        if (next >= jobs.length) { wk.postMessage(null); return; }
-        wk.postMessage(jobs[next++]);
+        if (next >= list.length) { wk.postMessage(null); return; }
+        wk.postMessage(list[next++]);
       };
       wk.on("message", (msg) => {
         if (msg.error) { reject(new Error(msg.error)); wk.terminate(); return; }
@@ -1078,9 +1467,24 @@ export async function runAll(ids = PROFILE_IDS, seeds = parseSeeds("1-20"), o = 
       wk.on("exit", () => resolve());
       feed();
     })));
-  }
-  for (const id of ids) runs[id].sort((a, b) => a.seed - b.seed);
+  };
+  await pool(first);
+  await pool(later.map(withReplay));
+  for (const id in runs) runs[id].sort((a, b) => a.seed - b.seed);
   return runs;
+}
+
+/** The extra runs BALANCE §12.3 compares against (no-book baselines, effect ablations), for the profiles and seeds given. */
+export function variantJobs(ids, seeds) {
+  const out = [];
+  for (const id of ["P1", "P2", "P8", "P11", "P14"]) {
+    if (ids.includes(id)) for (const seed of seeds) out.push({ id: `${id}~nobook`, seed });
+  }
+  if (ids.includes("P1")) {
+    for (const seed of seeds) out.push({ id: "P1~nofx", seed, replay: "P1" });
+    for (const p of PATTERNS) for (const seed of seeds.filter((x) => x <= 5)) out.push({ id: `P1~fxoff:${p.id}`, seed, replay: "P1" });
+  }
+  return out;
 }
 
 async function workerMain() {
@@ -1088,7 +1492,8 @@ async function workerMain() {
   parentPort.on("message", (job) => {
     if (job === null) { parentPort.close(); process.exit(0); }
     try {
-      const r = runProfile(job.id, job.seed, { idleStep: workerData.idleStep, even: workerData.even, keepState: false });
+      const r = runProfile(job.id, job.seed, { idleStep: workerData.idleStep, even: workerData.even, keepState: false, ...(workerData.flags || {}),
+        ...(job.buys ? { buys: job.buys, pauses: job.pauses } : {}) });
       parentPort.postMessage({ result: { ...r, finalState: null } });
     } catch (e) {
       parentPort.postMessage({ error: `${job.id} seed ${job.seed}: ${e.stack || e}` });
@@ -1107,12 +1512,17 @@ async function main(argv) {
   const workers = Number(arg("workers", Math.max(1, (await import("node:os")).availableParallelism?.() ?? 4)));
   const t0 = Date.now();
   let n = 0;
-  const total = ids.length * seeds.length;
   const even = argv.includes("--even");
-  const runs = await runAll(ids, seeds, { idleStep, workers, even, progress: () => { n++; if (process.stderr.isTTY) process.stderr.write(`\r${n}/${total}`); } });
+  const fxOff = arg("fx-off", null);
+  const flags = { ...(argv.includes("--no-book") ? { noBook: true } : {}), ...(argv.includes("--no-pattern-fx") ? { noFx: true } : {}), ...(fxOff ? variantFlags(`fxoff:${fxOff}`) : {}) };
+  const ablate = Object.keys(flags).length === 0 && !argv.includes("--no-ablation");
+  const extra = ablate ? variantJobs(ids, seeds) : [];
+  const total = ids.length * seeds.length + extra.length;
+  const runs = await runAll(ids, seeds, { idleStep, workers, even, flags, extra, progress: () => { n++; if (process.stderr.isTTY) process.stderr.write(`\r${n}/${total}`); } });
   if (process.stderr.isTTY) process.stderr.write("\n");
   const ev = evaluate(runs);
-  console.log(`# Creaseworks pacing: ${ids.join(" ")} × seeds ${seeds[0]}-${seeds[seeds.length - 1]} (idle step ${idleStep} s${even ? ", even beat" : ""}, ${((Date.now() - t0) / 1000).toFixed(1)} s)\n`);
+  const mode = Object.keys(flags).map((k) => (k === "fxOff" ? `--fx-off ${flags.fxOff}` : k === "noBook" ? "--no-book" : "--no-pattern-fx")).join(" ");
+  console.log(`# Creaseworks pacing: ${ids.join(" ")} × seeds ${seeds[0]}-${seeds[seeds.length - 1]} (idle step ${idleStep} s${even ? ", even beat" : ""}${mode ? ", " + mode : ""}${extra.length ? `, ${extra.length} §12 variant runs` : ""}, ${((Date.now() - t0) / 1000).toFixed(1)} s)\n`);
   console.log(report(runs, ev));
   console.log("\nFirst wish (M15) per profile: median (min–max)");
   for (const id of ids) {

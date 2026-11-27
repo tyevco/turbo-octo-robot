@@ -77,6 +77,36 @@ export const UPGRADES = f([
   f({ id: "crane-song", seg: "curios", name: "Crane Song", cost: 5e6, fx: "crane", v: 170, req: "crane-bait", text: "cranes every 170-255 s" }),
   f({ id: "slow-wings", seg: "curios", name: "Slow Wings", cost: 500000, fx: "craneLife", v: 18000, text: "cranes stay 18 s" }),
   f({ id: "harbour-ribbon", seg: "curios", name: "Harbour Ribbon", cost: 1e6, fx: "boat", text: "the Paper Boat sails" }),
+  // §4.7 (issue #2): opens the Pattern book; no §3.1 estimate (BALANCE §12.1)
+  f({ id: "crease-field", seg: "curios", name: "Crease Field", cost: 5e6, fx: "field", req: "grand-crease", text: "every 5th chain is a crease field on the Sheet" }),
+]);
+
+// §4.7 Pattern book: the nine diagrams in book order. `dots` is one tracing
+// as [col, row] on the 3 × 3 field, its start first and never the centre;
+// `canon` the classifier's strings (engine/pattern.js canonOf; a test
+// rebuilds them from `dots`); `fold` the fold piece's name; `short` the
+// effect in ≤ 16 graphemes, `text` in full (≤ 44), `hint` the hidden card's
+// line (null for Ridge, drawn in full from the start); `fx` the effect key.
+// The ids are part of the save format (book.found, `p:<id>` shelf entries).
+export const PATTERNS = f([
+  f({ id: "ridge", name: "Ridge", n: 3, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0])]), canon: f(["o:00", "o:11"]),
+    fold: "Ridge pleat", short: "Pause kept", text: "Your next short pause costs no beats", hint: null, fx: "steady" }),
+  f({ id: "gull", name: "Gull", n: 3, closed: false, dots: f([f([0, 0]), f([1, 1]), f([2, 0])]), canon: f(["o:13"]),
+    fold: "Paper gull", short: "Crane sooner", text: "The next crane comes 20 s sooner", hint: "Down, then up: a bird far off", fx: "pull" }),
+  f({ id: "napkin", name: "Napkin", n: 4, closed: true, dots: f([f([0, 0]), f([1, 0]), f([1, 1]), f([0, 1])]), canon: f(["c:0246"]),
+    fold: "Folded napkin", short: "90 s afterglow", text: "Banks 90 s of afterglow", hint: "Four sides, back home", fx: "glow" }),
+  f({ id: "lozenge", name: "Lozenge", n: 4, closed: true, dots: f([f([1, 0]), f([2, 1]), f([1, 2]), f([0, 1])]), canon: f(["c:1357"]),
+    fold: "Lozenge tile", short: "Figure next", text: "Your next fold finishes a figure", hint: "Edge to edge, round the middle", fx: "finish" }),
+  f({ id: "stair", name: "Stair", n: 5, closed: false, dots: f([f([0, 0]), f([1, 0]), f([1, 1]), f([2, 1]), f([2, 2])]), canon: f(["o:0202"]),
+    fold: "Stair pleat", short: "+6 beats", text: "Your rhythm gains 6 beats", hint: "Across, down, across, down", fx: "lift" }),
+  f({ id: "sail", name: "Sail", n: 6, closed: true, dots: f([f([0, 0]), f([0, 1]), f([0, 2]), f([1, 2]), f([2, 2]), f([1, 1])]), canon: f(["c:002255"]),
+    fold: "Sail", short: "Longer catches", text: "Scraps and cranes stay longer for 60 s", hint: "Down the side, along the foot, up the slope", fx: "wind" }),
+  f({ id: "switchback", name: "Switchback", n: 7, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([1, 1]), f([0, 2]), f([1, 2]), f([2, 2])]), canon: f(["o:003300"]),
+    fold: "Accordion fan", short: "Chain in 2 s", text: "The next chain or field comes within 2 s", hint: "Top, slash, bottom", fx: "hurry" }),
+  f({ id: "hem", name: "Hem", n: 8, closed: true, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([2, 1]), f([2, 2]), f([1, 2]), f([0, 2]), f([0, 1])]), canon: f(["c:00224466"]),
+    fold: "Paper frame", short: "Field next", text: "The next chain is a crease field again", hint: "Walk the edge and come home", fx: "margin" }),
+  f({ id: "coil", name: "Coil", n: 9, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0]), f([2, 1]), f([2, 2]), f([1, 2]), f([0, 2]), f([0, 1]), f([1, 1])]), canon: f(["o:00224460"]),
+    fold: "Paper spring", short: "Hands ×2 10 s", text: "Hand hits ×2 for 10 s", hint: "Walk the edge, then turn in", fx: "windup" }),
 ]);
 
 // §8 automations (on when bought).
@@ -221,4 +251,10 @@ export const K = f({
   spareKinds: 3, spareDiv: 10, // §9 25-Wish perk: a tenth of the last run's three cheapest workshops
   noticesMax: 12, noteLifeMs: 60000,
   titleMax: 80,
+  // §4.7 Pattern book (BALANCE §12.2, knob 8 "pattern payouts")
+  fieldEvery: 5, fieldWaitMs: 1000, fieldLifeMs: 16000, fieldResultMs: 3000,
+  matchPerDot: 4, firstFindPerDot: 10, foldLifeMs: 15000, foldPay: 1, patternRestMs: 180000,
+  bookLearn: 4, bookMaster: 12, bookCountMax: 9999,
+  gullPullMs: 20000, gullMinMs: 5000, napkinGlowMs: 90000, lozengeFrame: 7, stairBeats: 6,
+  windMs: 60000, windLife: 1.5, hurryMs: 2000, coilMs: 10000, coilMult: 2,
 });
