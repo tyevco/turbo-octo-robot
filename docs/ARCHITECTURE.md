@@ -621,7 +621,11 @@ title, paneName, space, tab, kind: "pane"|"kid" }`. `status` is already mapped
             afterglowText: "Afterglow ×1.25 · 12m" | null },  // the footer chip and streak tooltip (r5-14)
   boosts: [{ type, label, msLeft, msTotal }],
   helpers: { groups: [{ key, title, count, folded, tiles: [Tile] }], dense, legend: bool, empty: bool,
-             elsewhere: [Tile], album: [{ helperId, name, species, hue, leftAgo, folds }] },
+             elsewhere: [Tile], elsewhereCount,
+             album: [{ helperId, name, species, hue, leftAgo, folds }] },
+                                           // tiles and elsewhere are built only for the panel's Flock tab
+                                           //   (empty in the ribbon, rail and other tabs; counts and
+                                           //   elsewhereCount are always filled; review r8-09)
   shop: { segments: { works: [Row], tools: [Row], folk: [Row], charms: [Row], curios: [Row], auto: [Row] } },
   string: { cranes, of, nextIn, lifetime, gain, can, needed, perks: [{ at, text, have }], garlands: [...],
             strands: [0..1 ×20], title, next, at, button,
@@ -635,7 +639,9 @@ title, paneName, space, tab, kind: "pane"|"kid" }`. `status` is already mapped
                  rested, best, affordable: [...], collectable: bool },
   notices: [{ kind, text, actions }],      // engine notices (clock); save notices merged in by glue
   ribbon: { marks: [Mark], level: "A"|"B"|"C", tallies: [...] }, // computed for opts.width; ui/ribbon.js may draw a denser level once lead chips (hint, save chip, welcome pill) take their width
-  rail: { pips: [Mark] }
+  rail: { pips: [Mark], tallies: [...] }    // at most RAIL_PIPS (240) pips, needs-you then finished first;
+                                           //   the rest counted in tallies by status, "elsewhere" for
+                                           //   another window's helpers (review r8-10)
 }
 Tile = { helperId, name, species, hue, status, statusWord, envelope: bool, pips: [...],
          rest: 0..1|null, pulse, spin, dashed, opacity, tooltip, pane, addr, kind }
@@ -763,7 +769,9 @@ banner lists refunds from these).
   P1 two-window days were 1.5–4 % short). A background window's `observe` does not
   overwrite the presence flags of a window with a hand input in the last 30 s.
 * The stored rhythm `r` is not reset by ticks (a late hit must keep its streak); read it through
-  `rhythmAt(state, E, now)`. A stale observation (older than the helper's `lastSeen`, or than
+  `rhythmAt(state, E, now)`. A pause past the rhythm gap but no longer than `K.slipMs` (4 s)
+  costs `K.slipBeats` (10) beats of the streak, at least 1 kept; a longer one ends it (review
+  r8-03). Crane's Gift reads the same `rhythmAt`. A stale observation (older than the helper's `lastSeen`, or than
   its `missingSince` for the Album) is skipped for that helper.
 
 **Other decisions.** Spawn slots: DESIGN §3.2 says "minus six slots"; the geometry puts twelve

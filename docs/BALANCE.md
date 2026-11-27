@@ -195,9 +195,9 @@ open, and the real-engine sim notes the row "reached by a night pot on N of 20 s
 on every seed, so its median and its whole range sit exactly on the day-5 open (32:00): the
 last session of day 4 ends at 0.82–0.92 of `Lw` and the night pot credits 0.24–0.28 of `Lw`
 (seed 1: 0.884 with 0.278), so the median says when the next day opens, not how close the live
-curve came. P9 does on 9 of 20 seeds (also at 32:00, ending the day at 0.86–0.88 of `Lw` with
-0.254 of night credit); the other 11 reach it live later on day 5, so its median is
-32:28 (32:00–34:09), not a day open. P1, P2 and the rest are noted on no seed (P2 24:52,
+curve came. P9 does on 1 of 20 seeds (at 32:00); the other 19 reach it live later on day 5, so its
+median is 34:14 (32:00–34:27), not a day open (before the human hand of §11 it was 9 of 20
+seeds and 32:28). P1, P2 and the rest are noted on no seed (P2 24:52,
 24:10–25:25). This is recorded, not retuned: every window still passes and P4 and P9 are meant
 to be slower than P1.
 
