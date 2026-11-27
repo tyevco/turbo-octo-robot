@@ -347,9 +347,16 @@ export const KID_FLAG_TOP = -4;
  */
 export function tileLayout(g, flagged) {
   const dense = g === TILE.dense;
-  const figureLeft = (g.w - g.glyph) / 2 - 1;
-  if (!flagged) return { figureTop: dense ? 4 : 6, figureLeft, nameTop: 40, pipsBottom: dense ? 3 : 5 };
+  const centred = (g.w - g.glyph) / 2 - 1;
+  if (!flagged) return { figureTop: dense ? 4 : 6, figureLeft: centred, nameTop: 40, pipsBottom: dense ? 3 : 5 };
   const figureTop = KID_FLAG_TOP + g.badge;
+  // Dropped below the flag, a dense figure reaches down beside the envelope
+  // marker's disc (r8-12: the disc covered the figure's lower right), so it
+  // moves left until its box ends where the disc begins. It still clears the
+  // flag, whose box ends where the figure's starts. The layout is the same
+  // with or without an envelope so the figure never jumps when one lands.
+  const disc = envelopeDisc(g);
+  const figureLeft = figureTop + g.glyph > disc.y0 ? Math.min(centred, disc.x0 - g.glyph) : centred;
   // The name's 120 % line box (13.2 px) holds 1.1 px of leading above the
   // 11 px text, so a line box starting 1 px above the figure's foot keeps the
   // text clear of it and ends above the pips (bottom 3).
@@ -588,13 +595,24 @@ function envOffset(g) {
 }
 
 /**
+ * The envelope marker's visible disc in its tile (px from the tile's top-left;
+ * tested): `g.env` px, centred in the `g.envHit` hit box at the bottom right.
+ */
+export function envelopeDisc(g) {
+  const inset = (g.envHit - g.env) / 2;
+  const x0 = g.w - envOffset(g) - g.envHit + inset;
+  const y0 = g.h - envOffset(g) - g.envHit + inset;
+  return { x0, y0, x1: x0 + g.env, y1: y0 + g.env };
+}
+
+/**
  * The rest bar's box: `g.rest` px wide, centred; with an envelope marker it
  * stops 2 px short of the marker's disc so the disc never hides its end.
  */
 export function restBar(g, withEnvelope) {
   const left = Math.round((g.w - g.rest) / 2);
   if (!withEnvelope) return { left, w: g.rest };
-  const discLeft = g.w - envOffset(g) - g.envHit + (g.envHit - g.env) / 2;
+  const discLeft = envelopeDisc(g).x0;
   return { left, w: Math.max(4, Math.min(g.rest, discLeft - 2 - left)) };
 }
 

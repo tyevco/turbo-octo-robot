@@ -20,7 +20,7 @@ import { graphemes } from "../../mods/creaseworks/engine/index.js";
 import { FREE_SLOTS, PERKS, AUTOMATIONS } from "../../mods/creaseworks/engine/content.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
 import { slotPos } from "../../mods/creaseworks/engine/view.js";
-import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks, MAT_BANDS } from "../../mods/creaseworks/ui/mat.js";
+import { renderMat, matGeometry, craneHintBox, boatBox, confettiFlecks, MAT_BANDS, ENV_ART } from "../../mods/creaseworks/ui/mat.js";
 import { renderShop, rowText, rowTextWidth, SHOP_CLIP } from "../../mods/creaseworks/ui/shop.js";
 import { renderString } from "../../mods/creaseworks/ui/string.js";
 
@@ -241,6 +241,73 @@ test("r5-15: the tray draws the vm's stack count (fractional units), not a floor
   assert.equal(stackLabel({ units: 2.5 }), "×2.5");
   assert.equal(stackLabel({ units: 12.4 }), "×12");
   assert.equal(stackLabel({ units: 1.99 }), null);
+});
+
+/** The ink box of a flat seal/scene SVG (polygons and circles), in its own viewBox units. */
+function svgInk(file) {
+  const src = readFileSync(join(root, file), "utf8");
+  const xs = [];
+  const ys = [];
+  for (const m of src.matchAll(/points="([^"]+)"/g)) {
+    for (const pt of m[1].trim().split(/\s+/)) {
+      const [x, y] = pt.split(",").map(Number);
+      xs.push(x);
+      ys.push(y);
+    }
+  }
+  for (const m of src.matchAll(/<circle\b([^>]*)>/g)) {
+    const a = (k) => Number(m[1].match(new RegExp(`\\b${k}="([^"]+)"`))[1]);
+    xs.push(a("cx") - a("r"), a("cx") + a("r"));
+    ys.push(a("cy") - a("r"), a("cy") + a("r"));
+  }
+  assert.ok(xs.length && xs.every(Number.isFinite) && ys.every(Number.isFinite), `${file}: shapes parsed`);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+test("r8-13: a tray envelope's seal and stack count stay on the paper, and a long count sits below its seal", () => {
+  // The paper the layout assumes is the one envelope-body.svg draws.
+  assert.deepEqual(svgInk("mods/creaseworks/art/scene/envelope-body.svg"), { ...ENV_ART.paper });
+  const P = ENV_ART.paper;
+  // An 11 px count in a 100 % line box: digits measured 1.38 px..9.38 px
+  // below the box top in the Playwright rig; allow a little either way.
+  const DIGITS = { top: 1.2, bottom: 9.6 };
+  const s = seeded(11);
+  const types = ["bundle", "rush", "storm", "chorus"];
+  const ids = [];
+  // A long count on every seal, a short one on the two widest seals: the six the tray draws.
+  const want = [...types.map((t) => [t, true]), ["storm", false], ["chorus", false]];
+  want.forEach(([type, long], i) => {
+    const id = `bbbb000${i}`;
+    ids.push([id, type, long]);
+    s.envelopes[id] = { type, units: long ? 2.8 : 3, landedAt: T0 - 60000 + i, lastAt: T0 - 60000 + i };
+  });
+  const vm = engine.view(s, T0, { role: "panel", width: 420 });
+  assert.equal(vm.tray.envelopes.length, 6, "six drawn");
+  const json = renderMat(vm, { tab: "flock" }, makeCtx({ width: 420 })).toJSON();
+  for (const [id, type, long] of ids) {
+    const art = findById(json, `cw-env-${id}-art`);
+    assert.ok(art, `${id}: drawn`);
+    const label = long ? "×2.8" : "×3";
+    const holder = holderOf(art, label);
+    const sealEl = art.children.find((c) => c.kind === "svg" && String(c.args[0]).endsWith(`/seal-${type}.svg`));
+    assert.ok(sealEl, `${id}: seal drawn`);
+    const at = long ? ENV_ART.longSeal : ENV_ART.seal;
+    assert.deepEqual([styleVal(sealEl, "top"), styleVal(sealEl, "left"), styleVal(sealEl, "w"), styleVal(sealEl, "h")], [at.top, at.left, at.size, at.size]);
+    const ink = svgInk(`mods/creaseworks/art/scene/seal-${type}.svg`);
+    const k = at.size / 12;
+    const seal = { x0: at.left + ink.x0 * k, y0: at.top + ink.y0 * k, x1: at.left + ink.x1 * k, y1: at.top + ink.y1 * k };
+    assert.ok(seal.x0 >= P.x0 && seal.x1 <= P.x1 && seal.y0 >= P.y0 && seal.y1 <= P.y1, `${type} ${long ? "long" : "short"}: seal ink ${JSON.stringify(seal)} on the paper`);
+    const top = styleVal(holder, "top");
+    assert.equal(top, (long ? ENV_ART.longLabel : ENV_ART.label).top);
+    assert.equal(styleVal(holder, "text_size"), 11, "never below 11 px");
+    assert.equal(styleVal(holder, "line_height"), "100%");
+    const digits = { y0: top + DIGITS.top, y1: top + DIGITS.bottom };
+    assert.ok(digits.y0 >= P.y0 && digits.y1 <= P.y1, `${label}: digits ${JSON.stringify(digits)} on the paper (y ${P.y0}..${P.y1})`);
+    if (long) {
+      assert.equal(styleVal(holder, "w"), 28);
+      assert.ok(seal.y1 <= digits.y0, `${type}: seal ink ends (y ${seal.y1}) above the long count (y ${digits.y0})`);
+    }
+  }
 });
 
 test("r5-14: banked afterglow shows as a static footer chip and in the streak tooltip; In step replaces it", async () => {

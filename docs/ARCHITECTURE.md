@@ -177,8 +177,9 @@ written. store.js `oversize` stays the last resort for what the plan does not bo
 written whole). **Writing in steps:** `serializeSteps(state)` (exported by `engine/index.js`) is
 `serialize` as a generator: its first step copies what the later ones read, then it plans and
 encodes in slices of 1,500 helpers, so its text is the state at that first step; the store's
-`serializeIn` drives it with a task yield between steps for any state of 3,000 helpers or more
-(`STEP_SAVE_HELPERS`) on every write path, and takes the log position (`upto`), writer progress and
+`serializeIn` drives it with a task yield between steps for any state of 1,000 helpers or more
+(`STEP_SAVE_HELPERS`; r8-06: at the old 3,000 one step just under it took 260-340 ms in the wasm
+harness, 999 helpers take about 90-130 ms, one stepped slice) on every write path, and takes the log position (`upto`), writer progress and
 `rev` the write confirms at that first step (12,500 present helpers: 19 steps, the slowest
 ≈ 80–110 ms in the wasm harness). Large saves are parsed across task steps: `parseSaveSteps(text)` (exported
 by `engine/index.js`) yields after the JSON parse and after every 1,500 helpers, and the store's
@@ -204,7 +205,7 @@ with no try counted, the plain placeholder and no notice (`Session.loadStop`: `s
 Write protocol (one writer per process, see A6):
 
 1. Serialise the live state → `text` (in steps with a task yield between them for a state of
-   3,000 helpers or more, `serializeIn`: the text, and the actions the write confirms, are those
+   1,000 helpers or more, `serializeIn`: the text, and the actions the write confirms, are those
    of its first step; DESIGN R13).
 2. If the last confirmed disk text `baseText` is non-null, first rotate the backup:
    `writeTextFile(bak, baseText, lastBakText)` (create with `null` if absent). Backup is rotated
@@ -219,7 +220,21 @@ Write protocol (one writer per process, see A6):
    the banner; retried with back-off (10 s, 30 s, 60 s, then every 5 min). Never silent.
 
 Cadence: debounced 2 s after a purchase / prestige / settings change; otherwise every 15 s while
-anything changed; on `close(cx)` start one final write immediately.
+anything changed; on `close(cx)` start one final write immediately. That final cycle (`env.final`)
+leaves the backup rotation to the next one, and a cycle of a closed copy that holds the claim but
+has not sent its `save.json` write yet (`inflight` null: rotating the backup, serialising in steps,
+merging) is released first (`store.releaseClosing`): herdr cancels it with its copy, so it would
+never send it (r8-04: the final write was skipped and the progress since the last save lost).
+
+Keeping aside (`keepAside`): two windows keeping a file aside at the same moment pick the same
+free `save.damaged-<n>.json`; the second create fails with "File exists" (a CAS rejection), so the
+kept files are read again and the choice made again (the text found already kept, or the next
+free n), up to `KEEP_TRIES` (4) times (r8-08). After Reset / Restore (`overwrite`) the replacing
+write keeps aside not only the file the tool replaced but also a save another window lands before
+that write (`overwriteBase`, reason `reset`/`restore`, said with `lateSaveText`; r8-01). A window
+that finds its saved progress missing from `save.json` (another window replaced it) names the kept
+copy holding its last save, or keeps that save aside itself ("this window's save") and names it,
+never claiming the other window kept it (`replacedText`; r8-07).
 
 ### A5. Actions, merge and idempotence (two windows share one save)
 
@@ -982,7 +997,10 @@ controls `cw-set-<dotted key with - for .>`. The §3.5 wish moment is drawn from
 `vm.string.wishMoment` (`"rise"` then `"settle"`, from `ui.lastWish`): the strand lift declares
 its `top`/`opacity` transitions on every frame (0 ms outside the rise, 900 ms on it, a 300 ms
 fade only in calm mode, 0 ms on settle), because gpui animates only a later change of a
-transition that already exists. Round-1 vm fields: `helpers.albumCount` (always, cheap) next to
+transition that already exists. The phase (`clock.js wishPhase`) is in the glue's vm key and the
+tick re-renders when it changes, so each phase is built and drawn whatever the re-render bucket:
+calm mode's 5 s bucket otherwise passed over the 2 s settle, and the faded strands came back at
+full opacity, then shrank (r8-11). Round-1 vm fields: `helpers.albumCount` (always, cheap) next to
 `helpers.album` (rows only with view option `album: true`, which the glue passes while the
 Flock's Album section is unfolded, and keys its vm cache on); `tile.kids` and `tile.pips` (waiting
 fledglings first, longest wait first; a clickable "+N" opens the first waiting one past the
@@ -1353,7 +1371,8 @@ the Perks heading and the garland stripes it is named for were below the fold (r
   from `slot.copies` for `ORPHAN_MS` (15 s; herdr cancels every task of a closed copy, `owner:
   null` ones too, and the mock does the same) or that made no progress for `WRITE_STALL_MS` is
   released by `releaseAbandoned(slot, t)` (called from `due()` and from `session.close` before the
-  final write). A plain claim (`cycle`, `resolve`) is released quietly (a stall flashes "A save
+  final write); `session.close` also releases at once, with `releaseClosing`, a plain cycle of a
+  closed copy that has not sent its write (r8-04). A plain claim (`cycle`, `resolve`) is released quietly (a stall flashes "A save
   step stalled; saving again.") and the save is made again at once; a Settings tool's claim gets
   the lasting notice that the tool may not have taken effect. `cycle()` yields before it claims
   (and again after a share settle or recovery write), so no claim is held across that first hop.

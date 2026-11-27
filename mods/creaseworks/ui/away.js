@@ -111,6 +111,9 @@ function presentRows(a, L) {
 
 const hasCollect = (a) => a.kind !== "busy" && a.collectable !== false;
 
+/** The fold icon's column and the gap after it: the folds figure and the split line start this far in (px). */
+const SPLIT_INDENT = 16 + 8;
+
 /**
  * The card's height in px for `rows` (keys of AWAY_ROWS), tight or not: its
  * padding and border, the head (title and the wrapped cap line beside ✕),
@@ -128,9 +131,16 @@ export function awayHeight(a, width, opts = {}) {
   const capW = Math.max(40, width - 2 * B.border - 2 * pad - B.close - 8);
   const capLines = Math.max(1, Math.ceil((graphemes(headCap(a, L)).length * B.capPx) / capW));
   const head = Math.max(B.close, lh(13) + capLines * lh(11));
-  let folds = lh(a.kind === "busy" ? 16 : 20) + (L.split ? lh(11) : 0);
+  let folds = lh(a.kind === "busy" ? 16 : 20);
   const collect = hasCollect(a);
   if (tight && collect) folds = Math.max(folds, B.collect);
+  // The split line wraps (it is never cut inside a number, r8-14) in the
+  // width right of the fold icon, under the folds figure or, when tight,
+  // under the folds row and its Collect.
+  if (L.split) {
+    const splitW = Math.max(40, width - 2 * B.border - 2 * pad - SPLIT_INDENT);
+    folds += Math.max(1, Math.ceil((graphemes(clip(L.split, AWAY_CLIP.line)).length * B.capPx) / splitW)) * lh(11);
+  }
   const parts = [head, 1, folds];
   for (const k of rows) parts.push(k === "needs" && (a.needs || [])[0] && a.needs[0].helperId ? B.actionRow : B.row);
   if (collect && !tight) parts.push(B.collectTop + B.collect);
@@ -212,6 +222,14 @@ export function renderAway(vm, ui, ctx, fit = undefined) {
     button("cw-away-collect", "Collect", { variant: "primary", w: 88, h: B.collect, stop: true, onClick: (e, cx) => collect(cx) }, T);
   const withCollect = !busy && a.collectable !== false;
 
+  // Tight: Collect moves up to the end of the folds row (one row less), and
+  // the split line goes under that row at its full width: beside the 88 px
+  // button a cut fell inside a number ("helpers 7,9…" read as 7.9, r8-14).
+  // It wraps between words rather than being cut, so a figure stays whole.
+  const tightCollect = plan.tight && withCollect;
+  const split = L.split
+    ? text(clip(L.split, AWAY_CLIP.line), { size: 11, color: T.muted }, T).id("cw-away-split").min_w(0).whitespace_normal()
+    : null;
   const foldsRow = h_flex()
     .gap(8)
     .child(div().w(16).flex_none().flex().justify_center().child(icon("fold", 16, T.muted)))
@@ -220,11 +238,16 @@ export function renderAway(vm, ui, ctx, fit = undefined) {
         .flex_1()
         .min_w(0)
         .child(text(clip(String(a.folds ?? ""), AWAY_CLIP.folds) + " folds", { size: busy ? 16 : 20, weight: 600, color: T.foreground }, T))
-        .when(Boolean(L.split), (el) => el.child(text(clip(L.split, AWAY_CLIP.line), { size: 11, color: T.muted, truncate: true }, T))),
+        .when(split !== null && !tightCollect, (el) => el.child(split)),
     );
-  // Tight: Collect moves up to the end of the folds row (one row less).
-  if (plan.tight && withCollect) foldsRow.child(collectButton());
-  card.child(foldsRow);
+  if (tightCollect) foldsRow.child(collectButton());
+  card.child(
+    tightCollect && split !== null
+      ? v_flex()
+          .child(foldsRow)
+          .child(h_flex().gap(8).child(div().w(16).flex_none()).child(v_flex().flex_1().min_w(0).child(split)))
+      : foldsRow,
+  );
 
   const row = (key, el) => (show.has(key) ? card.child(el.id(`cw-away-row-${key}`)) : null);
   if (show.has("tasks")) row("tasks", line(icon("check", 12, T.muted), L.tasks, T));

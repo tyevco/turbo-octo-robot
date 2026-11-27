@@ -12,7 +12,7 @@
 
 import { appHome, checking, props, window as herdrWindow, agents, terminals, layout, theme, settings, pickFiles, run } from "herdr";
 import { view, advance, apply, newGame, formatCount } from "../engine/index.js";
-import { now as clockNow, localDay, bucket } from "./clock.js";
+import { now as clockNow, localDay, bucket, wishPhase } from "./clock.js";
 import { getSlot, installSlot, newSlot, randomId, randomSeed, beat, takeOver, dispatch as liveDispatch, markDirty, touch, roleAlive, flash, codeGeneration, TICKER_STALE_MS } from "./live.js";
 import * as store from "./store.js";
 import { buildObservation, observeFromAgents, signature } from "./observe.js";
@@ -168,6 +168,7 @@ export class Session {
     this.closed = false;
     this.lastRev = -1;
     this.lastBucket = -1;
+    this.lastWish = "";
     this.cache = null;
     // The vm key's name for each state object it has seen (a load or merge puts a new one in the slot).
     this.stateIds = new WeakMap();
@@ -494,12 +495,15 @@ export class Session {
     const slot = this.slot;
     const calm = !!(slot.state && slot.state.settings.calm);
     const b = bucket(t, calm);
+    // The String's wish moment moves on with its phase, not the bucket (r8-11): a vm built in each phase.
+    const w = slot.state ? wishPhase(slot.state, t) : "";
     const arming = this.ui.confirm && typeof this.ui.armedAt === "number" && t - this.ui.armedAt < 3000;
     // (render reads the vm for this tick's time until the next tick: vmTime)
     this.vmAt = t;
-    if (slot.rev !== this.lastRev || b !== this.lastBucket || arming || this.ui.pops.length || this.ui.scrollTo !== null) {
+    if (slot.rev !== this.lastRev || b !== this.lastBucket || w !== this.lastWish || arming || this.ui.pops.length || this.ui.scrollTo !== null) {
       this.lastRev = slot.rev;
       this.lastBucket = b;
+      this.lastWish = w;
       this.changed(cx, t);
     }
   }
@@ -606,8 +610,10 @@ export class Session {
     markDirty(slot, t, true);
     // A stalled claim, or one orphaned by a copy closed 15 s ago, no longer blocks the final write.
     store.releaseAbandoned(slot, t);
+    // A cycle of a closed copy that has not sent its write never sends it: released, and the final write made now (r8-04).
+    store.releaseClosing(slot, t);
     if (slot.save.writing !== null) return null; // the write under way lands; the next load merges
-    return store.cycle(slot, { now: clockNow, sleep: sleeper(_cx), owner: this.copyId });
+    return store.cycle(slot, { now: clockNow, sleep: sleeper(_cx), owner: this.copyId, final: true });
   }
 
   // -------------------------------------------------------------------------
@@ -642,7 +648,9 @@ export class Session {
    * The cached ViewModel for this copy, keyed on exactly what view() reads:
    * the state (which object, and its rev without the bumps time alone makes:
    * slot.timeRev, tickerWork), the writer, width, tab, buyCount, saveNotice,
-   * clock bucket, short, Album open, flash. Not slot.rev: a save landing or a
+   * clock bucket, the String's wish-moment phase (clock.js wishPhase: calm
+   * mode's 5 s bucket skipped "settle", so the faded strands came back full
+   * and shrank, r8-11), short, Album open, flash. Not slot.rev: a save landing or a
    * heartbeat touches the slot but changes no vm. herdr re-renders whenever
    * its live data changes, and a key that moved every second (or with every
    * save) rebuilt the whole vm inside render between calm mode's 5 s buckets
@@ -667,7 +675,7 @@ export class Session {
     const album = this.role === "panel" && tab === "flock" && this.albumOpen();
     const key = [
       this.stateId(s), s.rev - (slot && slot.state === s && slot.timeRev ? slot.timeRev : 0), slot ? slot.writerId : "", width, tab, this.ui.buyCount, notice ? `${notice.kind}@${notice.at}@${notice.retryMs ?? ""}@${notice.text ?? ""}@${notice.message ?? ""}` : "",
-      bucket(at, !!s.settings.calm), short, fl ?? "", album,
+      bucket(at, !!s.settings.calm), wishPhase(s, at), short, fl ?? "", album,
     ].join("|");
     if (this.cache && this.cache.key === key) return this.cache.vm;
     const vm = view(s, at, {

@@ -2,7 +2,8 @@
 // (ARCHITECTURE B11), 64 × H, everything centred with 8 px gaps: save glyph
 // (only with a notice), count and rate, the mini Sheet, needs-you and
 // envelope buttons, the per-helper pip grid (scrolls only when taller than the
-// room), the gilded crane (while one is live) and the unfold chevron. No mat,
+// room; past RAIL_PIP_MAX helpers, needs-you and finished pips and tally rows
+// for the rest, review r8-10), the gilded crane (while one is live) and the unfold chevron. No mat,
 // no loops (the view sends none for the rail).
 
 import { div, svg } from "gpui-kit";
@@ -14,7 +15,14 @@ import { iconButton, text, hoverOn } from "./widgets.js";
 import { bannerNotices } from "./banner.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140, flash: 80, flashShort: 32 });
+export const RAIL_CLIP = Object.freeze({ count: 7, rate: 9, n: 4, tooltip: 140, flash: 80, flashShort: 32, tally: 6 });
+/**
+ * The most pips the grid draws (review r8-10; the engine's RAIL_PIPS, which
+ * folds the rest into `rail.tallies`): one pip is 3 elements, ≈ 0.065 ms of a
+ * render in the wasm harness, and herdr fails a render past 50 ms. A vm with
+ * more (an older engine's) draws this many and counts the rest in a tally.
+ */
+export const RAIL_PIP_MAX = 240;
 /** Every "the full panel cannot open" flash starts with this (glue/commands.js tightText). */
 export const TIGHT_PREFIX = "Too narrow";
 
@@ -89,8 +97,14 @@ function needsGlyph(T) {
     .child(sprite(statusGlyphPath("blocked"), 12, statusColor(T, "blocked", disc)));
 }
 
-function pipGrid(marks, T, openHelper, select, cols) {
+function pipGrid(marksIn, talliesIn, T, openHelper, select, cols) {
   const COLS = cols;
+  const marks = marksIn.length > RAIL_PIP_MAX ? marksIn.slice(0, RAIL_PIP_MAX) : marksIn;
+  const tallies = talliesIn.slice();
+  if (marksIn.length > RAIL_PIP_MAX) {
+    const n = marksIn.length - RAIL_PIP_MAX;
+    tallies.unshift({ status: "more", count: n, label: `+${n}`, tooltip: `${n} more helpers` });
+  }
   const rows = Math.ceil(marks.length / COLS);
   const grid = div().relative().w(COLS * PITCH).h(Math.max(PITCH, rows * PITCH)).flex_none();
   marks.forEach((m, k) => {
@@ -112,7 +126,31 @@ function pipGrid(marks, T, openHelper, select, cols) {
     if (num(m.opacity, 1) < 1) pip.opacity(num(m.opacity, 1));
     grid.child(pip);
   });
-  return div().id("cw-rail-pips").flex_1().min_h(0).w_full().flex().justify_center().overflow_y_scrollbar().child(grid);
+  const area = v_flex().id("cw-rail-pips").flex_1().min_h(0).w_full().items_center().overflow_y_scrollbar().child(grid);
+  // Tally rows under the grid (review r8-10): the helpers past the pip budget,
+  // counted by status ("412" working, "+30" more finished, "96" in another window).
+  for (const tl of tallies) {
+    if (!tl || !(num(tl.count) > 0)) continue;
+    const st = String(tl.status);
+    const glyph = st === "elsewhere" || st === "more"
+      ? icon("cloud", 11, T.muted)
+      : svg(statusGlyphPath(statusOf(st))).w(12).h(12).flex_none().text_color(statusColor(T, statusOf(st), "chrome"));
+    const row = h_flex()
+      .id(`cw-rail-tally-${st}`)
+      .w(Math.max(COLS * PITCH, 56))
+      .h(PITCH + 2)
+      .flex_none()
+      .gap(3)
+      .justify_center()
+      .tooltip(clip(String(tl.tooltip ?? ""), RAIL_CLIP.tooltip) || "Helpers")
+      .child(glyph)
+      .child(text(clip(String(tl.label ?? tl.count), RAIL_CLIP.tally), { size: 11, weight: 600, color: T.foreground }, T));
+    if (st === "elsewhere" || st === "more") row.opacity(0.7);
+    // "+N need you": the needs-you button's action, the longest waiting first
+    if (st === "blocked") row.cursor_pointer().on_click((e, cx) => openHelper("needs", cx));
+    area.child(row);
+  }
+  return area;
 }
 
 /** The 64 px rail. */
@@ -212,7 +250,8 @@ export function renderRail(vm, ui, ctx) {
   ));
   // 6. Per-helper pip grid.
   const marks = Array.isArray(rail.pips) ? rail.pips : [];
-  root.child(pipGrid(marks, T, openHelper, select, pipColumns(ctx.width)));
+  const tallies = Array.isArray(rail.tallies) ? rail.tallies : [];
+  root.child(pipGrid(marks, tallies, T, openHelper, select, pipColumns(ctx.width)));
   // 7. Gilded crane (only while one is live; clicking counts as catching it).
   const craneId = rail.crane ?? (vm.mat && vm.mat.crane ? vm.mat.crane.id : null);
   if (craneId) {

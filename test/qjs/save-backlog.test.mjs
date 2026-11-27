@@ -226,3 +226,46 @@ test("r6-16: serialising and measuring the biggest save the engine writes stays 
     host.dispose();
   }
 });
+
+// r8-06: a state just under store.js STEP_SAVE_HELPERS is serialised in one
+// task step (serializeIn), with the size check after it. That step must be no
+// larger than a stepped write's: at the old threshold (3,000) one such step
+// took 260-340 ms in this harness, most of herdr's 500 ms budget. Long CJK
+// titles, 3 sub-agents per agent, a fresh state each time (nothing cached).
+test("r8-06: the one-step serialisation just under STEP_SAVE_HELPERS stays well inside the 500 ms task budget", { timeout: 180000 }, async () => {
+  const host = await createHost({
+    modRoot: MOD,
+    scenario: { appHome: HOME, home: "/home/player", props: { role: "ribbon" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite" },
+    gcHeadroom: HEADROOM,
+  });
+  try {
+    await host.load();
+    const title = "codex · 支払い照合サービスをリファクタリングして不安定な統合テストを修正する作業を続けています";
+    const STEP = host.evalInVm(`import { STEP_SAVE_HELPERS } from "./glue/store.js"; export const n = STEP_SAVE_HELPERS;`, { module: true, name: `${MOD}/r8-06-k.js?v=1` }).n;
+    let worst = 0;
+    for (let k = 0; k < 3; k++) {
+      const n = host.evalInVm(
+        `import { newGame, apply } from "./engine/index.js";
+        const s = newGame({ seed: 13 + ${k}, now: 1767441600000, day: "2026-01-03" });
+        const roster = [];
+        for (let i = 0; roster.length < ${STEP - 1}; i++) {
+          const p = { addr: "w1:t" + i, created: s.clock + i, status: "working", raw: "working", turn: 0, parent: null, pane: "p" + i, title: ${JSON.stringify(title)} + i + "·${k}", paneName: "", space: "支払いチーム", tab: "統合テスト", kind: "pane" };
+          roster.push(p);
+          for (let j = 0; j < 3 && roster.length < ${STEP - 1}; j++) roster.push({ ...p, addr: "w1:k" + i + "_" + j, pane: null, parent: p.addr, kind: "kid", title: p.title + "/" + j });
+        }
+        apply(s, { w: "w", s: 1, t: s.clock + 1000, type: "observe", helpers: roster, visible: true, active: true, matShown: true, day: s.day });
+        globalThis.__one = s;
+        export const n = Object.keys(s.helpers).length;`,
+        { module: true, name: `${MOD}/r8-06-state-${k}.js?v=1` },
+      ).n;
+      assert.equal(n, STEP - 1, "just under the threshold: serialised in one step");
+      host.evalInVm(`import { serialize } from "./engine/index.js"; import { oversize } from "./glue/store.js"; export const big = oversize(serialize(globalThis.__one));`, { module: true, name: `${MOD}/r8-06-ser-${k}.js?v=1` });
+      worst = Math.max(worst, host.lastMs().detached);
+    }
+    console.log(`# r8-06: ${STEP - 1} helpers serialised and measured in one step: ${worst.toFixed(1)} ms (worst of 3)`);
+    assert.ok(worst < 250, `the one-step write stays at most half the 500 ms budget (${worst.toFixed(1)} ms)`);
+    host.evalInVm("delete globalThis.__one");
+  } finally {
+    host.dispose();
+  }
+});

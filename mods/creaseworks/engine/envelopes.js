@@ -27,6 +27,16 @@ export function stackFactor(units) {
 }
 
 /**
+ * How long a timed boost runs when `units` of envelope `def` open with none of
+ * its kind running: `baseMs · f · durMult · tailwind`, capped at the kind's
+ * `capMs` (§6.2: the cap holds for a fresh boost as well as an extended one).
+ * The tray tooltip reads this same number (review r8-02).
+ */
+export function freshBoostMs(def, units, durMult, tw) {
+  return Math.min(def.capMs, def.baseMs * stackFactor(units) * durMult * tw);
+}
+
+/**
  * What one envelope unit is worth before its multipliers (§6.1, r3-11):
  * 45 s of passive output, but never less than K.envV hand hits (the floor
  * Scraps and the Fresh Ream have), so a Bundle that lands while nobody works

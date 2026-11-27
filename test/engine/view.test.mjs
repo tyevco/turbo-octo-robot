@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "./_util.mjs";
 import { viewModel, VIEW_NAMES } from "../fixtures/vm-fixtures.mjs";
+import { RAIL_PIPS } from "../../mods/creaseworks/engine/view.js";
 
 const id = (i, created = 1000 + i) => engine.helperId(`t${i}`, created);
 
@@ -264,6 +265,72 @@ test("ribbon levels A/B/C follow the §3.10 formula at 1100 and 1440", () => {
   assert.equal(engine.ribbonLevel(0, 832), "A");
 });
 
+test("r8-09: Flock tiles are built only where the Flock grid is drawn; every copy keeps the groups and counts", () => {
+  const statuses = Array.from({ length: 30 }, (_, i) => ["working", "idle", "blocked", "done"][i % 4]);
+  const { s } = withAgents(statuses);
+  writer(s, "wB").act(observeAction(T0 + 500, [agent(90, "working"), agent(91, "blocked")]));
+  const flockVm = v(s, T0 + 1000);
+  const shape = (vm) => vm.helpers.groups.map((g) => [g.key, g.count, g.folded]);
+  assert.equal(tiles(flockVm).length, 30);
+  assert.equal(flockVm.helpers.elsewhere.length, 2);
+  assert.equal(flockVm.helpers.elsewhereCount, 2);
+  for (const [where, vm] of [
+    ["shop tab", v(s, T0 + 1000, { tab: "shop" })],
+    ["settings tab", v(s, T0 + 1000, { tab: "settings" })],
+    ["rail", v(s, T0 + 1000, { width: 64 })],
+    ["ribbon", engine.view(s, T0 + 1000, { role: "ribbon", width: 1172, writer: "wA" })],
+  ]) {
+    assert.equal(tiles(vm).length, 0, `${where}: no tiles built`);
+    assert.deepEqual(vm.helpers.elsewhere, [], where);
+    assert.equal(vm.helpers.elsewhereCount, 2, where);
+    assert.deepEqual(shape(vm), shape(flockVm), `${where}: same groups and counts`);
+    assert.equal(vm.helpers.needsGroup, flockVm.helpers.needsGroup, where);
+    assert.deepEqual(vm.header.counts, flockVm.header.counts, where);
+    // the ribbon and rail marks do not depend on the tab
+    assert.deepEqual(vm.rail.pips, flockVm.rail.pips, where);
+  }
+});
+
+test("r8-10: the rail draws every helper up to RAIL_PIPS; past it needs-you and finished pips stay, the rest are tallies, every helper counted", () => {
+  assert.equal(RAIL_PIPS, 240);
+  const counted = (rail) => rail.pips.length + rail.tallies.reduce((a, x) => a + x.count, 0);
+  // 240 helpers: all pips, no tallies
+  {
+    const { s } = withAgents(Array.from({ length: RAIL_PIPS }, (_, i) => ["working", "idle", "blocked", "done"][i % 4]));
+    const rail = v(s, T0, { width: 64 }).rail;
+    assert.equal(rail.pips.length, RAIL_PIPS);
+    assert.deepEqual(rail.tallies, []);
+  }
+  // 600 local + 40 in another window: 150 needs-you and 150 finished pips (needs first), tallies for the rest
+  {
+    const { s } = withAgents(Array.from({ length: 600 }, (_, i) => ["working", "idle", "blocked", "done"][i % 4]));
+    writer(s, "wB").act(observeAction(T0 + 500, Array.from({ length: 40 }, (_, i) => agent(1000 + i, i % 2 ? "blocked" : "working"))));
+    const all = engine.view(s, T0 + 1000, { role: "ribbon", width: 99999, writer: "wA" }).ribbon.marks;
+    assert.equal(all.length, 640, "a very wide ribbon still draws every mark");
+    const rail = v(s, T0 + 1000, { width: 64 }).rail;
+    assert.equal(rail.pips.length, RAIL_PIPS);
+    assert.ok(rail.pips.every((m) => m.opacity === 1 && (m.status === "blocked" || m.status === "done")));
+    assert.equal(rail.pips.filter((m) => m.status === "blocked").length, 150);
+    assert.equal(rail.pips.filter((m) => m.status === "done").length, 90);
+    // in mark order (needs-you first), each with its full tooltip
+    const order = all.filter((m) => rail.pips.some((p) => p.helperId === m.helperId)).map((m) => m.helperId);
+    assert.deepEqual(rail.pips.map((m) => m.helperId), order);
+    for (const m of rail.pips) assert.deepEqual(m, all.find((x) => x.helperId === m.helperId));
+    assert.deepEqual(rail.tallies.map((x) => [x.status, x.count, x.label]), [["done", 60, "+60"], ["working", 150, "150"], ["idle", 150, "150"], ["elsewhere", 40, "40"]]);
+    assert.equal(rail.tallies[0].tooltip, "60 more finished");
+    assert.equal(rail.tallies.at(-1).tooltip, "40 in another window");
+    assert.equal(counted(rail), 640);
+  }
+  // needs-you alone over the budget: the longest-joined 240 are pips, then "+60 need you"; all finished in one tally
+  {
+    const { s } = withAgents(Array.from({ length: 360 }, (_, i) => (i < 300 ? "blocked" : "done")));
+    const rail = v(s, T0, { width: 64 }).rail;
+    assert.equal(rail.pips.length, RAIL_PIPS);
+    assert.deepEqual(rail.tallies.map((x) => [x.status, x.count, x.label, x.tooltip]), [["blocked", 60, "+60", "60 more need you"], ["done", 60, "60", "60 finished"]]);
+    assert.equal(counted(rail), 360);
+  }
+});
+
 test("ribbon C: needs-you and finished stay individual, the rest become tallies; 64 stay individual", () => {
   const statuses = Array.from({ length: 90 }, (_, i) => ["working", "idle", "blocked", "working", "done", "idle"][i % 6]);
   const { s } = withAgents(statuses);
@@ -280,8 +347,9 @@ test("ribbon C: needs-you and finished stay individual, the rest become tallies;
   const rank = { blocked: 0, done: 1, working: 2, idle: 3 };
   const ranks = at1440.ribbon.marks.map((m) => rank[m.status]);
   assert.deepEqual(ranks, ranks.slice().sort((a, b) => a - b));
-  // The rail keeps every helper individually.
+  // The rail keeps every helper individually (up to RAIL_PIPS, r8-10).
   assert.equal(at1100.rail.pips.length, 90);
+  assert.deepEqual(at1100.rail.tallies, []);
   const { s: s64 } = withAgents(statuses.slice(0, 64));
   for (const W of [832, 1172]) assert.notEqual(engine.view(s64, T0, { role: "ribbon", width: W }).ribbon.level, "C");
 });
@@ -397,6 +465,42 @@ test("r3-15: envelope tooltips say when to open: Chorus while helpers work, Rush
   assert.doesNotMatch(tips[0], /click/);
   assert.match(tips[1], /^Rush ×3 for .* · open when you're ready to click$/);
   assert.match(tips[2], / · open when you're ready to click$/);
+});
+
+test("r8-02: a fresh boost's tooltip says the capped time opening it gives, marked (max) at the cap", () => {
+  // Read each tooltip's duration, then open the envelope for real and compare.
+  const secs = (txt) => {
+    const m = /for ((?:\d+m)?\s?(?:\d+s)?) /.exec(txt);
+    assert.ok(m, txt);
+    let n = 0;
+    for (const [, k, unit] of m[1].matchAll(/(\d+)([ms])/g)) n += Number(k) * (unit === "m" ? 60 : 1);
+    return n;
+  };
+  const granted = { rush: (s, t) => s.boosts.rushEnd - t, storm: (s, t) => s.boosts.stormEnd - t, chorus: (s) => s.boosts.chorus };
+  const cases = [
+    // [ribbons, type, units, seconds shown, (max)?]
+    [[], "rush", 1, 30, false],
+    [[], "rush", 9, 90, true], // exactly the cap
+    [[], "storm", 7, 30, true], // 12 · 2.5 = 30 s: exactly the cap
+    [[], "storm", 8, 30, true], // 33 s raw
+    [[], "chorus", 6, 240, true], // 270 s raw
+    [["long-ribbon", "longer-ribbon"], "rush", 9, 90, true], // 180 s raw
+    [["long-ribbon", "longer-ribbon"], "storm", 9, 30, true], // 72 s raw
+    [["long-ribbon", "longer-ribbon"], "chorus", 9, 240, true], // 720 s raw
+    [["long-ribbon"], "chorus", 1, 180, false],
+  ];
+  for (const [ribbons, type, units, shown, max] of cases) {
+    const { s, me } = withAgents(["working", "working", "working"]);
+    for (const r of ribbons) s.bought[r] = true;
+    s.envelopes[id(0)] = { type, units, landedAt: T0 - 50000, lastAt: T0 - 50000 };
+    const tip = v(s).tray.envelopes[0].tooltip;
+    const label = `${ribbons.join("+") || "no ribbon"} ${type} ×${units}: ${tip}`;
+    assert.equal(secs(tip), shown, label);
+    assert.equal(/ \(max\) · /.test(tip), max, label);
+    me.act({ t: T0, type: "open", helperId: id(0) });
+    assert.equal(s.envelopes[id(0)], undefined, label);
+    assert.equal(Math.round(granted[type](s, T0) / 1000), shown, `${label}: opening grants what it says`);
+  }
 });
 
 test("envelope bob: the newest drawn envelope for 10 s after it lands", () => {

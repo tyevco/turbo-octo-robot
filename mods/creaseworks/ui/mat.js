@@ -607,6 +607,31 @@ function topBand(vm, g, T, S, openHelper, calm) {
   return band;
 }
 
+/**
+ * Where the seal and the stack count sit on a tray envelope's 28×20 art box
+ * (px; tested). The paper (envelope-body.svg) spans x 1..27, y 2..18.5, and
+ * both stay on it (r8-13: a long count at top 9 in a 127 % line box ran
+ * 2 px past the paper's foot, and a seal at top 0 poked out above it).
+ * The count's line box is 100 % (11 px): an 11 px font's digits lie about
+ * 1.4..9.4 px below its top (measured in the Playwright rig), so a count at
+ * top 8.5..8.75 ends on the paper. The paper is only 16.5 px tall, so a long
+ * count (as wide as the paper) takes an 8 px seal above it rather than the
+ * 10 px one: every seal's ink is inset at least 0.5 of its 12 units, so from
+ * y 1.75 it stays on the paper and ends above the digits. A short count sits
+ * left of the 12 px seal, which starts on the paper's top edge.
+ */
+export const ENV_ART = Object.freeze({
+  paper: Object.freeze({ x0: 1, y0: 2, x1: 27, y1: 18.5 }),
+  seal: Object.freeze({ top: 2, left: 15.5, size: 12 }),
+  longSeal: Object.freeze({ top: 1.75, left: 19, size: 8 }),
+  label: Object.freeze({ top: 8.5, left: 1 }),
+  longLabel: Object.freeze({ top: 8.75, left: 0, w: 28 }),
+});
+
+function sealArt(type, at, S) {
+  return svg(spritePath("seal", type)).absolute().top(at.top).left(at.left).w(at.size).h(at.size).text_color(S.ink);
+}
+
 function envelope(env, S, open, calm, zoom) {
   const id = env.helperId;
   const type = ENV_TYPES.includes(env.type) ? env.type : "bundle";
@@ -622,14 +647,13 @@ function envelope(env, S, open, calm, zoom) {
     .child(svg(spritePath("scene", "envelope-body")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheet))
     .child(svg(spritePath("scene", "envelope-flap")).absolute().top(0).left(0).w(28).h(20).text_color(S.sheetShade))
     // A longer count ("×2.8", "×12") takes the envelope's lower half under a
-    // smaller seal; a short one ("×3") sits left of the seal as before.
-    .child(long
-      ? svg(spritePath("seal", type)).absolute().top(0).left(17).w(10).h(10).text_color(S.ink)
-      : svg(spritePath("seal", type)).absolute().top(1).left(15).w(12).h(12).text_color(S.ink));
+    // smaller seal; a short one ("×3") sits left of the seal as before. Both
+    // stay on the paper (ENV_ART, tested).
+    .child(sealArt(type, long ? ENV_ART.longSeal : ENV_ART.seal, S));
   if (label !== null) {
-    art.child(long
-      ? div().absolute().left(0).top(9).w(28).text_center().text_size(11).line_height("127%").font_weight(600).text_color(S.ink).child(label)
-      : div().absolute().left(2).top(6).text_size(11).font_weight(600).text_color(S.ink).child(label));
+    const at = long ? ENV_ART.longLabel : ENV_ART.label;
+    const el = div().absolute().left(at.left).top(at.top).text_size(11).line_height("100%").font_weight(600).text_color(S.ink).child(label);
+    art.child(long ? el.w(at.w).text_center() : el);
   }
   if (env.bob && !calm) art.loop("top", { from: 4, to: 4 - 2 * zoom, period: 1600 });
   const word = type === "bundle" ? "Bundle" : type === "rush" ? "Rush" : type === "storm" ? "Confetti" : "Chorus";

@@ -25,7 +25,17 @@ export const P1 = Object.freeze({
   sessionSec: 150, // 2.5 min
   firstSessionSec: 480, // the very first session ever: 8 min
   hands: true,
-  cps: 1.25, // hand hits per second during a session
+  cps: 1.25, // hand hits per second during a session (the mean rate)
+  // A human hand, not a metronome (review r8-03): each interval between hits is
+  // 1000/cps ms times a seeded lognormal factor of this σ with its mean held at 1
+  // (σ 0.15: about 1 interval in 17 is over the 1.0 s rhythm gap at 1.25/s, and
+  // 1 in 14,000 over Steady Rhythm's 1.4 s), and
+  // the hand leaves the Sheet for `pauseFirst` s when the player buys or opens
+  // envelopes in a step, plus `pauseEach` s for every further purchase or
+  // envelope in it. Both 0 is the old even beat (tools/sim/pacing.mjs --even).
+  hitJitter: 0.15,
+  pauseFirst: 1.5,
+  pauseEach: 0.5,
   chainSuccess: 0.95,
   craneCatch: 0.8,
   scraps: true,
@@ -65,6 +75,9 @@ export const PROFILES = Object.freeze({
   P13: p("P13", "short turns", {
     cycle: Object.freeze({ work: 0.75, needs: 0.25, blocks: 48, rest: 12 }), kidShare: 4 / 15, freshKids: 4,
   }),
+  // r8-03: a much less even hand (σ 0.3: about 1 interval in 5 over the 1.0 s
+  // rhythm gap, 1 in 46 over Steady Rhythm's 1.4 s), still on day 3
+  P14: p("P14", "unsteady hand", { hitJitter: 0.3 }),
 });
 
 export const PROFILE_IDS = Object.freeze(Object.keys(PROFILES));

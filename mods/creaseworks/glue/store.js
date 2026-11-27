@@ -231,8 +231,16 @@ function progress(slot, env) {
   if (slot.loading && env.gen === slot.loading) slot.loadAt = env.now();
 }
 
-/** States with fewer helpers than this (present and in the Album) are serialised in one go (well under 150 ms); larger ones in steps. */
-export const STEP_SAVE_HELPERS = 3000;
+/**
+ * States with fewer helpers than this (present and in the Album) are
+ * serialised in one go; larger ones in steps. One serialisation of 999
+ * helpers with long CJK titles (3 sub-agents per agent, nothing cached) takes
+ * about 90-130 ms in the wasm harness, as long as one stepped slice; 1,499 took
+ * 135-205 ms and 2,999 (the old threshold) 300-340 ms, most of the 500 ms task
+ * budget in one step with the size check after it (r8-06; timed in
+ * test/qjs/save-backlog.test.mjs).
+ */
+export const STEP_SAVE_HELPERS = 1000;
 
 /**
  * serialize(slot.state) across task steps (engine serializeSteps, R13): one
@@ -495,12 +503,29 @@ export async function keepAside(paths, text) {
   return (await keepAsideShifting(paths, text)).name;
 }
 
+/** Tries keepAsideShifting makes when another writer created or changed a kept file under it (r8-08). */
+export const KEEP_TRIES = 4;
+
 /**
  * keepAside, also saying where the kept files went: `moves[n]` is the n a
  * listed save.damaged-<n>.json holds its text at now (0: replaced), for every
- * n that moved; empty when nothing moved.
+ * n that moved; empty when nothing moved. Two windows keeping a file aside at
+ * the same moment both pick the same free n: herdr's create_new write
+ * (expected null) fails for the second with "File exists", a CAS rejection.
+ * The kept files are then read again and the choice made again (the text
+ * found already kept, or the next free n), up to KEEP_TRIES times (r8-08: the
+ * second window said "could not be kept" with four slots free). A shift cut
+ * off by another writer after it moved a file is not tried again.
  */
 async function keepAsideShifting(paths, text) {
+  for (let i = 1; ; i++) {
+    const r = await keepAsideOnce(paths, text);
+    if (!r.collided || i >= KEEP_TRIES) return { name: r.name, moves: r.moves, already: r.already };
+  }
+}
+
+/** One try of keepAsideShifting: `collided` when a write found another writer's file first and nothing moved. */
+async function keepAsideOnce(paths, text) {
   const have = [];
   const bad = [];
   for (let n = 1; n <= DAMAGED_MAX; n++) {
@@ -518,8 +543,8 @@ async function keepAsideShifting(paths, text) {
     try {
       await writeTextFile(damagedPath(paths, top + 1), text, null);
       return { name: baseName(damagedPath(paths, top + 1)), moves };
-    } catch {
-      return { name: null, moves };
+    } catch (e) {
+      return { name: null, moves, collided: isCas(e) };
     }
   }
   // 5 is in use. An unreadable kept file cannot be moved (herdr's write reads
@@ -530,8 +555,8 @@ async function keepAsideShifting(paths, text) {
     try {
       await writeTextFile(damagedPath(paths, free + 1), text, null);
       return { name: baseName(damagedPath(paths, free + 1)), moves };
-    } catch {
-      return { name: null, moves };
+    } catch (e) {
+      return { name: null, moves, collided: isCas(e) };
     }
   }
   // Close the gaps, oldest first; the oldest leaves only when all five are full.
@@ -543,13 +568,19 @@ async function keepAsideShifting(paths, text) {
   keep.forEach((n, i) => (dest[n] = i + 1));
   const want = keep.map((n) => have[n - 1]).concat([text]);
   let done = 0; // files 1..done hold what they should
+  let wrote = false;
+  let collided = false;
   try {
     for (let i = 1; i <= want.length; i++) {
-      if (have[i - 1] !== want[i - 1]) await writeTextFile(damagedPath(paths, i), want[i - 1], have[i - 1]);
+      if (have[i - 1] !== want[i - 1]) {
+        await writeTextFile(damagedPath(paths, i), want[i - 1], have[i - 1]);
+        wrote = true;
+      }
       done = i;
     }
-  } catch {
+  } catch (e) {
     // (a move cut short: a file not yet written still holds its own text)
+    collided = !wrote && isCas(e);
   }
   for (const n of kept) {
     const to = dest[n];
@@ -557,7 +588,7 @@ async function keepAsideShifting(paths, text) {
     const at = to > 0 && to <= done ? to : n > done ? n : 0;
     if (at !== n) moves[n] = at;
   }
-  return done === want.length ? { name: baseName(damagedPath(paths, want.length)), moves } : { name: null, moves };
+  return done === want.length ? { name: baseName(damagedPath(paths, want.length)), moves } : { name: null, moves, collided };
 }
 
 /**
@@ -567,6 +598,11 @@ async function keepAsideShifting(paths, text) {
  * file that holds what it was listed for. Returns the kept file's name, or null.
  */
 async function keepAsideListed(slot, paths, text, reason = null) {
+  return (await keepAsideListedR(slot, paths, text, reason)).name;
+}
+
+/** keepAsideListed, returning keepAsideShifting's { name, moves, already }. */
+async function keepAsideListedR(slot, paths, text, reason = null) {
   const r = await keepAsideShifting(paths, text);
   const S = slot.save;
   if (Object.keys(r.moves).length) {
@@ -591,7 +627,7 @@ async function keepAsideListed(slot, paths, text, reason = null) {
     S.damaged = S.damaged.filter((d) => d !== r.name && !String(d).startsWith(`${r.name} (`));
     S.damaged.push(entry);
   }
-  return r.name;
+  return r;
 }
 
 function setNotice(slot, which, notice) {
@@ -943,6 +979,25 @@ export function releaseAbandoned(slot, t) {
   return S.writing === null;
 }
 
+/**
+ * The closing ticker's final write (session.js close): a save cycle whose
+ * copy has closed (this one, or one closed before it) and that has not yet
+ * sent its save.json write (`inflight` null: still rotating the backup,
+ * serialising in steps or merging) never sends it: herdr cancels every task
+ * of a closed copy, owner: null ones too. Its claim is released quietly so
+ * the final write can start now; true when it was. A Settings tool's claim,
+ * a write already sent, or a claim of a copy still open is left alone (r8-04:
+ * the final write was skipped and the progress since the last save lost).
+ */
+export function releaseClosing(slot, t) {
+  const S = slot.save;
+  if (S.writing === null || slot.inflight || !PLAIN_CLAIMS.includes(S.writingFor)) return false;
+  const by = S.writingBy;
+  if (typeof by === "string" && slot.copies && by in slot.copies) return false;
+  dropClaim(slot, t);
+  return S.writing === null;
+}
+
 /** True when the ticker should start a save now (A4 cadence and back-off). Rebases timers after a clock jump. */
 export function due(slot, t) {
   const S = slot.save;
@@ -1087,20 +1142,41 @@ async function mergeFromDisk(slot, env, stale) {
     }
     // Actions this window already saved are missing: another window replaced
     // the file (Reset, Restore, or a save it could not merge, which keeps the
-    // replaced file aside). Said, with the kept copy's name when it is found.
+    // replaced file aside). Said, with the kept copy's name. When no kept file
+    // holds this window's last save, this window keeps it aside itself before
+    // taking the other game in, as mergeRecovery does (r8-07: it was told
+    // "that window kept the old file aside" while no file held it). Its last
+    // save is slot.baseText while that is its own write or a merged file
+    // (baseOk), or its last save.recovery.json write (just back on save.json:
+    // the other window kept that one aside), else its game as it is now.
     const had = Object.hasOwn(live.applied, slot.writerId) ? live.applied[slot.writerId] : 0;
     if (had < (slot.save.ownApplied || 0)) {
-      const kept = await findKept(P, slot.baseText);
+      let mine = slot.save.baseOk && typeof slot.baseText === "string" ? slot.baseText : null;
+      let kept = mine !== null ? await findKept(P, mine) : null;
       if (stale()) return { stop: true };
-      if (kept && !slot.save.damaged.some((d) => d === kept || String(d).startsWith(`${kept} (`))) slot.save.damaged.push(kept);
+      if (!kept && typeof slot.save.recoveryText === "string") {
+        kept = await findKept(P, slot.save.recoveryText);
+        if (stale()) return { stop: true };
+      }
+      if (kept) {
+        if (!slot.save.damaged.some((d) => d === kept || String(d).startsWith(`${kept} (`))) slot.save.damaged.push(kept);
+      } else {
+        if (mine === null) {
+          await pause(env); // the serialisation in a task step of its own
+          if (stale()) return { stop: true };
+          const ser = await serializeIn(slot, env, stale);
+          if (ser === null || stale()) return { stop: true };
+          mine = ser.text;
+        }
+        kept = await keepAsideListed(slot, P, mine, "this window's save");
+        if (stale()) return { stop: true };
+      }
       slot.save.ownApplied = had;
-      setNotice(slot, "load", {
-        kind: "recovered",
-        text: kept
-          ? `Another window replaced the save, so this window's earlier progress left the game. It is kept in ${kept}.`
-          : "Another window replaced the save, so this window's earlier progress left the game. That window kept the old file aside.",
-        at: t,
-      });
+      setNotice(slot, "load", { kind: "recovered", text: replacedText(kept), at: t });
+      // (the replay below in a task step of its own)
+      await pause(env);
+      if (stale()) return { stop: true };
+      progress(slot, env);
     }
     const ev = await replayPending(live, slot, env, stale);
     if (ev === null) return { stop: true };
@@ -1135,9 +1211,13 @@ async function mergeFromDisk(slot, env, stale) {
 
 /**
  * The file on disk is replaced instead of merged: after Reset / Restore
- * (`overwrite`; the old file was already kept aside) or when the action log
- * was given up (`logLost`) or save.json was unreadable: then another writer's
- * file is kept aside first, with a notice. Returns { ok } | { stop } | { error }.
+ * (`overwrite`) or when the action log was given up (`logLost`) or save.json
+ * was unreadable. Another writer's file is kept aside first, with a notice.
+ * After a Reset / Restore the file it replaced was kept aside then, and only
+ * that text (slot.baseText): a save another window landed since, before this
+ * window's replacing write, is kept aside here too, with the Reset / Restore
+ * as its reason (r8-01: it was written over unkept, and that window was told
+ * its file had been kept). Returns { ok } | { stop } | { error }.
  */
 async function overwriteBase(slot, env, stale) {
   const S = slot.save;
@@ -1164,11 +1244,31 @@ async function overwriteBase(slot, env, stale) {
       const kept = await keepAsideListed(slot, P, r.text);
       if (stale()) return { stop: true };
       setNotice(slot, "load", { kind: "recovered", text: unmergedText(kept), at: t });
+    } else if (r.text !== slot.baseText) {
+      // (a text kept already, by the Reset itself or on the way back from save.recovery.json, was said then)
+      const k = await keepAsideListedR(slot, P, r.text, S.overwrite);
+      if (stale()) return { stop: true };
+      if (!k.already) setNotice(slot, "load", { kind: "recovered", text: lateSaveText(S.overwrite, k.name), at: t });
     }
   }
   slot.baseText = r.text;
   S.baseOk = false;
   return { ok: true };
+}
+
+/** The notice for this window's saved progress missing from save.json: another window replaced it (mergeFromDisk). */
+export function replacedText(kept) {
+  return kept
+    ? `Another window replaced the save, so this window's earlier progress left the game. It is kept in ${kept}.`
+    : "Another window replaced the save, so this window's earlier progress left the game. It could not be kept aside.";
+}
+
+/** The notice for another window's save, landed after this window's Reset / Restore (`reason`) and kept aside before the replacing write (overwriteBase, r8-01). */
+export function lateSaveText(reason, kept) {
+  const what = reason === "restore" ? "Restore" : "Reset";
+  return kept
+    ? `Another window saved the old game after the ${what}. That save was kept aside as ${kept}; this window's game was saved.`
+    : `Another window saved the old game after the ${what}, and that save could not be kept aside. This window's game was saved.`;
 }
 
 /** The notice for a save.json kept aside before this window's game is written over it (overwriteBase, recoveryWrite). */
@@ -1704,7 +1804,9 @@ function fail(slot, message, t) {
  * One save cycle (A4 write protocol): rotate the backup (≤ every 5 min), then
  * writeTextFile(save, text, baseText); on a CAS rejection re-read, merge and
  * retry (≤ 3 times); on any other rejection set the error notice and back off.
- * `env` = { now() }. Resolves when the cycle is over (or superseded).
+ * `env` = { now(), sleep?, owner?, final? }: `final` (close's last write)
+ * leaves the backup rotation to the next cycle. Resolves when the cycle is
+ * over (or superseded).
  */
 export async function cycle(slot, env) {
   const S = slot.save;
@@ -1763,13 +1865,16 @@ export async function cycle(slot, env) {
       const t = env.now();
       // 2. rotate the backup so it trails the main save; never one that
       // could not be read and holds progress not yet kept aside (r6-04)
-      if ((S.bakUnreadable || S.bakHeld) && (S.bakProbeAt === null || S.bakProbeAt === undefined || t - S.bakProbeAt >= BACKUP_EVERY_MS)) {
+      // (not in a close's final write, env.final: herdr gives close 250 ms, and the
+      // backup is rotated by the next session's first cycle as well: r8-04)
+      const rotates = !(env && env.final);
+      if (rotates && (S.bakUnreadable || S.bakHeld) && (S.bakProbeAt === null || S.bakProbeAt === undefined || t - S.bakProbeAt >= BACKUP_EVERY_MS)) {
         if (!(await probeBackup(slot, env, stale, t))) return false; // superseded
         await pause(env); // the serialisation in a task step of its own
         if (stale()) return false;
         progress(slot, env);
       }
-      if (!S.bakUnreadable && !S.bakHeld && S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
+      if (rotates && !S.bakUnreadable && !S.bakHeld && S.baseOk && slot.baseText !== null && slot.baseText !== slot.bakText && (slot.bakAt === null || t - slot.bakAt >= BACKUP_EVERY_MS) && t >= (S.bakRetryAt || 0)) {
         if (!(await rotateBackup(slot, env, stale, t))) return false; // superseded
         // The serialisation in a task step of its own, not with the backup
         // write's resumption (R13: even a step of a large save's

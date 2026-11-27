@@ -275,3 +275,41 @@ test("the garlands shot shows every garland stripe above the fold", { skip: noBr
     dropSlot();
   }
 });
+
+// r8-11: in calm mode the vm is rebuilt on 5 s buckets, which passed over the
+// wish moment's 2 s "settle" phase about 60% of the time: the String went from
+// its "rise" frame (strands faded out) straight to the plain one (faded strands
+// back at full opacity, then shrinking). The phase is in the vm key and the
+// tick re-renders when it changes, so every wish, wherever it falls in a
+// bucket, draws rise, then settle, then the String at rest.
+test("r8-11: calm mode draws the wish moment's settle phase wherever the wish falls in the 5 s bucket", async () => {
+  const base = VIEWS.find((v) => v.name === "string-ready");
+  for (const offset of [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500]) {
+    const phases = [];
+    const entry = {
+      ...base,
+      async setup(view, tools) {
+        await base.setup(view, tools);
+        view.session.dispatch({ type: "setting", key: "calm", value: true }, undefined);
+        await tools.advance(5000);
+        await tools.advance(5000 - (Date.now() % 5000) + offset);
+        assert.equal(getSlot().state.settings.calm, true);
+        view.session.dispatch({ type: "wish" }, undefined);
+        let last = null;
+        for (let i = 0; i < 60; i++) {
+          const vm = view.session.cache && view.session.cache.vm;
+          if (vm && vm !== last) {
+            last = vm;
+            const p = vm.string.wishMoment ? vm.string.wishMoment.phase : null;
+            if (phases[phases.length - 1] !== p) phases.push(p);
+          }
+          await tools.advance(100);
+        }
+      },
+    };
+    const r = await runView(Creaseworks, entry, "graphite", { mod: "creaseworks" });
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(phases, ["rise", "settle", null], `wish ${offset} ms into the bucket: ${JSON.stringify(phases)}`);
+  }
+  dropSlot();
+});

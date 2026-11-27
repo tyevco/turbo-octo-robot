@@ -22,7 +22,7 @@ import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRE
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
 import { indexHelpers, flock } from "./helpers.js";
 import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicking.js";
-import { stackFactor, envUnit } from "./envelopes.js";
+import { stackFactor, envUnit, freshBoostMs } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
 import { rates } from "./engine.js";
 import { bestSince } from "./away.js";
@@ -222,7 +222,9 @@ export function view(state, now, opts = undefined) {
   const header = { folds: cnt(state.bank, style), rate: formatRate(liveRate, style), wishes: state.wishes, counts, kidsWaiting: roster.kidsWaiting.length };
   const saveNotice = o.saveNotice && typeof o.saveNotice === "object" && typeof o.saveNotice.kind === "string" ? o.saveNotice : null;
   const away = awayCard(state, E, style);
-  const marks = marksOf(state, t, roster);
+  // Marks are built only for the pips a copy draws (review r8-09, r8-10): the
+  // ribbon's level C and the rail past RAIL_PIPS draw tallies for the rest.
+  const refs = markRefs(roster);
   const envelopes = Object.keys(state.envelopes).length;
   const firstRunHint = !state.ui.hints.fold && state.stats.hits < 3;
 
@@ -241,9 +243,9 @@ export function view(state, now, opts = undefined) {
     settings: settingsVm(state),
     away,
     notices: noticesVm(state, t, saveNotice, style),
-    ribbon: ribbonVm(state, marks, role === "ribbon" && width > 0 ? width : RIBBON.defaultWidth, header, saveNotice, envelopes, style, liveRate),
+    ribbon: ribbonVm(state, t, refs, role === "ribbon" && width > 0 ? width : RIBBON.defaultWidth, header, saveNotice, envelopes, style, liveRate),
     rail: {
-      pips: marks,
+      ...railPips(state, t, refs),
       count: header.folds,
       rate: formatRate(liveRate, style, { compact: true }),
       needs: counts.needs,
@@ -364,6 +366,13 @@ function budget(state, E, t, c) {
 
 function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
   const nTiles = roster.ordered.length + roster.elsewhere.length;
+  // Tiles (tooltip, detail, pips, place) are built only where the Flock grid
+  // is drawn (review r8-09): the ribbon, the rail and the other tabs get the
+  // groups with their counts and no tiles, so a large flock costs them nothing
+  // here. The glue's vm cache keys on role, width and tab, so a tab switch
+  // builds the tiles then.
+  const mk = tilesShown ? (h, elsewhere) => tile(state, t, h, elsewhere, roster, loops) : null;
+  const tilesOf = (list, elsewhere) => (mk ? list.map((h) => mk(h, elsewhere)) : []);
   const density = state.settings.density;
   // Auto: dense from 21 tiles, or in the narrow panel (140-279 px, DESIGN §2.4, r3-19).
   const narrow = num(o.width, 0) > 0 && num(o.width, 0) < NARROW_BELOW;
@@ -371,7 +380,7 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
   const groups = [];
   if (roster.workspace) {
     if (roster.ordered.length) {
-      groups.push({ key: "all", title: "Workspace order", count: roster.ordered.length, folded: false, tiles: roster.ordered.map((h) => tile(state, t, h, false, roster, loops)) });
+      groups.push({ key: "all", title: "Workspace order", count: roster.ordered.length, folded: false, tiles: tilesOf(roster.ordered, false) });
     }
   } else {
     // Resting folds above 12 (§3.3), but never over a waiting fledgling: its
@@ -387,7 +396,7 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
         title: TITLE[key],
         count: list.length,
         folded: key === "resting" && list.length > 12 && !list.some(hasWaitingKid),
-        tiles: list.map((h) => tile(state, t, h, false, roster, loops)),
+        tiles: tilesOf(list, false),
       });
     }
   }
@@ -398,7 +407,8 @@ function helpersVm(state, t, roster, loops, o, style, idx, tilesShown) {
     legend: nTiles === 0,
     empty: nTiles === 0,
     pace: nWorking > 0 ? `${formatInt(nWorking)} working · bench pace ${Math.round(crowd(nWorking) * 100)} %` : null,
-    elsewhere: roster.elsewhere.map((h) => tile(state, t, h, true, roster, loops)),
+    elsewhere: tilesOf(roster.elsewhere, true),
+    elsewhereCount: roster.elsewhere.length,
     // Only the panel's Flock tab draws the Album, and only unfolded: rows are
     // built there (opts.album false = folded: none), counted everywhere.
     album: tilesShown && o.album !== false ? albumOf(state, t, style, idx) : [],
@@ -878,8 +888,10 @@ function mark(state, t, h, elsewhere) {
  * Group order with join order inside (or workspace order); Elsewhere last at
  * 50 %. A waiting fledgling gets its own needs-you mark (r2-17: in Needs you,
  * or right after its parent in workspace order); its click opens it.
+ * Returns light refs `{ h, elsewhere, status }` in mark order; `markOf` builds
+ * a mark (tooltip and all) only for the refs a copy draws (review r8-09).
  */
-function marksOf(state, t, roster) {
+function markRefs(roster) {
   const g = roster.groups;
   let list;
   if (!roster.workspace) list = roster.needs.slice().sort(byJoin).concat(g.finished, g.working, g.resting);
@@ -900,9 +912,54 @@ function marksOf(state, t, roster) {
   }
   const out = new Array(list.length + roster.elsewhere.length);
   let k = 0;
-  for (const h of list) out[k++] = mark(state, t, h, false);
-  for (const h of roster.elsewhere) out[k++] = mark(state, t, h, true);
+  for (const h of list) out[k++] = { h, elsewhere: false, status: statusOf(h) };
+  for (const h of roster.elsewhere) out[k++] = { h, elsewhere: true, status: statusOf(h) };
   return out;
+}
+
+const markOf = (state, t) => (ref) => mark(state, t, ref.h, ref.elsewhere);
+
+// The rail's pip grid (§3.9, review r8-10): every helper is its own pip up to
+// RAIL_PIPS; past that, needs-you and finished pips stay individual (needs-you
+// first) and working, resting and Elsewhere helpers become tally rows, so the
+// grid never draws more than RAIL_PIPS pips (herdr's 50 ms render: ≈ 0.065 ms
+// a pip in the wasm harness, every render cut off at 1,000). Every helper is
+// still either a pip or counted in a tally.
+export const RAIL_PIPS = 240;
+
+function railTally(status, count, more) {
+  const n = formatInt(count);
+  if (status === "elsewhere") return { status, count, label: n, tooltip: `${n} in another window` };
+  return tallyOf(status, count, more);
+}
+
+function railPips(state, t, refs) {
+  const mk = markOf(state, t);
+  if (refs.length <= RAIL_PIPS) return { pips: refs.map(mk), tallies: [] };
+  const needs = [];
+  const done = [];
+  let working = 0;
+  let idle = 0;
+  let elsewhere = 0;
+  for (const ref of refs) {
+    if (ref.elsewhere) elsewhere++;
+    else if (ref.status === "blocked") needs.push(ref);
+    else if (ref.status === "done") done.push(ref);
+    else if (ref.status === "working") working++;
+    else idle++;
+  }
+  const nNeeds = Math.min(needs.length, RAIL_PIPS);
+  const nDone = Math.min(done.length, RAIL_PIPS - nNeeds);
+  const kept = new Set(needs.slice(0, nNeeds).concat(done.slice(0, nDone)));
+  const tallies = [];
+  if (needs.length > nNeeds) tallies.push(railTally("blocked", needs.length - nNeeds, nNeeds > 0));
+  if (done.length > nDone) tallies.push(railTally("done", done.length - nDone, nDone > 0));
+  if (working) tallies.push(railTally("working", working, false));
+  if (idle) tallies.push(railTally("idle", idle, false));
+  if (elsewhere) tallies.push(railTally("elsewhere", elsewhere, false));
+  const pips = [];
+  for (const ref of refs) if (kept.has(ref)) pips.push(mk(ref));
+  return { pips, tallies };
 }
 
 // Level C (§3.10): needs-you and finished helpers keep their own pips and
@@ -976,12 +1033,14 @@ function fitLevelC(all, w) {
   return { marks: keep(needs.slice(0, k)), tallies: [tallyOf("blocked", needs.length - k, k > 0)].concat(others) };
 }
 
-function ribbonVm(state, all, W, header, saveNotice, envelopes, style, liveRate) {
-  const n = all.length;
+function ribbonVm(state, t, refs, W, header, saveNotice, envelopes, style, liveRate) {
+  const n = refs.length;
   const level = ribbonLevel(n, W);
-  let marks = all;
+  let kept = refs;
   let tallies = [];
-  if (level === "C") ({ marks, tallies } = fitLevelC(all, Math.max(0, W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad)));
+  if (level === "C") ({ marks: kept, tallies } = fitLevelC(refs, Math.max(0, W - RIBBON.pad - RIBBON.left - RIBBON.right - RIBBON.pad)));
+  // (A and B draw every helper, at most ≈ 2 · W / 14 of them; C only needs-you and finished)
+  const marks = kept.map(markOf(state, t));
   const pot = state.away.pot;
   return {
     marks,
@@ -1117,7 +1176,10 @@ function trayVm(state, t, E, r, idx, loops, style) {
       } else {
         // Chorus multiplies working helpers, Rush and Confetti hand hits (§6.3, r3-15).
         const when = env.type === "chorus" ? "open while your helpers are working" : "open when you're ready to click";
-        tooltip = `${def.name} ${times(mult)} for ${formatDuration(ms)} · ${when}`;
+        // The boost opening it starts, capped as openEnvelope caps it (§6.2,
+        // review r8-02): "(max)" says more units or Ribbons would add nothing.
+        const got = freshBoostMs(def, u, E.durMult, tw);
+        tooltip = `${def.name} ${times(mult)} for ${formatDuration(got)}${ms >= def.capMs ? " (max)" : ""} · ${when}`;
       }
     }
     envelopes.push({ helperId: id, type: env.type, units: u, bob: loops.envelope === id, label: u >= 2 ? stackText(u) : null, tooltip: clip(tooltip, CLIP.notice) });

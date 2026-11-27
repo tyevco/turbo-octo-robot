@@ -500,3 +500,57 @@ test("r3-01: a load that stops (its task cut off) is started again; the placehol
   assert.equal(w.slot.notices.load, null, "no load notice at all");
   assert.ok(ribbon.session.vm());
 });
+
+// r8-04: the last copy closes while its save cycle holds the claim but has
+// not sent its save.json write yet (rotating the backup, serialising in
+// steps, merging). herdr cancels that cycle with the copy, so it never sends
+// the write: close() releases its claim and makes the final write itself.
+test("r8-04: the last copy closing while its save cycle is rotating the backup still makes the final write", async () => {
+  w = win({ latency: { write: 400, read: 0 } });
+  const panel = await w.copy("panel");
+  await w.advance(3000);
+  await w.hits(panel, 3);
+  await w.advance(18000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 3);
+  await w.hits(panel, 3);
+  await w.advance(18000);
+  assert.equal(parsed(w.ctl).state.stats.hits, 6);
+  w.slot.bakAt = Date.now() - 400000; // the next cycle rotates the backup first (as 5 minutes on)
+  await w.hits(panel, 4);
+  let caught = false;
+  for (let i = 0; i < 400; i++) {
+    await w.advance(25);
+    if (w.slot.save.writing !== null && w.slot.save.writingFor === "cycle" && w.slot.inflight === null) {
+      caught = true;
+      break;
+    }
+  }
+  assert.ok(caught, "caught the cycle before its save.json write");
+  const before = w.ctl.writes.filter((x) => x.path === SAVE).length;
+  await w.ctl.closeView(panel);
+  // (a write started lands on disk although its task was cancelled with the copy)
+  await w.ctl.advance(1000);
+  assert.ok(w.ctl.writes.filter((x) => x.path === SAVE).length > before, "a save.json write was sent on close");
+  assert.equal(parsed(w.ctl).state.stats.hits, 10, "every hit on disk");
+});
+
+test("r8-04: a closing copy leaves a claim alone while its write is already sent, or while another open copy holds it", async () => {
+  const store = await import("../../mods/creaseworks/glue/store.js");
+  const { codeGeneration } = await import("../../mods/creaseworks/glue/live.js");
+  w = win();
+  const panel = await w.copy("panel");
+  await w.advance(3000);
+  const S = w.slot.save;
+  const t = Date.now();
+  Object.assign(S, { writing: 77, writingBy: panel.session.copyId, writingFor: "cycle", writingGen: codeGeneration(), writingAt: t });
+  assert.equal(store.releaseClosing(w.slot, t), false, "the copy holding it is still open");
+  w.slot.inflight = { text: "x", upto: 0, own: 0 };
+  Object.assign(S, { writingBy: "gone-copy" });
+  assert.equal(store.releaseClosing(w.slot, t), false, "its write is out: it lands");
+  w.slot.inflight = null;
+  Object.assign(S, { writingFor: "reset" });
+  assert.equal(store.releaseClosing(w.slot, t), false, "a Settings tool's claim is said by the orphan path");
+  Object.assign(S, { writingFor: "cycle" });
+  assert.equal(store.releaseClosing(w.slot, t), true, "a closed copy's unsent cycle is released");
+  assert.equal(S.writing, null);
+});

@@ -313,9 +313,11 @@ for (const seed of [1, 2, 3]) {
   test(`inv. 11: two windows sharing one save end every day within 1 % of one writer with the combined input (seed ${seed})`, () => {
     const one = runProfile("P1", seed, { days: 3, wish: false, keepState: false });
     // each window observes 2 of the 4 agents and plays every other session; the player's
-    // purchases are the single writer's, in order (a purchase waits until the save affords it)
+    // purchases are the single writer's, in order (a purchase waits until the save affords it),
+    // and so is the hand: the same beat and the same pauses (review r8-03)
+    assert.ok(one.pauses.length > 0);
     const two = runProfile("P1", seed, {
-      days: 3, wish: false, buys: one.purchases,
+      days: 3, wish: false, buys: one.purchases, pauses: one.pauses,
       windows: [
         { w: "wA", agents: [0, 1], sessions: (k) => k % 2 === 0 },
         { w: "wB", agents: [2, 3], sessions: (k) => k % 2 === 1 },

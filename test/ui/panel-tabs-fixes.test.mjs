@@ -29,7 +29,7 @@ import * as F from "../fixtures/vm-fixtures.mjs";
 import { engine, seeded, writer, agent, kid, observeAction, T0 } from "../engine/_util.mjs";
 import { graphemes, cellWidth } from "../../mods/creaseworks/engine/index.js";
 import { pickScene, pickHues } from "../../mods/creaseworks/ui/palette.js";
-import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, TILE_BUDGET_BAND, KID_FLAG_LEFT, tileLayout, tileCost, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids, foldedWaiting } from "../../mods/creaseworks/ui/flock.js";
+import { renderFlock, TILE, VIRTUAL_ABOVE, TILE_BUDGET, TILE_BUDGET_BAND, KID_FLAG_LEFT, tileLayout, envelopeDisc, tileCost, restBar, cellsFor, detailTextPx, PIP_HIT, virtualGroups, waitingKids, foldedWaiting } from "../../mods/creaseworks/ui/flock.js";
 import { statusColor, statusDisc, contrast } from "../../mods/creaseworks/ui/color.js";
 import { renderString, WISH_RISE, KEEPS, CLEARS } from "../../mods/creaseworks/ui/string.js";
 import { renderSettings } from "../../mods/creaseworks/ui/settings.js";
@@ -615,19 +615,35 @@ test("r4-12: every waiting helper has a visible needs-you cue in the Flock tab, 
   assert.match(two.tip, /^2 fledglings in here need you/);
 });
 
-test("r4-14: the needs-you flag never covers the species figure; the name and pips step clear, dense or not", () => {
+test("r4-14 / r8-12: the needs-you flag and the envelope marker never cover the species figure; the name and pips step clear, dense or not", () => {
   const { vm } = flockVm();
+  // Every tile also holds an unopened envelope (r8-12: on a dense tile whose
+  // fledgling waits, the dropped figure ran under the envelope's disc).
+  for (const grp of vm.helpers.groups) for (const t of grp.tiles) t.envelope = true;
   const overlap = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
   for (const dense of [false, true]) {
     vm.helpers.dense = dense;
     const g = dense ? TILE.dense : TILE.normal;
     const json = renderFlock(vm, {}, makeCtx()).toJSON();
+    assert.deepEqual(envelopeDisc(g), (() => {
+      const env = findById(json, `cw-flock-env-${tileId(1)}`);
+      assert.ok(env, `dense ${dense}: tile 1 shows its envelope marker`);
+      const hit = widthOf(env);
+      const disc = widthOf(env.children[0]);
+      const x0 = g.w - styleVal(env, "right") - hit + (hit - disc) / 2;
+      const y0 = g.h - styleVal(env, "bottom") - hit + (hit - disc) / 2;
+      return { x0, y0, x1: x0 + disc, y1: y0 + disc };
+    })(), `dense ${dense}: envelopeDisc matches the rendered marker`);
     for (const [i, flagged] of [[1, true], [2, false], [3, false]]) {
       const tile = findById(json, `cw-flock-tile-${tileId(i)}`);
       const figure = tile.children[0];
       const lay = tileLayout(g, flagged);
       assert.equal(styleVal(figure, "top"), lay.figureTop, `dense ${dense} tile ${i}: figure top`);
       assert.equal(styleVal(figure, "left"), lay.figureLeft, `dense ${dense} tile ${i}: figure left`);
+      const fig = { x0: lay.figureLeft, x1: lay.figureLeft + g.glyph, y0: lay.figureTop, y1: lay.figureTop + g.glyph };
+      assert.ok(findById(json, `cw-flock-env-${tileId(i)}`), `dense ${dense} tile ${i}: envelope marker shown`);
+      assert.ok(!overlap(fig, envelopeDisc(g)), `dense ${dense} tile ${i}: figure ${JSON.stringify(fig)} clear of the envelope disc ${JSON.stringify(envelopeDisc(g))}`);
+      assert.ok(fig.x0 >= 1 && fig.x1 <= g.w - 1, `dense ${dense} tile ${i}: figure inside the tile's border`);
       if (!flagged) {
         assert.equal(lay.figureTop, dense ? 4 : 6, "unflagged tiles keep the §3.3 layout");
         continue;

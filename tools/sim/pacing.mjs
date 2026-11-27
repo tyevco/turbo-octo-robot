@@ -3,7 +3,10 @@
 // milestone times, income shares, session ratios and purchases.
 //
 //   node tools/sim/pacing.mjs [--profile P1[,P2…]] [--seeds 1-20] [--assert] [--json out.json]
-//                             [--idle-step 10] [--workers 4]
+//                             [--idle-step 10] [--workers 4] [--even]
+//
+// --even: the hand hits on a perfect beat with no pauses (the model before
+// review r8-03); the asserted model is BALANCE §3's jittered hand.
 //
 // Time model (BALANCE §1): play-clock p counts open seconds from the first
 // launch; day d (0-based) is open p ∈ [8d h, 8(d+1) h] = wall 09:00-17:00 of
@@ -40,6 +43,29 @@ function mulberry(a) {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 const draw = (seed, key) => mulberry((engine.fnv1a32n(key) ^ (seed * 2654435761)) >>> 0);
+
+/**
+ * The hand's beat in one session (BALANCE §3 "Hand hits", review r8-03): the
+ * ms to the next hit, `iv` times a lognormal factor of σ `jitter` whose mean is
+ * 1, from a stream keyed by the seed and the session's ordinal (so it does not
+ * depend on step size). σ 0 is the even beat `iv`.
+ */
+export function handBeat(seed, k, iv, jitter) {
+  let a = (engine.fnv1a32n(`hand:${k}`) ^ (seed * 2654435761)) >>> 0;
+  const next = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return () => {
+    if (!(jitter > 0)) return iv;
+    const u1 = Math.max(next(), 1e-12);
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * next());
+    return Math.max(engine.CONTENT.K.hitMinMs + 20, iv * Math.exp(jitter * z - (jitter * jitter) / 2));
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Agents (BALANCE §3 P1 "Agents", "Sub-agents").
@@ -356,6 +382,8 @@ export function potAttribution(ev, bankAfter, potLeft) {
  *   windows: [{ w, agents: [i…], sessions: (k) => bool }] (two windows share one save through
  *     the A4/A5 protocol, each saving every 15 s; agent indices are 0-based),
  *   buys: an earlier run's `purchases`, replayed instead of the buy policy (BALANCE inv. 11),
+ *   pauses: an earlier run's `pauses`, the hand's time off the Sheet replayed with its purchases,
+ *   even (true: the hand hits on a perfect beat with no pauses, review r8-03),
  *   keepState (false drops finalState), trace(p, event, state), onStep(p, windows, disk).
  * Returns { milestones, active, shares, dayShares, sessionRatios, purchases, nights, dayEnd,
  * units, finalState, … }; milestone values are play-clock seconds.
@@ -386,6 +414,7 @@ export function runProfile(profileId, seed, opts = {}) {
     m15Gain: null,
     wishEvent: null,
     sessionSec: 0, // cumulative in-session seconds (BALANCE §1 active time)
+    pauses: [], // [play-clock ms, ms] the hand left the Sheet (review r8-03)
     ignored: Object.create(null),
     onEvents: null,
   };
@@ -502,12 +531,19 @@ export function runProfile(profileId, seed, opts = {}) {
       win.act({ t, type: "buy", item: x.item, count: 1, script: x });
     }
   };
-  const sessionStart = (win, t) => player.sessionStart(win.state, t, (a) => win.act(a));
+  // Hand time (review r8-03): purchases and envelopes opened in a session step
+  // take the hand off the Sheet (BALANCE §3 "Hand hits"); counted here, paid after step 3.
+  let handBusy = 0;
+  const sessionStart = (win, t) => player.sessionStart(win.state, t, (a) => {
+    if (a.type === "open") handBusy++;
+    return win.act(a);
+  });
   const handHit = (win, t) => player.hit(win.state, t, (a) => win.act(a));
   const markBuy = (win, item, payback) => {
     if (win !== primary || sim.multi) return;
     sim.purchases.push({ item, p: sim.p / 1000, active: sim.sessionSec, by: "player", payback, run: win.state.wishCount });
     pendingPlayerBuy = true;
+    handBusy++;
   };
   let pendingPlayerBuy = false;
   const origOn = sim.onEvents;
@@ -545,6 +581,10 @@ export function runProfile(profileId, seed, opts = {}) {
   // -- the clock
   const openMs = prof.openHours * HOUR * 1000;
   const hitIv = prof.hands && prof.cps > 0 ? 1000 / prof.cps : 0;
+  const even = opts.even === true; // the old perfect beat: no jitter, no hand pauses
+  const jitter = even ? 0 : prof.hitJitter || 0;
+  const pauseMs = (n) => (even || n <= 0 ? 0 : Math.round(((prof.pauseFirst || 0) + (prof.pauseEach || 0) * (n - 1)) * 1000));
+  const pauseReplay = Array.isArray(opts.pauses) ? new Map(opts.pauses) : null;
   const sessionsOf = (d) => {
     const out = [];
     for (let j = 0; j < prof.sessionsPerDay; j++) {
@@ -612,7 +652,9 @@ export function runProfile(profileId, seed, opts = {}) {
         if (win) {
           lastWin = win;
           const s = win.state;
-          session = { ...ss, nextHit: ss.start, hitN: 0, win, src0: liveTotal(s), Rp0: engine.rates(s, win.w).Rp };
+          session = { ...ss, nextHit: ss.start, hitN: 0, anchor: ss.start, anchorN: 0, win, src0: liveTotal(s), Rp0: engine.rates(s, win.w).Rp,
+            beat: handBeat(seed, ss.k, hitIv, jitter) };
+          handBusy = 0;
           sessionStart(win, wallOf(t));
         }
       }
@@ -632,6 +674,16 @@ export function runProfile(profileId, seed, opts = {}) {
       if (session && makeWish && session.win.state.wishCount < 1 && engine.wishInfo(session.win.state).can) {
         session.win.act({ t: wallOf(t), type: "wish" });
       }
+      // the hand was away from the Sheet for this step's purchases and envelopes
+      // (opts.pauses: an earlier run's, replayed as input, BALANCE inv. 11)
+      const pause = !session ? 0 : pauseReplay ? pauseReplay.get(t) || 0 : pauseMs(handBusy);
+      if (pause > 0) {
+        session.nextHit = Math.max(session.nextHit, t + pause);
+        session.anchor = session.nextHit;
+        session.anchorN = session.hitN;
+        if (!pauseReplay) sim.pauses.push([t, pause]);
+      }
+      handBusy = 0;
       if (t >= dayEnd) break;
       if (stopNow() || t >= maxSec * 1000) { done = true; break; }
       // 4. the next stop
@@ -646,7 +698,8 @@ export function runProfile(profileId, seed, opts = {}) {
           sim.p = session.nextHit;
           handHit(session.win, wallOf(session.nextHit));
           session.hitN++;
-          session.nextHit = session.start + Math.round(session.hitN * hitIv);
+          session.nextHit = jitter > 0 ? session.nextHit + Math.round(session.beat())
+            : session.anchor + Math.round((session.hitN - session.anchorN) * hitIv);
         }
       }
       // 6. advance every window to tn
@@ -725,6 +778,7 @@ function summarize(prof, seed, sim, finalState, opts) {
     dayShares,
     sessionRatios: sim.sessionRatios,
     purchases: sim.purchases,
+    pauses: sim.pauses,
     nights: sim.nights,
     dayEnd: sim.dayEnd,
     ignored: { ...sim.ignored },
@@ -1004,12 +1058,12 @@ export async function runAll(ids = PROFILE_IDS, seeds = parseSeeds("1-20"), o = 
   const workers = Math.max(1, Math.min(o.workers ?? 4, jobs.length));
   const strip = (r) => ({ ...r, finalState: null });
   if (workers === 1) {
-    for (const j of jobs) runs[j.id].push(strip(runProfile(j.id, j.seed, { idleStep: o.idleStep, keepState: false })));
+    for (const j of jobs) runs[j.id].push(strip(runProfile(j.id, j.seed, { idleStep: o.idleStep, even: o.even, keepState: false })));
   } else {
     const { Worker } = await import("node:worker_threads");
     let next = 0;
     await Promise.all(Array.from({ length: workers }, () => new Promise((resolve, reject) => {
-      const wk = new Worker(new URL(import.meta.url), { workerData: { idleStep: o.idleStep } });
+      const wk = new Worker(new URL(import.meta.url), { workerData: { idleStep: o.idleStep, even: o.even } });
       const feed = () => {
         if (next >= jobs.length) { wk.postMessage(null); return; }
         wk.postMessage(jobs[next++]);
@@ -1034,7 +1088,7 @@ async function workerMain() {
   parentPort.on("message", (job) => {
     if (job === null) { parentPort.close(); process.exit(0); }
     try {
-      const r = runProfile(job.id, job.seed, { idleStep: workerData.idleStep, keepState: false });
+      const r = runProfile(job.id, job.seed, { idleStep: workerData.idleStep, even: workerData.even, keepState: false });
       parentPort.postMessage({ result: { ...r, finalState: null } });
     } catch (e) {
       parentPort.postMessage({ error: `${job.id} seed ${job.seed}: ${e.stack || e}` });
@@ -1054,10 +1108,11 @@ async function main(argv) {
   const t0 = Date.now();
   let n = 0;
   const total = ids.length * seeds.length;
-  const runs = await runAll(ids, seeds, { idleStep, workers, progress: () => { n++; if (process.stderr.isTTY) process.stderr.write(`\r${n}/${total}`); } });
+  const even = argv.includes("--even");
+  const runs = await runAll(ids, seeds, { idleStep, workers, even, progress: () => { n++; if (process.stderr.isTTY) process.stderr.write(`\r${n}/${total}`); } });
   if (process.stderr.isTTY) process.stderr.write("\n");
   const ev = evaluate(runs);
-  console.log(`# Creaseworks pacing: ${ids.join(" ")} × seeds ${seeds[0]}-${seeds[seeds.length - 1]} (idle step ${idleStep} s, ${((Date.now() - t0) / 1000).toFixed(1)} s)\n`);
+  console.log(`# Creaseworks pacing: ${ids.join(" ")} × seeds ${seeds[0]}-${seeds[seeds.length - 1]} (idle step ${idleStep} s${even ? ", even beat" : ""}, ${((Date.now() - t0) / 1000).toFixed(1)} s)\n`);
   console.log(report(runs, ev));
   console.log("\nFirst wish (M15) per profile: median (min–max)");
   for (const id of ids) {

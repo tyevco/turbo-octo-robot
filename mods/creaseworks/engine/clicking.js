@@ -38,7 +38,16 @@ export function slotXY(i) {
  */
 export function rhythmAt(state, E, t) {
   const h = state.hand;
-  return h.lastHitAt > 0 && t - h.lastHitAt <= E.gapMs ? h.r : 0;
+  if (!(h.lastHitAt > 0)) return 0;
+  const gap = t - h.lastHitAt;
+  if (gap <= E.gapMs) return h.r;
+  // A short pause (review r8-03) costs K.slipBeats of the streak, not all of it.
+  return gap <= K.slipMs ? slipped(h.r) : 0;
+}
+
+/** What a streak of `r` keeps through a short pause: K.slipBeats fewer, at least 1 (§4.2). */
+export function slipped(r) {
+  return Math.max(1, r - K.slipBeats);
 }
 
 /** True while In step (r at the threshold and the last hit within the rhythm gap). */
@@ -89,6 +98,11 @@ function handHit(state, E, t) {
     // a merged hit from another window, older than our last: keep the rhythm
   } else if (prev > 0 && gap <= E.gapMs) {
     h.r = Math.min(K.rMax, h.r + 1);
+  } else if (prev > 0 && gap <= K.slipMs) {
+    // A short pause (a purchase, an envelope, a glance away) costs part of
+    // the streak instead of ending it (review r8-03: a 1.5 s pause every 30 hits
+    // used to cost the whole In step build-up).
+    h.r = slipped(h.r);
   } else {
     h.r = 1;
   }

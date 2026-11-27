@@ -51,7 +51,7 @@ if (missingTabs.length) {
 const { renderPanel, activeTab, RAIL_BELOW, FRAME, awaySlot } = await import("../../mods/creaseworks/ui/panel.js");
 const { renderMat, matGeometry, MAT_CLIP } = await import("../../mods/creaseworks/ui/mat.js");
 const { renderBanner, bannerLayout, middleClip, bannerNotices } = await import("../../mods/creaseworks/ui/banner.js");
-const { renderAway, awayLines, AWAY_CLOSE, awayFit, awayHeight, AWAY_DROP } = await import("../../mods/creaseworks/ui/away.js");
+const { renderAway, awayLines, AWAY_CLOSE, awayFit, awayHeight, AWAY_DROP, AWAY_BOX } = await import("../../mods/creaseworks/ui/away.js");
 const { renderRail } = await import("../../mods/creaseworks/ui/rail.js");
 const { renderRibbon, pipArea, densityLevel, ribbonLayout, ribbonPill, textBound, fitLevelC, blockNeeds, CHIP_GLYPH, ENV_MARKER, HINT_FOLD, HINT_HIDE } = await import("../../mods/creaseworks/ui/ribbon.js");
 const { statusColor, statusDisc, contrast } = await import("../../mods/creaseworks/ui/color.js");
@@ -1314,4 +1314,64 @@ test("r7-11: the 'While you were away' card never reaches the tab row (H 784 and
   assert.deepEqual(["envelopes", "needs", "rested", "best", "affordable"].filter((k) => ids(roomy).includes(`cw-away-row-${k}`)).length, 5);
   assert.equal(roomy.children.at(-1).children[0].id, "cw-away-collect");
   assert.ok(Math.abs(awayHeight(a0.vm.away, 304) - treeHeight(roomy, 304)) < 1, "away.js's own height model agrees with the tree");
+});
+
+test("r8-14: tight, the away card's split line sits under the folds row and Collect, wraps between words and is never cut inside a number", () => {
+  const a0 = F.scenario("away");
+  /** The node with id `want` and the chain of its ancestors (outermost first). */
+  const chainTo = (json, want) => {
+    const go = (n, up) => {
+      if (!n || typeof n !== "object") return null;
+      if (n.id === want) return up.concat([n]);
+      for (const k of n.children || []) {
+        const r = go(k, up.concat([n]));
+        if (r) return r;
+      }
+      return null;
+    };
+    return go(json, []);
+  };
+  const fullSplit = "workshops 19.1K · helpers 7,819";
+  const variants = {
+    fields: { ...a0.vm.away, splitText: undefined, split: { workshops: "19.1K", helpers: "7,819" } },
+    text: { ...a0.vm.away, splitText: fullSplit },
+    big: { ...a0.vm.away, splitText: "workshops 999.9M · helpers 999.9M" },
+  };
+  let tightSeen = 0;
+  for (const [name, away] of Object.entries(variants)) {
+    for (const width of [320, 240, 216, 400]) {
+      for (const maxH of [awaySlot(a0.vm, a0.ui, makeCtx("graphite", { ...a0, width })).maxH, 1000]) {
+        const vm = { ...a0.vm, away };
+        const ctx = makeCtx("graphite", { ...a0, width });
+        const card = renderAway(vm, a0.ui, ctx, { maxH }).toJSON();
+        const cardW = styleOf(card, "w");
+        const plan = awayFit(away, cardW, maxH);
+        const where = `${name}, width ${width}, maxH ${maxH}${plan.tight ? " (tight)" : ""}`;
+        const want = awayLines(away).split;
+        const chain = chainTo(card, "cw-away-split");
+        assert.ok(chain, `${where}: the split line is drawn`);
+        const split = chain.at(-1);
+        assert.deepEqual(textsOf(split), [want], `${where}: drawn whole (${want})`);
+        assert.ok(!split.styles.some(([k]) => k === "truncate"), `${where}: never cut with an ellipsis`);
+        assert.ok(split.styles.some(([k]) => k === "whitespace_normal"), `${where}: wraps between words`);
+        // Never beside Collect: no row that holds Collect also holds the split line.
+        const collect = chainTo(card, "cw-away-collect");
+        assert.ok(collect, `${where}: Collect drawn`);
+        for (const n of collect.slice(0, -1)) {
+          if (n.kind === "h_flex" && n.children.includes(collect[collect.indexOf(n) + 1])) {
+            assert.ok(!chain.includes(n), `${where}: the split line does not share Collect's row`);
+          }
+        }
+        if (plan.tight) {
+          tightSeen++;
+          // the line starts under the folds figure, right of the icon column, at the card's full inner width
+          const inner = cardW - 2 * AWAY_BOX.border - 2 * AWAY_BOX.tightPad - 24;
+          if (width === 320) assert.ok(graphemes(want).length * 6.4 <= inner, `${where}: one line at the standard width (${inner} px)`);
+        }
+        // the height model still agrees with the tree, tight or not
+        assert.ok(Math.abs(plan.height - treeHeight(card, cardW)) < 1, `${where}: awayHeight ${plan.height.toFixed(1)} ≈ tree ${treeHeight(card, cardW).toFixed(1)}`);
+      }
+    }
+  }
+  assert.ok(tightSeen >= 3, `tight cards checked (${tightSeen})`);
 });

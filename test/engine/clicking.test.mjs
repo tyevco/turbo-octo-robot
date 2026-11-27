@@ -36,16 +36,83 @@ test("rhythm, combo and figures (§4.2)", () => {
   close(pays[0], 1 + 0.5 / 40);
   close(pays[7], 5 * (1 + 0.5 * 8 / 40));
   close(pays[47], 5 * 1.5);
-  // A gap > 1 s resets the rhythm on the next hit.
-  me.act({ t: T0 + 1 + 47 * 900 + 1100, type: "click", target: "sheet" });
+  // A gap > 4 s resets the rhythm on the next hit.
+  me.act({ t: T0 + 1 + 47 * 900 + 4100, type: "click", target: "sheet" });
   assert.equal(s.hand.r, 1);
   // ... and reads as 0 once the gap has passed (rhythmAt), without a hit.
   for (let i = 0; i < 30; i++) me.act({ t: T0 + 60000 + i * 500, type: "click", target: "sheet" });
   const E = engine.effects(s);
   assert.equal(engine.rhythmAt(s, E, s.clock), 30);
-  engine.advance(s, T0 + 60000 + 29 * 500 + 1500);
+  engine.advance(s, T0 + 60000 + 29 * 500 + 4500);
   assert.equal(engine.rhythmAt(s, E, s.clock), 0);
   assert.equal(engine.inStep(s, E, s.clock), false);
+});
+
+test("r8-03: a short pause (over the rhythm gap, ≤ 4 s) costs 10 beats, not the streak; a longer one ends it (§4.2)", () => {
+  assert.equal(K.slipMs, 4000);
+  assert.equal(K.slipBeats, 10);
+  const streak = (n, iv = 800) => {
+    const s = seeded();
+    const me = writer(s);
+    let t = T0 + 1;
+    for (let i = 0; i < n; i++, t += iv) me.act({ t, type: "click", target: "sheet" });
+    return { s, me, last: t - iv, E: engine.effects(s) };
+  };
+  // A purchase's 1.5 s pause from a full streak: 30 and back In step on the next hit.
+  {
+    const { s, me, last, E } = streak(45);
+    assert.equal(s.hand.r, 40);
+    assert.equal(engine.inStep(s, E, last + 1000), true);
+    // during the pause: out of step at once, and the meter shows what the next hit keeps
+    assert.equal(engine.inStep(s, E, last + 1001), false);
+    assert.equal(engine.rhythmAt(s, E, last + 1500), 30);
+    assert.equal(engine.rhythmAt(s, E, last + 4000), 30);
+    assert.equal(engine.rhythmAt(s, E, last + 4001), 0);
+    me.act({ t: last + 1500, type: "click", target: "sheet" });
+    assert.equal(s.hand.r, 30);
+    assert.equal(engine.inStep(s, E, last + 1500), true);
+    const glow = s.hand.afterglowMs;
+    me.act({ t: last + 2300, type: "click", target: "sheet" });
+    assert.equal(s.hand.r, 31);
+    assert.ok(s.hand.afterglowMs > glow, "afterglow keeps building through the stumble");
+  }
+  // Two stumbles in a row drop out of step (20), and a short streak never goes under 1.
+  {
+    const { s, me, last } = streak(45);
+    me.act({ t: last + 2000, type: "click", target: "sheet" });
+    me.act({ t: last + 4000, type: "click", target: "sheet" });
+    assert.equal(s.hand.r, 20);
+    const short = streak(4);
+    short.me.act({ t: short.last + 3999, type: "click", target: "sheet" });
+    assert.equal(short.s.hand.r, 1);
+  }
+  // Over 4 s: the streak ends, as before.
+  {
+    const { s, me, last } = streak(45);
+    me.act({ t: last + 4001, type: "click", target: "sheet" });
+    assert.equal(s.hand.r, 1);
+  }
+  // Steady Rhythm's 1.4 s gap still counts a 1.3 s pause as in time.
+  {
+    const { s, me, last } = streak(45);
+    s.bought["steady-rhythm"] = true;
+    me.act({ t: last + 1300, type: "click", target: "sheet" });
+    assert.equal(s.hand.r, 40);
+  }
+  // A 1.5 s pause every 30 hits on an 800 ms beat (review r8-03's repro) stays In step once a
+  // full streak is built, where it used to start again from 1 each time (r 20 → 40 by hit 50).
+  {
+    const s = seeded();
+    const me = writer(s);
+    let t = T0 + 1;
+    let inStepHits = 0;
+    for (let i = 0; i < 300; i++) {
+      t += i > 0 && i % 30 === 0 ? 1500 : 800;
+      me.act({ t, type: "click", target: "sheet" });
+      if (i >= 60 && s.hand.r >= K.stepIn) inStepHits++;
+    }
+    assert.equal(inStepHits, 240);
+  }
 });
 
 test("In step banks 6 s of afterglow per hit up to 20 min; afterglow drains in live time", () => {
@@ -195,7 +262,9 @@ test("Crane's Gift grows with the folk at work and drops their part while Helper
   close(engine.giftFolds(state, { gather: false, gapMs: 1000 }, r, 5000), 25 * 4 * 2);
   const inBeat = { hand: { r: 30, lastHitAt: 4500 } };
   close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 5000), 25 * 30 * 2 + 90 * 10);
-  close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 6000), 25 * 4 * 2 + 90 * 10, 1e-9, "the rhythm lapsed");
+  // a short pause: the streak the player sees, 10 beats lower (r8-03)
+  close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 6000), 25 * 20 * 2 + 90 * 10, 1e-9, "a short pause");
+  close(engine.giftFolds(inBeat, { ...E, gapMs: 1000 }, r, 8501), 25 * 4 * 2 + 90 * 10, 1e-9, "the rhythm lapsed");
 });
 
 test("gilded crane gaps: craneLo · (1 + 0.5·u) active s, 340-510 s (Crane Bait 240-360, Crane Song 170-255); each crane holds its keyed outcome", () => {

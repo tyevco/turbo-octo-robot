@@ -2195,3 +2195,137 @@ test("r6-16: a save over 1 MiB is never sent, is said in words, and saves again 
   assert.equal(w.slot.save.status, "ok");
   assert.equal(w.slot.notices.write, null);
 });
+
+// ---------------------------------------------------------------------------
+// r8: a save another window lands after a Reset, a replaced save with no kept
+// copy, two windows keeping a file aside at once, the one-step serialisation.
+
+test("r8-01: a save another window lands after this window's Reset, before its replacing write, is kept aside and said", async () => {
+  w = win();
+  const [A, B] = twoWriters(31);
+  clickN(B, 3, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  const said = [];
+  const env = { now: () => w.ctl.now(), seed: () => 7, flash: (x) => said.push(x) };
+  assert.equal(await hostWork(() => store.resetGame(A, env)), "ok");
+  assert.match(said[0], /The old save was kept as save\.damaged-1\.json\./);
+  // B saves five more clicks of the old game before A's write.
+  await w.advance(1000);
+  clickN(B, 5, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  const late = w.ctl.readFile(SAVE);
+  assert.equal(hits(engine.parseSave(late).state), 8);
+  await w.advance(1000);
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  assert.equal(hits(parsed(w.ctl).state), 1, "the reset game is written");
+  assert.equal(hits(parsed(w.ctl, damaged(1)).state), 3, "the save the Reset replaced");
+  assert.equal(w.ctl.readFile(damaged(2)), late, "B's later save is kept aside too, not written over");
+  assert.ok(A.save.damaged.includes("save.damaged-2.json (reset)"), "listed with the reason");
+  assert.equal(A.notices.load.text, store.lateSaveText("reset", "save.damaged-2.json"), "and said");
+  // B finds its progress gone and is told where it is kept (true now).
+  await w.advance(1000);
+  clickN(B, 1, w.ctl.now());
+  assert.equal(await cycle(B), true);
+  assert.equal(B.notices.load.text, store.replacedText("save.damaged-2.json"));
+  assert.ok(B.save.damaged.includes("save.damaged-2.json"));
+  assert.equal(w.ctl.readFile(damaged(3)), null, "nothing kept twice");
+});
+
+test("r8-01: a late save is kept with the Restore named; nothing more is kept when the file did not change", async () => {
+  for (const kept of [null, "save.damaged-5.json"]) {
+    for (const reason of ["reset", "restore"]) {
+      const text = store.lateSaveText(reason, kept);
+      assert.ok(engine.graphemes(text).length <= store.NOTICE_MAX, text);
+      assert.match(text, reason === "reset" ? /after the Reset/ : /after the Restore/);
+    }
+    assert.ok(engine.graphemes(store.replacedText(kept)).length <= store.NOTICE_MAX);
+  }
+  w = win();
+  const [A] = twoWriters(32);
+  clickN(A, 2, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  const env = { now: () => w.ctl.now(), seed: () => 7, flash: () => {} };
+  assert.equal(await hostWork(() => store.resetGame(A, env)), "ok");
+  await w.advance(1000);
+  assert.equal(await cycle(A), true);
+  assert.equal(w.ctl.readFile(damaged(2)), null, "only the replaced save is kept");
+  assert.equal(A.notices.load, null, "and no late-save notice");
+});
+
+test("r8-07: a replaced save.json with no kept copy of this window's last save: this window keeps it aside itself, and says where", async () => {
+  w = win();
+  const [A] = twoWriters(33);
+  clickN(A, 4, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  const mine = w.ctl.readFile(SAVE);
+  // Another writer replaced the file and kept nothing (a game without A's actions).
+  const other = engine.newGame({ seed: 34, now: DEFAULT_NOW, day: localDay(DEFAULT_NOW) });
+  other.applied.wZ = 2;
+  w.ctl.externalWrite(SAVE, engine.serialize(other));
+  await w.advance(1000);
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  assert.equal(w.ctl.readFile(damaged(1)), mine, "this window's last save is kept aside");
+  assert.ok(A.save.damaged.includes("save.damaged-1.json (this window's save)"), "listed in Details");
+  assert.equal(A.notices.load.text, store.replacedText("save.damaged-1.json"), "said with its name");
+  assert.doesNotMatch(A.notices.load.text, /That window kept/, "no false claim about the other window");
+  assert.deepEqual({ ...parsed(w.ctl).state.applied }, { wZ: 2, wA: 5 }, "the other game taken in");
+  assert.equal(hits(parsed(w.ctl).state), 1, "with this window's unsaved click on it");
+});
+
+test("r8-07: when this window's last save is already kept, it is named, not kept twice", async () => {
+  w = win();
+  const [A] = twoWriters(35);
+  clickN(A, 2, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  const mine = w.ctl.readFile(SAVE);
+  w.ctl.externalWrite(damaged(1), mine);
+  const other = engine.newGame({ seed: 36, now: DEFAULT_NOW, day: localDay(DEFAULT_NOW) });
+  w.ctl.externalWrite(SAVE, engine.serialize(other));
+  await w.advance(1000);
+  clickN(A, 1, w.ctl.now());
+  assert.equal(await cycle(A), true);
+  assert.equal(A.notices.load.text, store.replacedText("save.damaged-1.json"));
+  assert.equal(w.ctl.readFile(damaged(2)), null);
+});
+
+async function keepBoth(a, b) {
+  const P = store.pathsFor(HOME);
+  let pa;
+  let pb;
+  await w.ctl.dispatch("task", null, () => {
+    pa = store.keepAside(P, a);
+    pb = store.keepAside(P, b);
+  });
+  for (let i = 0; i < 50; i++) await w.ctl.flush();
+  return [await pa, await pb];
+}
+
+test("r8-08: two windows keeping a file aside at the same moment: the same text is kept once and both name it; two texts both get a slot", async () => {
+  w = win();
+  assert.deepEqual(await keepBoth("{damaged", "{damaged"), ["save.damaged-1.json", "save.damaged-1.json"]);
+  assert.equal(w.ctl.readFile(damaged(1)), "{damaged");
+  assert.equal(w.ctl.readFile(damaged(2)), null, "kept once");
+  w.dispose();
+  w = win();
+  const [a, b] = await keepBoth("{one", "{two");
+  assert.deepEqual([a, b].sort(), ["save.damaged-1.json", "save.damaged-2.json"], "the second takes the next free n");
+  assert.deepEqual([w.ctl.readFile(damaged(1)), w.ctl.readFile(damaged(2))].sort(), ["{one", "{two"]);
+  w.dispose();
+  // With a gap (one removed by hand) and slot 5 in use, the free slot is tried again too.
+  const files = {};
+  for (const n of [1, 2, 4, 5]) files[damaged(n)] = `old ${n}`;
+  w = win({ files });
+  files[damaged(3)] = null;
+  const [c, d] = await keepBoth("{three", "{four");
+  assert.ok(c !== null && d !== null, `${c} ${d}`);
+  const all = [1, 2, 3, 4, 5].map((n) => w.ctl.readFile(damaged(n)));
+  assert.ok(all.includes("{three") && all.includes("{four"), JSON.stringify(all));
+  assert.ok(store.KEEP_TRIES >= 2);
+});
+
+test("r8-06: a roster serialised in one step is no larger than one stepped slice (engine SAVE_STEP_HELPERS)", async () => {
+  const codec = await import("../../mods/creaseworks/engine/save-codec.js");
+  assert.ok(store.STEP_SAVE_HELPERS <= codec.SAVE_STEP_HELPERS, `${store.STEP_SAVE_HELPERS} > ${codec.SAVE_STEP_HELPERS}`);
+});

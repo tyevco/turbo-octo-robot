@@ -2,6 +2,8 @@
 // reads the wall clock: the harnesses swap the global `Date.now` for their
 // virtual clock, so everything above this file is testable.
 
+import { WISH_MOMENT } from "../engine/view.js";
+
 /** Wall clock, ms since the epoch. */
 export function now() {
   return Date.now();
@@ -26,4 +28,19 @@ export function localTime(ms) {
 /** The re-render bucket of `ms`: counters change every second, every 5 s in calm mode (§11.1). */
 export function bucket(ms, calm) {
   return Math.floor(ms / (calm ? 5000 : 1000));
+}
+
+/**
+ * The phase of the String's wish moment at `ms` (engine view.js wishMomentOf):
+ * "rise", "settle", or "" outside it. The view model shows a different
+ * String in each, so a copy builds one for each phase as it starts, whatever
+ * its re-render bucket: in calm mode a 5 s bucket could pass over the 2 s
+ * "settle", and the strands faded by "rise" came back at full opacity (r8-11).
+ */
+export function wishPhase(state, ms) {
+  const lw = state && state.ui ? state.ui.lastWish : null;
+  if (!lw || typeof lw.at !== "number") return "";
+  const dt = ms - lw.at;
+  if (!(dt >= 0 && dt < WISH_MOMENT.settleMs)) return "";
+  return dt < WISH_MOMENT.riseMs ? "rise" : "settle";
 }

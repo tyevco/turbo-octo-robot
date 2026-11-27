@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import * as engine from "../../mods/creaseworks/engine/index.js";
 import { readFileSync } from "node:fs";
 import { PROFILES, PROFILE_IDS, activeFrac, parseBalance, parseWindow, parseClock, fmtClock, section } from "../../tools/sim/profiles.mjs";
-import { SHARE_BUCKETS } from "../../tools/sim/pacing.mjs";
+import { SHARE_BUCKETS, handBeat } from "../../tools/sim/pacing.mjs";
 
 const bal = parseBalance();
 const C = engine.CONTENT;
@@ -42,6 +42,45 @@ test("§3 profiles: every profile in the tables is defined in code and vice vers
   assert.equal(PROFILES.P11.cps, 3);
   assert.equal(PROFILES.P12.calm, true);
   assert.equal(PROFILES.P2.hands, false);
+});
+
+test("r8-03: the profiles' hand is a human one: seeded jitter with the mean held, pauses for purchases and envelopes; P14 is a less even hand on day 3", () => {
+  const P1 = PROFILES.P1;
+  assert.equal(P1.cps, 1.25);
+  assert.equal(P1.hitJitter, 0.15);
+  assert.deepEqual([P1.pauseFirst, P1.pauseEach], [1.5, 0.5]);
+  for (const id of PROFILE_IDS) if (id !== "P14") assert.equal(PROFILES[id].hitJitter, 0.15, id);
+  assert.equal(PROFILES.P14.hitJitter, 0.3);
+  assert.equal(PROFILES.P14.cps, P1.cps);
+  // BALANCE §3 states the same numbers
+  const md = readFileSync(new URL("../../docs/BALANCE.md", import.meta.url), "utf8");
+  const hand = section(md, "P1 typical").split("\n").find((l) => l.startsWith("| Hand hits |"));
+  for (const want of ["σ **0.15**", "**1.5 s**", "**0.5 s**", "--even"]) assert.ok(hand.includes(want), want);
+  const row = bal.firstWish.find((r) => r.id === "P14");
+  assert.deepEqual([row.every.lo, row.every.hi], [16 * 3600, 24 * 3600], "P14 stays on day 3 on every seed");
+  assert.equal(row.extra[0].text, "median ≤ P1 median + 1:30");
+  // The beat: deterministic per (seed, session), mean held, σ as stated, never under the click cap;
+  // σ 0 is the even beat.
+  const iv = 1000 / P1.cps;
+  const even = handBeat(1, 0, iv, 0);
+  for (let i = 0; i < 5; i++) assert.equal(even(), iv);
+  for (const sigma of [0.15, 0.3]) {
+    const a = handBeat(7, 3, iv, sigma);
+    const b = handBeat(7, 3, iv, sigma);
+    const xs = Array.from({ length: 20000 }, () => a());
+    for (let i = 0; i < 50; i++) assert.equal(b(), xs[i]);
+    assert.notEqual(handBeat(7, 4, iv, sigma)(), xs[0], "another session, another stream");
+    const mean = xs.reduce((x, y) => x + y, 0) / xs.length;
+    assert.ok(Math.abs(mean / iv - 1) < 0.01, `σ ${sigma}: mean ${mean}`);
+    const logs = xs.map((x) => Math.log(x / iv));
+    const m = logs.reduce((x, y) => x + y, 0) / logs.length;
+    const sd = Math.sqrt(logs.reduce((x, y) => x + (y - m) ** 2, 0) / logs.length);
+    assert.ok(Math.abs(sd - sigma) < 0.01, `σ ${sigma}: sd ${sd}`);
+    assert.ok(Math.min(...xs) >= C.K.hitMinMs, "never faster than the click cap");
+    // the share of intervals over the 1.0 s rhythm gap BALANCE §3 quotes: 1 in 17 at 0.15, 1 in 5 at 0.3
+    const over = xs.filter((x) => x > C.K.gapMs).length / xs.length;
+    assert.ok(Math.abs(1 / over - (sigma === 0.15 ? 17 : 5.4)) < (sigma === 0.15 ? 2 : 0.5), `σ ${sigma}: 1 in ${1 / over}`);
+  }
 });
 
 test("§4 milestones: every row has a known sim key and the median window lies inside the every-seed window", () => {
@@ -116,13 +155,14 @@ test("§6 shares: the four buckets cover every income source the engine credits,
   assert.ok(bal.dayShares.length >= 9);
   // every profile that clicks has a §6.2 row (P2 never clicks; P12 equals P1): P9 has its own floor
   const rowed = new Set(bal.dayShares.map((r) => r.id));
-  for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P13"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
-  assert.deepEqual(bal.dayShares.find((r) => r.id === "P9").mins, [0.008, 0.008, 0.03]);
+  for (const id of ["P1", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P13", "P14"]) assert.ok(rowed.has(id), `§6.2 has no row for ${id}`);
+  // r8-03: P9's day-3 floor 3 → 2.5 % with the human hand (BALANCE §6.2, §11)
+  assert.deepEqual(bal.dayShares.find((r) => r.id === "P9").mins, [0.008, 0.008, 0.025]);
   // review r7-14: the floors hold on every seed (the sim checks them all), so P3 has its own
   // day-1 floor, under its all-seed minimum; the others keep the 5 / 10 / 12 % bar
   assert.match(section(readFileSync(new URL("../../docs/BALANCE.md", import.meta.url), "utf8"), "6.2").split("\n")[0], /every seed/);
   assert.deepEqual(bal.dayShares.find((r) => r.id === "P3").mins, [0.045, 0.1, 0.12]);
-  for (const id of ["P4", "P5", "P7", "P8", "P10", "P11"]) assert.deepEqual(bal.dayShares.find((r) => r.id === id).mins, [0.05, 0.1, 0.12], id);
+  for (const id of ["P4", "P5", "P7", "P8", "P10", "P11", "P14"]) assert.deepEqual(bal.dayShares.find((r) => r.id === id).mins, [0.05, 0.1, 0.12], id);
   assert.ok(bal.sessions.p1Min > bal.sessions.handsMin);
 });
 

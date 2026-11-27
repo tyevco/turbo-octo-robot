@@ -64,8 +64,8 @@ export const UPGRADES = f([
   // Charms (boost strength)
   f({ id: "wax-seal", seg: "charms", name: "Wax Seal", cost: 10000, fx: "env", v: 1.5, text: "bundles ×1.5" }),
   f({ id: "ribbon-tie", seg: "charms", name: "Ribbon Tie", cost: 1e6, fx: "env", v: 2.0, req: "wax-seal", text: "bundles ×2" }),
-  f({ id: "long-ribbon", seg: "charms", name: "Long Ribbon", cost: 100000, fx: "dur", v: 1.5, text: "boosts last ×1.5" }),
-  f({ id: "longer-ribbon", seg: "charms", name: "Longer Ribbon", cost: 1e7, fx: "dur", v: 2.0, req: "long-ribbon", text: "boosts last ×2" }),
+  f({ id: "long-ribbon", seg: "charms", name: "Long Ribbon", cost: 100000, fx: "dur", v: 1.5, text: "boosts last ×1.5, up to each boost's cap" }),
+  f({ id: "longer-ribbon", seg: "charms", name: "Longer Ribbon", cost: 1e7, fx: "dur", v: 2.0, req: "long-ribbon", text: "boosts last ×2, up to each boost's cap" }),
   f({ id: "brisk-charm", seg: "charms", name: "Brisk Charm", cost: 3e6, fx: "rush", v: 4, text: "Rush ×3 → ×4" }),
   f({ id: "gale-charm", seg: "charms", name: "Gale Charm", cost: 1e8, fx: "storm", v: 9, text: "Confetti ×6 → ×9" }),
   // Curios (special clickables)
@@ -163,6 +163,7 @@ export const FREE_SLOTS = f([
 export const K = f({
   hitMinMs: 80, // ≤ 12.5 credited hand hits per second
   gapMs: 1000,
+  slipMs: 4000, slipBeats: 10, // a pause over the rhythm gap but ≤ 4 s costs 10 beats of the streak; a longer one ends it (§4.2, review r8-03)
   rMax: 40,
   comboMax: 0.5,
   stepIn: 25, stepInShared: 20,

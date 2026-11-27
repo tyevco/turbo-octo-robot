@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createHost } from "../../tools/qjs/harness.mjs";
+import { createHost, RuntimeFreeError } from "../../tools/qjs/harness.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MOD = join(repo, "mods", "creaseworks");
@@ -137,3 +137,52 @@ for (const c of CASES) {
     }
   });
 }
+
+// Review r8-09: every copy (the ribbon, the rail, the panel's other tabs) built
+// every Flock tile and its tooltip on every tick; at 1,000 agents with 500
+// fledglings a steady tick took ≈ 210 ms in each, and at 1,400 with 700 some
+// ticks ran past herdr's 500 ms callback budget. Tiles are now built only where
+// the Flock grid is drawn and the ribbon and rail build marks only for the
+// pips they draw. The steady tick (data tick, view rebuild, save cycles) must
+// stay inside 500 ms, with room to spare, in every copy.
+test("1,000 agents with 500 fledglings: every steady tick stays inside the 500 ms callback budget (panel, ribbon, rail)", { timeout: 300000 }, async () => {
+  for (const [role, size] of [["panel", { width: 320, height: 784 }], ["ribbon", { width: 1440, height: 30 }], ["panel", { width: 64, height: 700 }]]) {
+    const host = await createHost({
+      modRoot: MOD,
+      scenario: {
+        appHome: HOME, home: "/home/player", props: { role }, window: { visible: true, active: true, platform: "linux" },
+        theme: "graphite", ...roster(1000, 0.5, MIXED),
+      },
+    });
+    let ok = false;
+    try {
+      await host.load();
+      // (the first sighting of 1,500 helpers is the one heavy step; not budgeted here)
+      host.enforce = false;
+      host.advance(0);
+      host.render();
+      host.fire("root", "on_size_change", size);
+      for (let i = 0; i < 4; i++) host.advance(1000);
+      host.enforce = true;
+      const steps = [];
+      for (let i = 0; i < 16; i++) steps.push(...host.advance(1000).stepMs);
+      host.render();
+      steps.sort((a, b) => a - b);
+      const p50 = steps[steps.length >> 1];
+      console.log(`# qjs tick 1,000 + 500 helpers, ${role} @${size.width}: ${steps.length} steps, p50 ${p50.toFixed(1)} max ${steps.at(-1).toFixed(1)} ms`);
+      assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
+      assert.ok(steps.at(-1) < 500, `step ${steps.at(-1)} ms`);
+      assert.ok(p50 < 400, `tick p50 ${p50.toFixed(1)} ms leaves under 100 ms of headroom`);
+      ok = true;
+    } finally {
+      try {
+        host.dispose();
+      } catch (e) {
+        // only this wasm build's JS_FreeRuntime leak check (the engine collector-timing fault,
+        // test/qjs/creaseworks.test.mjs) is tolerated, and only after a passing run
+        if (ok && !(e?.name === RuntimeFreeError.name && e.gcObjList === true)) throw e;
+      }
+    }
+  }
+});
+

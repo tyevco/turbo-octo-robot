@@ -6,9 +6,11 @@ This file is the written target that `tools/sim/pacing.mjs` asserts (ARCHITECTUR
 prototype of the DESIGN formulas (1 s steps, the profiles below, 20 seeds). The shipped simulator
 replaces it and drives the **real engine** (`engine.apply` / `engine.advance`) through the same
 profiles. With the §8 knobs at their current values it passes every row below (P1 first wish
-median 21:24, min 21:20, max 21:42; run `npm run sim` for the full table). The last change to
-the numbers was the originality review r7 (§10): a new workshop ladder and knob 2 turned from
-0.07 to 0.06.
+median 21:41, min 21:22, max 23:21; run `npm run sim` for the full table). The last change to
+the numbers was review r8-03 (§11): the profiles' hand is a human one (seeded jitter and a pause
+for each purchase or envelope), not a perfect beat, and a short pause no longer ends the rhythm
+streak. Before it, the originality review r7 (§10) brought a new workshop ladder and turned knob 2
+from 0.07 to 0.06.
 
 ---
 
@@ -43,7 +45,7 @@ the numbers was the originality review r7 (§10): a new workshop ladder and knob
 |---|---|
 | Open time | 8 h a day, 09:00–17:00; 16 h away each night (credited 8 h) |
 | Sessions | **12 a day**, starting at open-time 0:00, 0:40, 1:20, … 7:20 of each day; each **2.5 min**; the very first session ever lasts **8 min**. 30 active min a day |
-| Hand hits | **1.25 per second** on the Sheet during a session |
+| Hand hits | **1.25 per second** on the Sheet during a session, on average. Not an even beat (review r8-03, §11): each interval is `800 ms` times a seeded lognormal factor with σ **0.15** and mean 1 (about 1 interval in 17 is over the 1.0 s rhythm gap), and every second of the session in which the player buys or opens envelopes takes the hand off the Sheet for **1.5 s**, plus **0.5 s** for each further purchase or envelope in that second. `npm run sim -- --even` runs the old perfect beat with no pauses |
 | Chains | when a chain is up, the next hits click its nodes in order; success **95 %** per chain (a failure is one out-of-order hit, then the chain tears) |
 | Scraps | every scrap is clicked when it spawns |
 | Gilded cranes | **80 %** caught (seeded) |
@@ -96,6 +98,7 @@ Buy the candidate with the smallest payback if affordable; repeat until it is no
 | P11 fast hands | 3 hand hits per second |
 | P12 calm | P1 with calm mode on |
 | P13 short turns | sub-minute turns and a burst of sub-agents: 48 × [**45 s working, 15 s needs you**], then 12 resting (still 36 working minutes an hour, but **48 finished tasks an hour**); each block starts **4 new sub-agents** (new addresses) one after another in its first 12 s, each working 3 s and then done until the block ends (one fledgling working at a time and about P1's share of working time, but **192 fledgling finishes an hour** per agent) |
+| P14 unsteady hand | hand intervals with σ **0.3** instead of 0.15 (about 1 interval in 5 over the 1.0 s rhythm gap, 1 in 46 over Steady Rhythm's 1.4 s), the same mean rate and pauses |
 
 P13 guards the envelope-unit rule (DESIGN §6.1, review r3-24): every finish draws on a budget, a
 token bucket of at most one unit that refills one unit per 12 minutes, and every fledgling of a
@@ -119,7 +122,7 @@ fledgling help, a different profile.
 | M1 | first Paper Stack (`buy:paper-stack`) | 0:00:10 | 0:00:03 – 0:00:30 | ≤ 0:01:00 | day 1 09:00 | 0:00:06 |
 | M2 | first upgrade, Crisp Corners (`buy:crisp-corners`) | 0:01:10 | 0:00:40 – 0:03:00 | ≤ 0:05:00 | day 1 09:01 | 0:01:06 |
 | M3 | 10 workshops owned (`own:workshops>=10`) | 0:02:00 | 0:01:00 – 0:04:00 | ≤ 0:06:00 | day 1 09:02 | 0:01:48 |
-| M4 | first Scissor Stand (`buy:scissor-stand`) | 0:06:00 | 0:03:00 – 0:12:00 | ≤ 0:20:00 | day 1 09:06 | 0:06:00 |
+| M4 | first Scissor Stand (`buy:scissor-stand`) | 0:06:00 | 0:03:00 – 0:12:00 | ≤ 0:40:00 | day 1 09:06 | 0:06:00 |
 | M5 | first gilded crane spawns (`spawn:crane#1`) | 0:06:30 | exactly 390 active s | exactly 390 active s | day 1 09:06 | 0:06:30 |
 | M6 | first Glue Pot (`buy:glue-pot`) | 1:20 | 0:40 – 2:00 | 0:30 – 2:40 | day 1 10:20 | 1:20 |
 | M7 | first automation, Mail Sorter (`buy:mail-sorter`) | 2:00 | 1:20 – 3:20 | 0:40 – 4:00 | day 1 11:00 | 2:00 |
@@ -135,6 +138,12 @@ fledgling help, a different profile.
 | M17 | second wish available, P1 continuing after making the first wish at M15 (`wish2:available`) — **provisional** | M15 + 14:00 | M15 + 9:00 – M15 + 22:00 | M15 + 7:00 – M15 + 26:00 | day 5 | (not prototyped) |
 
 M17 is provisional: if it fails, retune the later-wish gate `max(5, ceil(0.25·W))`, never `Lw`.
+
+M4's every-seed bound is the second session's start, 0:40 (review r8-03, §11). With the human
+hand of §3 the first Scissor Stand lands at 6:31–7:58 of the 8-minute first session on 19 of 20
+seeds, and seed 10 is a few folds short when that session ends, so buys it at the second session
+(the even beat: 6:37, at most 6:59). The bound used to be 0:20, which no purchase-in-sessions
+profile can land between 0:08 and 0:40 anyway.
 
 M13 counts **live income** (the run's folds without away credit, `runFolds − runBySource.away`).
 It used to be 1 B folds of the run total (`run:1e9`, target 15:30, day 2 16:30), and the
@@ -159,7 +168,7 @@ active time only (§1). No other §4 row is noted today.
 curve runs up to 80 min of play-clock behind the targets above, which were written from the
 prototype: M10 median 7:20 (target 6:40), M11 9:26 (9:20), M12 11:20 (10:00), M13 16:01 (16:30;
 the old run-total target was 15:30), M14 16:00 (16:00, bought at the day-3 open from the night
-pot on every seed, so its play-clock row says when day 3 opens, not when the live curve could pay), M15 21:24 (min 21:20, max 21:42; target 20:30). Every row passes its windows and the first wish stays on day 3,
+pot on every seed, so its play-clock row says when day 3 opens, not when the live curve could pay), M15 21:41 (min 21:22, max 23:21; target 20:30; 21:23 on the even beat, §11). Every row passes its windows and the first wish stays on day 3,
 which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retuned for the lag.
 
 ## 5. First wish across profiles
@@ -179,6 +188,7 @@ which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retune
 | P11 fast hands | 18:30 | 16:30 – 21:00 | **≥ 16:00** and ≤ 22:00 | — | 18:30 (17:29–19:18) |
 | P12 calm | = P1 | each seed within ±3 % of the same P1 seed | | calm changes no earnings | (= P1 by construction) |
 | P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 21:53 (21:22–22:06) |
+| P14 unsteady hand | 22:30 | 18:30 – 23:30 | 16:00 – 24:00 | median ≤ P1 median + 1:30 | sim 22:33 (21:40–23:46) |
 
 **Day-open snaps.** Some profiles reach the first wish only by collecting a night pot at a day
 open, and the real-engine sim notes the row "reached by a night pot on N of 20 seeds". P4 does
@@ -212,8 +222,8 @@ and 30 or 64 agents never reach the first wish on the first day of open time.
 | P1 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 9.1 / 28.1 / 37.6 % |
 | P6 | ≥ 6 % | ≥ 15 % | ≥ 20 % | 11.5 / 27.9 / 39.4 % |
 | P3 | ≥ 4.5 % | ≥ 10 % | ≥ 12 % | proto 5.9 / 12.5 / 15.9 %; sim seed 1: 5.1 / 10.5 / 14.1 %, all-seed min 4.95 / 10.40 / 14.05 % |
-| P4, P5, P7, P8, P10, P11 | ≥ 5 % | ≥ 10 % | ≥ 12 % | sim all-seed min: P4 5.5 / 11.7 / 18.3 %, P10 7.4 / 19.0 / 23.2 % |
-| P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 3 % | sim seed 1: 0.9 / 1.4 / 4.2 % (before r7: 1.0 / 1.1 / 4.0 %; before r6: 1.2 / 1.3 / 4.4 %) |
+| P4, P5, P7, P8, P10, P11, P14 | ≥ 5 % | ≥ 10 % | ≥ 12 % | sim all-seed min: P4 5.5 / 11.7 / 18.3 %, P10 7.4 / 19.0 / 23.2 % |
+| P9 | ≥ 0.8 % | ≥ 0.8 % | ≥ 2.5 % | sim seed 1: 1.5 / 1.2 / 3.9 %, all-seed min 0.86 / 1.07 / 2.91 % (r8-03, §11; on the even beat 0.9 / 1.4 / 4.2 %; before r7: 1.0 / 1.1 / 4.0 %; before r6: 1.2 / 1.3 / 4.4 %) |
 | P13 | ≥ 6 % | ≥ 15 % | ≥ 20 % | sim seed 1: 8.2 / 20.1 / 22.8 % |
 
 "Live income" excludes away credit; click-driven is as in 6.1. Days past M15 are not checked.
@@ -222,7 +232,11 @@ seed). Until review r7-14 only seed 1 was checked, and P3's day-1 floor of 5 % p
 while seeds 16 and 17 gave 4.97 % and 4.95 %. P3 (no agents) now has its own day-1 floor of
 4.5 %, half a point under its all-seed minimum; it was not retuned. Its day-2 share (all-seed min
 10.40 %, seed 14, against 10 %) and P9's day-1 share (all-seed min 0.80 %, seed 12, against
-0.8 %, with no margin at all) are the tightest floors.
+0.8 %, with no margin at all) were the tightest floors. With the human hand of §3 (review r8-03,
+§11) they are P9's day 1 (0.86 %, seed 2, against 0.8 %), P3's day 1 (4.92 %, seed 17, against
+4.5 %) and day 2 (10.56 %, seed 9, against 10 %), and P9's day 3, whose floor went from 3 % to
+2.5 % (2.91 % on seed 13; 4.2 % on seed 1 on the even beat): P9's 10 active minutes a day lose
+the most to pauses and a broken beat, and the row only guards against regressions.
 
 P9 has its own floor, not the 5 / 10 / 12 % bar. It plays 4 sessions a day, all in the first 2 h
 of 8 open hours (about 10 active minutes, a third of P1's), so for 6 h a day the helpers and
@@ -394,3 +408,41 @@ P3's day 1 (4.95 % on seed 17 against its own 4.5 % floor, §6.2), P2's purchase
 
 The calibration prototype was a throwaway script outside the repository; it is not a reference.
 The shipped simulator is.
+
+## 11. Review r8-03: a human hand, and a short pause keeps the streak
+
+Every target above was met by a hand that hit the Sheet on a perfect 800 ms beat, never paused,
+and bought and opened envelopes in no time. The rhythm streak (DESIGN §4.2) ended on any gap over
+1.0 s, and afterglow builds only while In step (`r ≥ 25`), so the day-3 first wish rested on that
+beat: with one 1.5 s pause every 30 hits, 3 of 10 seeds reached it only at the day-4 open
+(24:00), and with lognormal jitter of σ 0.3 its median moved to about 22:50, out of the
+18:30–22:30 window. An even beat at 1.1 or 1.2 hits a second still gave about 21:30, so it was the
+broken streaks, not the fewer hits.
+
+Two changes, no §8 knob turned:
+
+* **The profiles' hand** (§3 "Hand hits"): seeded lognormal jitter with σ 0.15 and the mean held
+  at 1.25 hits a second, and 1.5 s off the Sheet in each second the player buys or opens
+  envelopes, plus 0.5 s for each further one in that second. `npm run sim -- --even` keeps the old
+  beat for comparison. P14 (σ 0.3) checks a much less even hand.
+* **A short pause keeps most of the streak** (DESIGN §4.2): a gap over the rhythm gap but no more
+  than **4 s** costs **10 beats** (`r − 10`, at least 1) instead of the whole streak; a longer gap
+  still ends it. A full streak of 40 survives one stumble In step (30), a purchase costs a
+  few seconds of rebuilding, not 20, and stopping to work still ends the streak. On the even beat
+  this changes nothing (P1 21:23, every row as before).
+
+Effect (20 seeds, M15 median (min–max)):
+
+| Hand | Streak ends on any gap over 1.0 s | A gap ≤ 4 s costs 10 beats |
+|---|---|---|
+| even beat, no pauses (the old model, `--even`) | 21:24 (21:20–21:42) | 21:23 (21:20–21:42) |
+| σ 0.15, no pauses | 21:31 (21:20–23:21) | 21:23 (21:20–22:40) |
+| σ 0.15 with pauses (**P1**) | 22:09 (21:30–23:33) | **21:41 (21:22–23:21)** |
+| σ 0.3, no pauses | 22:43 (22:09–23:59) | 21:53 (21:22–23:22) |
+| σ 0.3 with pauses (**P14**) | 23:20 (22:31–24:00), **7 of 20 seeds on day 4** | **22:33 (21:40–23:46)** |
+
+Other rows the human hand moved: M2 2:02 → 2:22, M3 1:42 → 2:07, M4 6:37 → 7:00 (one seed at the
+second session, see §4), M13 16:01 → 16:10, P5 16:13 → 16:22, P6 12:57 → 13:14, P9 32:14 → 34:14,
+P10 20:48 → 21:11, P13 21:53 → 22:03, and P1's whole-run click share on seed 1 26.3 → 22.7 %
+(window 20–38 %). Every row passes; P14 stays on day 3 on every seed and within 1:30 of P1.
+
