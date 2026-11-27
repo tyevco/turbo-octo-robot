@@ -706,7 +706,7 @@ const CJK = "codex · 支払い照合サービスをリファクタリングし�
 const bytesOf = (text) => Buffer.byteLength(text, "utf8");
 const presentOf = (st) => Object.values(st.helpers).filter((h) => !h.gone);
 const loadedGroup = (h) => ({ working: "working", blocked: "needs", done: "finished", idle: "resting" })[h.status];
-const tierOf = (v) => (!Array.isArray(v) ? "whole" : v[0] === 3 ? "stub" : v[0] === 2 ? "slim" : v[0] === 1 ? (v.length > 3 ? "full" : "lean") : "album");
+const tierOf = (v) => (v === undefined ? undefined : !Array.isArray(v) ? "whole" : v[0] === 3 ? "stub" : v[0] === 2 ? "slim" : v[0] === 1 ? (v.length > 3 ? "full" : "lean") : "album");
 
 /** `agents` pane agents with `kids` sub-agents each, long CJK titles, through a few turns (an envelope each). */
 function bigRoster(agents, kids, { w = "w-7f3a9c2e41", seed = 31, base = 0, t0 = T0 } = {}) {
@@ -782,7 +782,7 @@ test("format 5: a present helper packs to exactly the record it loads as, in eve
   assert.ok(saveBytes(odd) >= bytesOf(oddText));
 });
 
-test("format 5: 4,000 present helpers (1,000 agents with 3 sub-agents each, long CJK titles) over a full Album save under K.saveBudget, every one kept", () => {
+test("format 5: 4,000 present helpers (1,000 agents with 3 sub-agents each, long CJK titles) over a full Album save under K.saveBudget, every one with its game state", () => {
   const s = seeded(33);
   const me = writer(s, "w-7f3a9c2e41");
   // a peak Album: K.albumCompactKeep + K.albumArchiveBatch packed records
@@ -804,7 +804,15 @@ test("format 5: 4,000 present helpers (1,000 agents with 3 sub-agents each, long
   const written = JSON.parse(text).state.helpers;
   const tiers = present.map((h) => tierOf(written[h.id]));
   assert.equal(tiers.filter((x) => x === "whole").length, 0, "every present helper packs");
-  assert.equal(tiers.filter((x) => x === "slim").length, 0, "4,000 helpers keep all their game state");
+  assert.equal(tiers.filter((x) => x === "slim" || x === "stub").length, 0, "4,000 helpers keep all their game state");
+  // but not all their place strings: most are written lean (title, pane,
+  // space and tab, which the next observation sets again, are the first to
+  // give way; about 2,900 of the 4,000 here)
+  const lean = tiers.filter((x) => x === "lean").length;
+  assert.ok(lean > 0 && lean < 4000, `${lean} lean`);
+  assert.equal(lean + tiers.filter((x) => x === "full").length, 4000);
+  // and the Album's compact records give way before any game state (most go to archive entries)
+  assert.ok(Object.values(s.helpers).filter((h) => h.compact === true).length < 2000);
   assert.ok(Object.keys(s.envelopes).length >= 1000, "an envelope per agent");
   const back = engine.parseSave(text);
   assert.equal(back.ok, true);
@@ -894,4 +902,286 @@ test("format 5 migrate path: a format-4 present record of an older build (kidFin
   const out = engine.serialize(r.state);
   assert.equal(tierOf(JSON.parse(out).state.helpers[id]), "full");
   assert.equal(engine.serialize(engine.parseSave(out).state), out);
+});
+
+// ---------------------------------------------------------------------------
+// Review r7 (R13, format 5): prune counts each present helper's numbers at
+// their real widths (an upper bound until the next observation), so the
+// Album's compact records give way before any present helper's game state;
+// the stub tier and, past it, leaving the last stubs out make any roster
+// save; slim keeps its wait's start; the order is fair between windows; a
+// hot reload's legacy records are brought to shape; damaged offsets are
+// damaged; the format's index orders are pinned; serializeSteps writes the
+// state of its first step exactly.
+
+/** A peak Album (K.albumCompactKeep + K.albumArchiveBatch compact records) in `s`. */
+function peakAlbum(s) {
+  for (let i = 0; i < K.albumCompactKeep + K.albumArchiveBatch; i++) {
+    const id = engine.helperId(`w2:t${i}`, 1700000000000 + i * 997);
+    s.helpers[id] = { id, kind: "pane", parent: null, ...engine.lookOf(id), joined: 0, status: "idle", lastTurn: 0, rest: 0, env: 0,
+      stats: { tasks: 30 + (i % 70), folds: Number((1.2345e7 + i * 98765.4321).toPrecision(4)), run: 0, envelopes: 0, checkIns: 0 },
+      missingSince: Math.floor((T0 - 2 * 86400000 - i * 2860000) / 60000) * 60000, gone: true, compact: true, key: (i * 7919) & 0xffff };
+  }
+}
+
+/** Plausible values after days of play: fractional folds, run, warmth, rest and envelope meter (≈ 230 B a record). */
+function widen(s) {
+  for (const h of Object.values(s.helpers)) {
+    if (h.gone) continue;
+    h.stats.folds = 12345.678901234567 + h.stats.tasks;
+    h.stats.run = 2345.6789012345678;
+    h.stats.tasks = 1234;
+    h.stats.checkIns = 12;
+    h.stats.envelopes = 34;
+    h.warm = 1.0005555555555556;
+    h.rest = 0.12345678901234568;
+    h.env = 0.3333333333333333;
+    h.lastTurn = 456;
+  }
+}
+
+test("r7: prune counts present helpers at their real number widths: the Album's compact records give way before any present helper is written slim", () => {
+  for (const [agents, wide] of [[1000, true], [1000, false], [700, true], [400, true]]) {
+    const s = seeded(33);
+    const me = writer(s, "w-7f3a9c2e41");
+    peakAlbum(s);
+    const list = [];
+    for (let i = 0; i < agents; i++) {
+      const p = agent(i, "working", 0, { addr: `w1:t${i}`, created: T0 - 3600000 + i * 997, title: "fix the flaky integration tests in payments", space: "payments", tab: "tests" });
+      list.push(p);
+      for (let k = 0; k < 3; k++) list.push(agent(1e6 + i * 10 + k, "working", 0, { addr: `w1:k${i}_${k}`, kind: "kid", pane: null, parent: p.addr, created: T0 - 1800000 + i, title: "sub task", space: "payments", tab: "tests" }));
+    }
+    let t = T0;
+    me.act(observeAction((t += 1000), list));
+    engine.advance(s, (t += 600000));
+    if (wide) widen(s);
+    me.act(observeAction((t += 1000), list.map((o, i) => ({ ...o, turn: 457, status: i % 4 ? "working" : "blocked" }))));
+    engine.advance(s, (t += 60000));
+    const text = engine.serialize(s);
+    assert.ok(bytesOf(text) <= K.saveBudget && saveBytes(s) >= bytesOf(text), `${agents} ${wide}: ${bytesOf(text)} bytes`);
+    const doc = JSON.parse(text).state.helpers;
+    const tiers = presentOf(s).map((h) => tierOf(doc[h.id]));
+    const reduced = tiers.filter((x) => x === "slim" || x === "stub" || x === undefined).length;
+    const compact = Object.values(s.helpers).filter((h) => h.compact === true).length;
+    assert.ok(reduced === 0 || compact === 0, `${agents} agents, wide ${wide}: ${reduced} present helpers without their game state while ${compact} compact records are kept`);
+    if (agents <= 400) assert.ok(compact > 0 && reduced === 0, `a roster that leaves room keeps compact records (${compact})`);
+    // and the estimate prune made still bounds the save after the flock earns (fractions grow) until the next observation
+    engine.advance(s, t + 30000);
+    const later = engine.serialize(s);
+    const tiers2 = presentOf(s).map((h) => tierOf(JSON.parse(later).state.helpers[h.id]));
+    if (compact > 0) assert.equal(tiers2.filter((x) => x === "slim" || x === "stub" || x === undefined).length, 0, `${agents} ${wide}: after the flock earned`);
+  }
+});
+
+test("r7: past what slim records hold, present helpers are written as stubs (identity, last sight, turn, wait), and past the stubs the last are left out: any roster saves, canonically", () => {
+  const s = seeded(39);
+  const me = writer(s, "w-7f3a9c2e41");
+  const list = [];
+  for (let i = 0; i < 5500; i++) {
+    const p = agent(i, "working", 0, { addr: `w1:t${i}`, created: T0 - 3600000 + i * 997, title: CJK });
+    list.push(p);
+    for (let k = 0; k < 3; k++) list.push(agent(1e6 + i * 10 + k, "working", 0, { addr: `w1:k${i}_${k}`, kind: "kid", pane: null, parent: p.addr, created: T0 - 1800000 + i * 7 + k, title: CJK }));
+  }
+  let t = T0;
+  me.act(observeAction((t += 1000), list));
+  engine.advance(s, (t += 600000));
+  widen(s);
+  me.act(observeAction((t += 1000), list.map((o, i) => ({ ...o, turn: 457, status: i % 4 ? "working" : "blocked" }))));
+  engine.advance(s, (t += 20000));
+  assert.equal(presentOf(s).length, 22000);
+  const text = engine.serialize(s);
+  assert.ok(bytesOf(text) <= K.saveBudget, `${bytesOf(text)} bytes: written, never refused`);
+  assert.ok(saveBytes(s) >= bytesOf(text));
+  const doc = JSON.parse(text).state.helpers;
+  const tiers = presentOf(s).map((h) => tierOf(doc[h.id]));
+  const stubs = tiers.filter((x) => x === "stub").length;
+  const out = tiers.filter((x) => x === undefined).length;
+  assert.ok(stubs > 10000, `${stubs} stubs`);
+  assert.ok(out > 0 && out < 10000, `${out} left out`);
+  // the helpers holding an envelope are the last left out
+  for (const h of presentOf(s)) if (s.envelopes[h.id]) assert.notEqual(tierOf(doc[h.id]), undefined, "an envelope's helper is kept");
+  const back = engine.parseSave(text);
+  assert.equal(back.ok, true, back.reason);
+  assert.equal(engine.serialize(back.state), text, "canonical");
+  // a stub keeps identity, its last sight, its turn and its wait's start
+  const stubIds = Object.keys(doc).filter((id) => tierOf(doc[id]) === "stub");
+  for (const id of stubIds.slice(0, 200)) {
+    const a = s.helpers[id];
+    const b = back.state.helpers[id];
+    assert.equal(b.stub, true);
+    for (const k of ["kind", "parent", "name", "lastSeen", "seenBy", "status", "lastTurn", "species", "hue"]) assert.deepEqual(b[k], a[k], k);
+    assert.equal(b.blockedAt, a.status === "blocked" ? a.blockedAt : null, "its wait's start when it waits");
+    assert.deepEqual({ ...b.stats }, { tasks: 0, folds: 0, run: 0, envelopes: 0, checkIns: 0 }, "no totals");
+    assert.equal(b.addr, "");
+  }
+  // seen again, a stub is found by its id (its address and created_ms come
+  // back), plays on as itself, and the same turn pays nothing
+  const x = back.state;
+  const units = x.stats.units.created;
+  engine.apply(x, { w: "w-7f3a9c2e41", s: 9001, ...observeAction(t + 1000, list.map((o, i) => ({ ...o, turn: 457, status: i % 4 ? "working" : "blocked" }))) });
+  assert.equal(x.stats.units.created, units, "the same turn pays nothing");
+  assert.equal(presentOf(x).length, 22000, "no agent took a second record (the ones left out joined again)");
+  for (const id of stubIds.slice(0, 200)) {
+    const h = x.helpers[id];
+    assert.equal(h.stub, undefined, "seen again: no longer a stub");
+    assert.equal(h.addr, s.helpers[id].addr);
+    assert.equal(h.created, s.helpers[id].created);
+    assert.equal(h.name, s.helpers[id].name);
+  }
+  const again = engine.serialize(x);
+  assert.ok(bytesOf(again) <= K.saveBudget);
+  assert.equal(engine.serialize(engine.parseSave(again).state), again);
+});
+
+test("r7: a slim helper keeps its wait's start (the view's 'Needs you' time and its thanks are the real ones)", async () => {
+  const { packPresentAs, unpackPresent } = await import("../../mods/creaseworks/engine/helpers.js");
+  const s = seeded(43);
+  const me = writer(s, "w-7f3a9c2e41");
+  me.act(observeAction(T0 + 1000, [agent(1, "blocked", 0), agent(2, "working", 0)]));
+  me.act(observeAction(T0 + 900000, [agent(1, "blocked", 0), agent(2, "working", 0)]));
+  const h = presentOf(s).find((x) => x.addr === "t1");
+  assert.equal(h.blockedAt, T0 + 1000);
+  const a = packPresentAs(h, "slim");
+  assert.equal(a[0], 2);
+  const b = unpackPresent(h.id, JSON.parse(JSON.stringify(a)), Object.keys(s.writersSeen));
+  assert.equal(b.slim, true);
+  assert.equal(b.blockedAt, T0 + 1000, "waiting since it began, not since its last sighting");
+  // so a reply 15 minutes into the wait earns no thanks, as for the real record (thanksWindowMs)
+  assert.ok(T0 + 900000 + 1000 - b.blockedAt > K.thanksWindowMs);
+  const w = presentOf(s).find((x) => x.addr === "t2");
+  assert.equal(w.blockedAt, null);
+  assert.equal(packPresentAs(w, "slim").length, 2, "nothing more for a helper that never waited");
+});
+
+test("r7: the save plan's order is the same for two windows' rosters seen a second apart: neither window's helpers are all written slim", () => {
+  const s = seeded(5);
+  const A = writer(s, "w-aaaaaaaaaa");
+  const B = writer(s, "w-bbbbbbbbbb");
+  const mk = (base, n) => {
+    const l = [];
+    for (let i = 0; i < n; i++) {
+      const c = T0 - 86400000 + (base + i) * 997;
+      l.push(agent(base + i, "idle", 0, { addr: `w${base}:t${i}`, created: c, title: "t".repeat(50) + i }));
+      for (let k = 0; k < 3; k++) l.push(agent(1e7 + (base + i) * 10 + k, "idle", 0, { addr: `w${base}:k${i}_${k}`, created: c + k + 1, kind: "kid", pane: null, parent: `w${base}:t${i}` }));
+    }
+    return l;
+  };
+  const la = mk(0, 900);
+  const lb = mk(100000, 900);
+  let t = T0;
+  for (let r = 0; r < 4; r++) {
+    A.act(observeAction((t += 1000), la));
+    B.act(observeAction((t += 1000), lb));
+    engine.advance(s, (t += 900000));
+  }
+  A.act(observeAction((t += 1000), la.map((o) => ({ ...o, turn: 1, status: "working" }))));
+  B.act(observeAction((t += 1500), lb.map((o) => ({ ...o, turn: 1, status: "working" })))); // B observed 1.5 s after A
+  engine.advance(s, (t += 500));
+  const text = engine.serialize(s);
+  const doc = JSON.parse(text).state.helpers;
+  const share = (w) => {
+    const mine = presentOf(s).filter((h) => h.seenBy === w);
+    return mine.filter((h) => tierOf(doc[h.id]) === "slim").length / mine.length;
+  };
+  const a = share("w-aaaaaaaaaa");
+  const b = share("w-bbbbbbbbbb");
+  assert.ok(a + b > 0, "the budget writes some slim");
+  assert.ok(Math.abs(a - b) < 0.1, `window A ${(a * 100).toFixed(0)}% slim, window B ${(b * 100).toFixed(0)}%`);
+  // and idle helpers (the ones with rest) are not the first to go: the order is by id within the live ones
+  assert.equal(engine.serialize(engine.parseSave(text).state), text);
+});
+
+test("r7: a present record handed over in memory by an older code generation (salt, kidFinishAt) is brought to shape at the next observation and packed", () => {
+  const s = seeded(47);
+  const me = writer(s, "w-7f3a9c2e41");
+  me.act(observeAction(T0 + 1000, [agent(1, "working", 0), agent(2, "idle", 0)]));
+  // what a hot reload from the format-4 generation hands over: new objects (never seen by this generation's caches)
+  const hs = Object.create(null);
+  for (const [id, h] of Object.entries(s.helpers)) hs[id] = { ...h, stats: { ...h.stats } };
+  s.helpers = hs;
+  const old = presentOf(s).find((h) => h.addr === "t1");
+  old.salt = 2;
+  old.kidFinishAt = T0 + 500;
+  delete old.kidUnitAt;
+  const before = JSON.parse(engine.serialize(s)).state.helpers[old.id];
+  assert.equal(tierOf(before), "whole", "before an observation it cannot be packed");
+  me.act(observeAction(T0 + 2000, [agent(1, "working", 0), agent(2, "idle", 0)]));
+  assert.equal(old.salt, undefined);
+  assert.equal(old.kidFinishAt, undefined);
+  assert.equal(old.kidUnitAt, T0 + 500, "the budget's older field became its own");
+  const text = engine.serialize(s);
+  assert.equal(tierOf(JSON.parse(text).state.helpers[old.id]), "full");
+  assert.equal(engine.serialize(engine.parseSave(text).state), text);
+});
+
+test("r7: a packed time offset that overflows on load (lastSeen 1e308 + 1e308) is damaged, never an Infinity field", () => {
+  const s = seeded(49);
+  const me = writer(s, "w-7f3a9c2e41");
+  me.act(observeAction(T0 + 1000, [agent(1, "working", 0)]));
+  engine.advance(s, T0 + 2000);
+  const good = JSON.parse(engine.serialize(s));
+  const id = Object.keys(good.state.helpers).find((k) => Array.isArray(good.state.helpers[k]) && good.state.helpers[k][0] === 1);
+  const cases = [
+    (a) => { a[1][5] = 1e308; a[1][7] = 1e308; }, // created' overflows
+    (a) => { a[1][5] = 1e308; a[2][2] = 1e308; }, // warmUntil' overflows: warm would never end
+    (a) => { a[1][5] = 1e308; a[2][5] = 1e308; }, // unitAt'
+  ];
+  for (const edit of cases) {
+    const doc = JSON.parse(JSON.stringify(good));
+    edit(doc.state.helpers[id]);
+    doc.check = saveCheck(doc.state);
+    const r = engine.parseSave(JSON.stringify(doc));
+    assert.equal(r.ok, false, JSON.stringify(doc.state.helpers[id]));
+  }
+  // an envelope's lastAt the same way
+  const envId = Object.keys(good.state.envelopes)[0];
+  if (envId) {
+    const doc = JSON.parse(JSON.stringify(good));
+    doc.state.envelopes[envId][2] = 1e308;
+    doc.state.envelopes[envId][3] = 1e308;
+    doc.check = saveCheck(doc.state);
+    assert.equal(engine.parseSave(JSON.stringify(doc)).ok, false);
+  }
+});
+
+test("r7: the format's index orders are pinned: STATUSES (a packed helper's st) and ENVELOPES (a packed envelope's type)", async () => {
+  // Changing either order would make every format-5 save load other statuses or envelope types: a new format.
+  assert.deepEqual(engine.CONTENT.ENVELOPES.map((d) => d.type), ["bundle", "rush", "storm", "chorus"]);
+  const { packPresentAs } = await import("../../mods/creaseworks/engine/helpers.js");
+  const s = seeded(51);
+  const me = writer(s, "w-7f3a9c2e41");
+  me.act(observeAction(T0 + 1000, ["working", "blocked", "done", "idle"].map((st, i) => agent(i, st, 0))));
+  for (const [i, st] of ["working", "blocked", "done", "idle"].entries()) {
+    const h = presentOf(s).find((x) => x.addr === `t${i}`);
+    assert.equal(h.status, st);
+    assert.equal(packPresentAs(h, "full")[1][3], i, st);
+    assert.equal(packPresentAs(h, "stub")[3], i, st);
+  }
+});
+
+test("r7: serializeSteps writes the state as it was at its first step, whatever changes between steps; per Infinity is serialize", () => {
+  const s = seeded(53);
+  const me = writer(s, "w-7f3a9c2e41");
+  const list = Array.from({ length: 3000 }, (_, i) => agent(i, i % 3 ? "working" : "idle", 0, { addr: `w1:t${i}`, created: T0 - 3600000 + i * 997 }));
+  let t = T0;
+  me.act(observeAction((t += 1000), list));
+  engine.advance(s, (t += 60000));
+  const expect = engine.serialize(engine.parseSave(engine.serialize(s)).state);
+  assert.equal(engine.serialize(s), expect);
+  const it = engine.serializeSteps(s, 500);
+  let r = it.next();
+  let steps = 0;
+  let changed = false;
+  while (!r.done) {
+    // the game goes on between steps: observations, earnings, an agent leaving
+    me.act(observeAction((t += 1000), list.slice(steps % 2).map((o) => ({ ...o, turn: steps + 1, status: "working" }))));
+    engine.advance(s, (t += 500));
+    changed = true;
+    steps++;
+    r = it.next();
+  }
+  assert.ok(changed && steps > 6, `${steps} steps`);
+  assert.equal(r.value, expect, "the text of the state at the first step");
+  assert.notEqual(engine.serialize(s), expect);
+  assert.equal(engine.parseSave(r.value).ok, true);
 });

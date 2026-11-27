@@ -147,16 +147,17 @@ test("the backlog run frees the QuickJS runtime cleanly with the engine's collec
   if (leak) throw leak;
 });
 
-// r6-16: the work of one save write at the biggest saves herdr can take, in
-// QuickJS-ng. A save cycle's write step serialises the state and measures it
-// (store.js oversize) before writeTextFile, all in one task step of its own;
-// here that step's work runs on rosters that make an 893 KiB save (1,300
-// helpers present with long CJK titles) and a 1,036 KiB one (300 agents with
-// 4 fledglings each), which oversize stops before herdr is asked. Both stay
-// inside herdr's 500 ms budget (the first serialisation after an observation,
-// about 200-250 ms here, is the engine's share; the measure adds about 15 ms),
+// r6-16: the work of one save write at the biggest saves the engine writes,
+// in QuickJS-ng. Since save format 5 (DESIGN R13) present helpers are packed,
+// so the biggest save (just under K.saveBudget, about 880 KiB) holds far more
+// helpers than before: 2,500 agents with 4 sub-agents each with long CJK
+// titles here (12,500 present helpers), whose one-step serialisation passes
+// herdr's 500 ms budget. The store serialises such a state in steps
+// (engine serializeSteps, store.js serializeIn), and measures the text in the
+// last one (store.js oversize) before writeTextFile: every step, and the
+// write step (the last step and the measure), stay far inside the budget,
 // and the measure agrees with Node's UTF-8 byte count.
-test("r6-16: serialising and measuring a 900 KiB-1 MiB save stays inside the 500 ms task budget", { timeout: 120000 }, async () => {
+test("r6-16: serialising and measuring the biggest save the engine writes stays inside the 500 ms task budget, step by step", { timeout: 120000 }, async () => {
   const host = await createHost({
     modRoot: MOD,
     scenario: { appHome: HOME, home: "/home/player", props: { role: "ribbon" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite" },
@@ -165,39 +166,44 @@ test("r6-16: serialising and measuring a 900 KiB-1 MiB save stays inside the 500
   try {
     await host.load();
     const title = "codex · 支払い照合サービスをリファクタリングして不安定な統合テストを修正する作業を続けています";
-    for (const [n, kids, minKiB] of [[1300, 0, 850], [300, 4, 1025]]) {
+    for (const [n, kids, minKiB] of [[2500, 4, 850]]) {
       // The state, built in the VM by the engine (untimed): one observation with every helper present.
       host.evalInVm(
         `import { newGame, apply } from "./engine/index.js";
         const s = newGame({ seed: 13, now: 1767441600000, day: "2026-01-03" });
         const roster = [];
         for (let i = 0; i < ${n}; i++) {
-          const p = { addr: "w1:t" + i, created: s.clock + i, status: "working", raw: "working", turn: 0, parent: null, pane: "p" + i, title: ${JSON.stringify(title)}, paneName: "", space: "支払いチーム", tab: "統合テスト", kind: "pane" };
+          const p = { addr: "w1:t" + i, created: s.clock + i, status: "working", raw: "working", turn: 0, parent: null, pane: "p" + i, title: ${JSON.stringify(title)} + i, paneName: "", space: "支払いチーム", tab: "統合テスト", kind: "pane" };
           roster.push(p);
-          for (let k = 0; k < ${kids}; k++) roster.push({ ...p, addr: "w1:k" + i + "_" + k, pane: null, parent: p.addr, kind: "kid" });
+          for (let k = 0; k < ${kids}; k++) roster.push({ ...p, addr: "w1:k" + i + "_" + k, pane: null, parent: p.addr, kind: "kid", title: p.title + "/" + k });
         }
         apply(s, { w: "w", s: 1, t: s.clock + 1000, type: "observe", helpers: roster, visible: true, active: true, matShown: true, day: s.day });
         globalThis.__big = s;
         export const ok = true;`,
         { module: true, name: `${MOD}/r6-16-state-${n}.js?v=1` },
       );
-      // Each write step as the store runs it: serialise, then measure (timed apart, 3 times;
-      // the first serialisation after an observation is the slowest: the engine's caches are cold).
-      let worstSer = 0;
-      let worstMeasure = 0;
+      // Each write as the store runs it: the serialisation's steps, then the measure in the last (3 times).
+      let worstStep = 0;
+      let worstWrite = 0;
       let big = null;
       for (let k = 0; k < 3; k++) {
-        host.evalInVm(`import { serialize } from "./engine/index.js"; globalThis.__text = serialize(globalThis.__big); export const ok = true;`, { module: true, name: `${MOD}/r6-16-ser-${n}-${k}.js?v=1` });
-        worstSer = Math.max(worstSer, host.lastMs().detached);
+        host.evalInVm(`import { serializeSteps } from "./engine/index.js"; globalThis.__it = serializeSteps(globalThis.__big); export const ok = true;`, { module: true, name: `${MOD}/r6-16-ser-${n}-${k}.js?v=1` });
+        let last = 0;
+        for (let j = 0; ; j++) {
+          const done = host.evalInVm(`globalThis.__r = globalThis.__it.next(); if (globalThis.__r.done) globalThis.__text = globalThis.__r.value; export const done = globalThis.__r.done;`, { module: true, name: `${MOD}/r6-16-step-${n}-${k}-${j}.js?v=1` }).done;
+          last = host.lastMs().detached;
+          worstStep = Math.max(worstStep, last);
+          if (done) break;
+        }
         big = host.evalInVm(`import { oversize } from "./glue/store.js"; export const big = oversize(globalThis.__text);`, { module: true, name: `${MOD}/r6-16-measure-${n}-${k}.js?v=1` }).big;
-        worstMeasure = Math.max(worstMeasure, host.lastMs().detached);
+        worstWrite = Math.max(worstWrite, last + host.lastMs().detached);
       }
       const bytes = Buffer.byteLength(host.evalInVm("globalThis.__text"), "utf8");
-      console.log(`# r6-16: ${n} agents × ${kids + 1}: ${(bytes / 1024).toFixed(0)} KiB, serialise ${worstSer.toFixed(1)} ms + measure ${worstMeasure.toFixed(1)} ms (worst of 3)`);
+      console.log(`# r6-16: ${n} agents × ${kids + 1}: ${(bytes / 1024).toFixed(0)} KiB, slowest serialise step ${worstStep.toFixed(1)} ms, write step ${worstWrite.toFixed(1)} ms (worst of 3)`);
       assert.ok(bytes >= minKiB * 1024, `a save of that size (${bytes} bytes)`);
       assert.equal(big, bytes > 1024 * 1024 ? bytes : 0, "the measure is the UTF-8 byte count");
-      assert.ok(worstMeasure < 60, `the size check adds little to the write step (${worstMeasure.toFixed(1)} ms)`);
-      assert.ok(worstSer + worstMeasure < 400, `the write step's work stays inside 500 ms (${(worstSer + worstMeasure).toFixed(1)} ms)`);
+      assert.ok(worstStep < 400, `every step of the write stays inside 500 ms (${worstStep.toFixed(1)} ms)`);
+      assert.ok(worstWrite < 400, `the write step's work stays inside 500 ms (${worstWrite.toFixed(1)} ms)`);
     }
     // A save over the limit in UTF-16 units alone (2,000+ helpers) is measured
     // exactly too, so the KiB said is its real size: the measure of a text of
@@ -215,7 +221,7 @@ test("r6-16: serialising and measuring a 900 KiB-1 MiB save stays inside the 500
     assert.ok(long.length > 1024 * 1024);
     assert.equal(got, Buffer.byteLength(long, "utf8"), "the exact UTF-8 byte count, not the length");
     assert.ok(worst < 100, `measuring a 3 MiB save stays small (${worst.toFixed(1)} ms)`);
-    host.evalInVm("delete globalThis.__big; delete globalThis.__text");
+    host.evalInVm("delete globalThis.__big; delete globalThis.__text; delete globalThis.__it; delete globalThis.__r");
   } finally {
     host.dispose();
   }

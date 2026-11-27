@@ -203,19 +203,17 @@ export const K = f({
   albumCompactKeep: 10000, albumArchiveBatch: 1000, albumArchiveMs: 30 * 86400000,
   // R13, r5-07: the whole save is held under saveBudget (estimated bytes, far
   // under herdr's 1 MiB write limit) by archiving more compact records when the
-  // present roster is large, and (format 5) by writing the least recently
-  // active present helpers slim when the roster alone would pass it.
+  // present roster is large, and (format 5) by writing present helpers in
+  // smaller tiers when the roster alone would pass it (helpers.js presentPlan).
   // Per-record estimates (UTF-8 bytes as written): a present helper written
   // whole (one that cannot be packed) without its strings (which are counted
-  // exactly); the numbers, commas and brackets of a lean / slim packed present
-  // helper (what prune makes room for, on the high side so a roster's game
-  // state comes before the Album's compact records; the save plan counts them
-  // exactly);
-  // a full Album record or archive entry, a packed entry (+ fledgling totals,
-  // + a name of its own), an envelope written whole (packed ones and an away
-  // pot's task snapshot are counted exactly), and everything else outside
+  // exactly; a packed one is counted from its own numbers and strings,
+  // helpers.js presentMax, and exactly by the save plan); a full Album record
+  // or archive entry, a packed entry (+ fledgling totals, + a name of its
+  // own), an envelope written whole (packed ones and an away pot's task
+  // snapshot are counted exactly), and everything else outside
   // helpers/envelopes.
-  saveBudget: 896 * 1024, saveBytesPresent: 560, saveBytesLean: 150, saveBytesSlim: 100, saveBytesGone: 416,
+  saveBudget: 896 * 1024, saveBytesPresent: 560, saveBytesGone: 416,
   saveBytesCompact: 42, saveBytesCompactKids: 14, saveBytesEnvelope: 96, saveBytesRest: 16 * 1024,
   pileCount: 12,
   garlandHelpers: 16, garlandsMax: 50,

@@ -876,3 +876,189 @@ test("R13 format 5: a 4,000-present-helper roster loads, saves and merges in the
   }
   log(`qjs 4,000-present-helper teardown: ${cleanOrEngineFault(leak, "4,000 present helpers")}`);
 });
+
+// ---------------------------------------------------------------------------
+// R13: no save step grows with the roster. One serialisation of 12,500
+// present helpers takes about 500-750 ms in this harness, past herdr's 500 ms
+// budget, so the store serialises a large state in steps (engine
+// serializeSteps, store.js serializeIn): a snapshot of what the later steps
+// read, the save plan and the encoding in slices of SAVE_STEP_HELPERS. Here
+// on 2,500 agents with 4 sub-agents each, a distinct long CJK title per
+// helper changed every round (no place text or size cached), every helper
+// re-observed before each write (every chunk hashed again): the largest save
+// the engine writes (about 880 KiB, just under K.saveBudget, the biggest
+// herdr is ever asked to take), its write step (the last step and the size
+// check) and every other step far inside 500 ms, and the text the steps
+// give is the one serialize gives.
+
+/** VM code: 2,500-agent-style game in globalThis.__big: `agents` pane agents of writer `w` with `kids` sub-agents each, distinct CJK titles; globalThis.__round(r, t) re-observes every one (new titles, turns and statuses). */
+function stepRosterCode({ agents, kids, now, w = "w-otherwin01" }) {
+  return `import { newGame, apply, advance } from "./engine/index.js";
+    const now = ${now};
+    const s = newGame({ seed: 23, now: now - 3600000, day: "2026-11-25" });
+    const T = ${JSON.stringify(CJK_TITLE)};
+    const list = [];
+    for (let i = 0; i < ${agents}; i++) {
+      const p = { addr: "w9:t" + i, created: now - 7200000 + i * 997, status: "working", raw: "working", turn: 0, parent: null, pane: "p" + i,
+        title: T + i, paneName: "", space: "支払いチーム" + (i % 50), tab: "統合テスト", kind: "pane" };
+      list.push(p);
+      for (let k = 0; k < ${kids}; k++) list.push({ ...p, addr: "w9:k" + i + "_" + k, pane: null, parent: p.addr, kind: "kid", title: T + i + "/" + k });
+    }
+    let seq = 0;
+    globalThis.__round = (r, t) => {
+      apply(s, { w: ${JSON.stringify(w)}, s: ++seq, t, type: "observe", visible: true, active: true, matShown: true, day: "2026-11-25",
+        helpers: list.map((o, i) => ({ ...o, turn: r, title: o.title + " · " + r, status: (i + r) % 4 ? "working" : r % 2 ? "idle" : "blocked" })) });
+      advance(s, t + 20000);
+    };
+    globalThis.__round(0, now - 3000000);
+    globalThis.__round(1, now - 1000000);
+    globalThis.__big = s;
+    export const present = Object.values(s.helpers).filter((h) => !h.gone).length;`;
+}
+
+test("R13: serializeSteps spreads a 12,500-present-helper save so every step, the write step included, stays far inside the 500 ms budget", { timeout: 300000 }, async () => {
+  const now = Date.UTC(2026, 10, 25, 12);
+  const host = await createHost({
+    modRoot: MOD,
+    scenario: { appHome: HOME, home: "/home/player", props: { role: "ribbon" }, window: { visible: true, active: true, platform: "linux" }, theme: "graphite" },
+    gcHeadroom: HEADROOM,
+  });
+  let k = 0;
+  const vm = (code) => {
+    const r = host.evalInVm(code, { module: true, name: `${MOD}/r13-steps-${++k}.js?v=1` });
+    return { r, ms: host.lastMs().detached };
+  };
+  try {
+    await host.load();
+    assert.equal(vm(stepRosterCode({ agents: 2500, kids: 4, now })).r.present, 12500);
+    const K = host.evalInVm(`import { CONTENT } from "./engine/index.js"; export const budget = CONTENT.K.saveBudget;`, { module: true, name: `${MOD}/r13-steps-k.js?v=1` });
+    let worst = 0;
+    let worstWrite = 0;
+    let steps = 0;
+    let bytes = 0;
+    for (let round = 0; round < 3; round++) {
+      vm(`globalThis.__round(${round + 2}, ${now} + ${round} * 30000); export const ok = true;`);
+      vm(`import { serializeSteps } from "./engine/index.js"; globalThis.__it = serializeSteps(globalThis.__big); export const ok = true;`);
+      const ms = [];
+      for (;;) {
+        const step = vm(`globalThis.__step = globalThis.__it.next(); export const done = globalThis.__step.done;`);
+        ms.push(step.ms);
+        if (step.r.done) break;
+        assert.ok(ms.length < 1000);
+      }
+      const m = vm(`import { oversize } from "./glue/store.js"; export const big = oversize(globalThis.__step.value);`);
+      assert.equal(m.r.big, 0);
+      const same = vm(`import { serialize } from "./engine/index.js"; export const same = serialize(globalThis.__big) === globalThis.__step.value;`);
+      assert.equal(same.r.same, true, "the steps give serialize's text");
+      bytes = Buffer.byteLength(host.evalInVm("globalThis.__step.value"), "utf8");
+      assert.ok(bytes <= K.budget && bytes >= 850 * 1024, `${bytes} bytes`);
+      worst = Math.max(worst, ...ms);
+      worstWrite = Math.max(worstWrite, ms[ms.length - 1] + m.ms);
+      steps = ms.length;
+    }
+    // every helper is a saved helper, and the parsed save writes the same text
+    const back = vm(`import { parseSave, serialize } from "./engine/index.js"; const r = parseSave(globalThis.__step.value);
+      export const ok = r.ok; export const present = r.ok ? Object.values(r.state.helpers).filter((h) => !h.gone).length : 0;
+      export const same = r.ok && serialize(r.state) === globalThis.__step.value;`).r;
+    assert.equal(back.ok, true);
+    assert.equal(back.present, 12500, "every agent is a saved helper");
+    assert.equal(back.same, true, "canonical");
+    log(`qjs 12,500-present-helper save in steps (CJK, every title new): ${(bytes / 1024).toFixed(0)} KiB in ${steps} steps; slowest step ${f1(worst)} ms, write step (last step + size check) ${f1(worstWrite)} ms (worst of 3 rounds)`);
+    assert.ok(worst < 250, `slowest serialise step ${f1(worst)} ms`);
+    assert.ok(worstWrite < 250, `write step ${f1(worstWrite)} ms`);
+    host.evalInVm("delete globalThis.__big; delete globalThis.__round; delete globalThis.__it; delete globalThis.__step");
+  } finally {
+    host.dispose();
+  }
+});
+
+/** The save text of another window's `agents` agents with `kids` sub-agents each (distinct ASCII titles), seen just before `now`, made in Node. */
+async function stepRosterSave(now, agents, kids) {
+  const engine = await import("../../mods/creaseworks/engine/index.js");
+  const s = engine.newGame({ seed: 23, now: now - 3600000, day: "2026-11-25" });
+  const list = [];
+  for (let i = 0; i < agents; i++) {
+    const p = { addr: `w9:t${i}`, created: now - 7200000 + i * 997, status: "working", raw: "working", turn: 0, parent: null, pane: `p${i}`, title: `claude · refactor the payment reconciliation service ${i}`, paneName: "", space: `payments ${i % 50}`, tab: "integration", kind: "pane" };
+    list.push(p);
+    for (let k = 0; k < kids; k++) list.push({ ...p, addr: `w9:k${i}_${k}`, pane: null, parent: p.addr, kind: "kid", title: `${p.title} / sub-task ${k}` });
+  }
+  let seq = 0;
+  const obs = (t, r) => engine.apply(s, { w: "w-otherwin01", s: ++seq, t, type: "observe", visible: true, active: true, matShown: true, day: "2026-11-25",
+    helpers: list.map((o, i) => ({ ...o, turn: r, title: `${o.title} · ${r}`, status: (i + r) % 4 ? "working" : "idle" })) });
+  obs(now - 3000000, 0);
+  obs(now - 1000, 1);
+  engine.advance(s, now);
+  return { engine, text: engine.serialize(s), list, obs: (st, t, r) => engine.apply(st, { w: "w-otherwin01", s: 100 + r, t, type: "observe", visible: true, active: true, matShown: true, day: "2026-11-25",
+    helpers: list.map((o, i) => ({ ...o, turn: r, title: `${o.title} · ${r}`, status: (i + r) % 4 ? "working" : "idle" })) }) };
+}
+
+// The store's stepped save path on 8,000 present helpers (another window's
+// 1,600 agents with 4 sub-agents each, distinct titles; review r7: from about
+// 5,500 such a save's one-step serialisation could pass the budget and stall
+// every cycle) as herdr runs it: the
+// load (parseIn), this window's save cycles (serializeIn) and a CAS merge of
+// the other window's next write (parse, replay, then the serialisation in
+// steps again); every task step inside the 500 ms budget, and every one of
+// them a saved helper. ASCII titles: the harness's mock disk checks a
+// write's size one non-ASCII character at a time inside the VM (about 0.5 µs
+// each), which herdr's native write does not; the CJK worst case of the
+// engine's share is the test above.
+test("R13: an 8,000-present-helper roster loads, saves and merges in the store's stepped save path within the 500 ms budget", { timeout: 300000 }, async () => {
+  const now = Date.UTC(2026, 10, 25, 12);
+  const { engine, text, obs } = await stepRosterSave(now, 1600, 4);
+  const K = engine.CONTENT.K;
+  const bytes = Buffer.byteLength(text, "utf8");
+  assert.ok(bytes <= K.saveBudget, `${bytes} bytes`);
+  const live = roster(30);
+  for (const term of live.terminals) term.created_ms = now - 5000 + term.created_ms;
+  const host = await createHost({ modRoot: MOD, scenario: { ...scenario(0), ...live, now: now + 1000, files: { [SAVE]: text } }, gcHeadroom: HEADROOM });
+  let leak = null;
+  try {
+    const load = await host.load();
+    const steps = [load.ms.init, ...host.advance(0).stepMs];
+    const cycles = [];
+    const run = (n) => {
+      for (let i = 0; i < n; i++) {
+        const before = host.callsTo("writeTextFile").length;
+        const ms = host.advance(1000).stepMs;
+        steps.push(...ms);
+        if (host.callsTo("writeTextFile").length > before) cycles.push(Math.max(...ms));
+      }
+    };
+    run(20);
+    assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
+    assert.equal(slotJson(host, ".save").status, "ok", JSON.stringify(slotJson(host, ".save")));
+    const mine = host.readFile(SAVE);
+    assert.notEqual(mine, text, "a save cycle wrote the file");
+    assert.ok(Buffer.byteLength(mine, "utf8") <= K.saveBudget, `${Buffer.byteLength(mine, "utf8")} bytes written`);
+    const back = engine.parseSave(mine);
+    assert.equal(back.ok, true);
+    const present = Object.values(back.state.helpers).filter((h) => !h.gone);
+    assert.equal(present.filter((h) => h.seenBy === "w-otherwin01").length, 8000, "the other window's 8,000 helpers are all saved helpers");
+    assert.ok(present.length >= 8030, "and this window's");
+    // the other window merges this window's save and writes again: this
+    // window's next cycle meets a CAS conflict and merges it
+    const other = engine.parseSave(host.readFile(SAVE)).state;
+    obs(other, now + 30000, 2);
+    const theirs = engine.serialize(other);
+    host.writeFile(SAVE, theirs);
+    run(20);
+    assert.notEqual(host.readFile(SAVE), theirs, "this window wrote after the other's write");
+    assert.deepEqual(host.errors, [], JSON.stringify(host.errors));
+    assert.equal(slotJson(host, ".save").status, "ok");
+    const merged = engine.parseSave(host.readFile(SAVE));
+    assert.equal(merged.ok, true);
+    assert.equal(Object.values(merged.state.helpers).filter((h) => h.seenBy === "w-otherwin01" && h.lastTurn === 2).length, 8000, "the other window's progress was merged");
+    for (const ms of steps) assert.ok(ms < BUDGETS.timer, `step ${ms} ms`);
+    assert.ok(cycles.length >= 2, "save cycles ran");
+    log(`qjs 8,000-present-helper store save path: ${(bytes / 1024).toFixed(0)} KiB; slowest step ${f1(Math.max(...steps))} ms, ` +
+      `slowest save-cycle step ${f1(Math.max(...cycles))} ms (${cycles.length} cycles)`);
+  } finally {
+    try {
+      host.dispose();
+    } catch (e) {
+      leak = e;
+    }
+  }
+  log(`qjs 8,000-present-helper teardown: ${cleanOrEngineFault(leak, "8,000 present helpers")}`);
+});

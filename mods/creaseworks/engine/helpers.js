@@ -761,7 +761,9 @@ function claimId(hs, claim, list, o, i, present) {
       const h = hs[id];
       // a gone record is free unless its key says it was another terminal
       // (r3-18); a stub (R13) kept no address: it is the record of the
-      // terminal its plain id is the hash of (only a plain id is written as one)
+      // terminal its plain id is the hash of (only a plain id is written as
+      // one; a different terminal whose plain id clashes with it, a 32-bit
+      // hash clash while the stub's own terminal is unseen, would take it)
       if (!h || (h.gone ? albumMatch(h, addr, created) : (h.addr === addr && h.created === created) || (k === 1 && h.stub === true))) {
         claim[id] = i;
         return id;
@@ -1002,7 +1004,7 @@ function growMax(x) {
 }
 
 /** The widest text of time `x` written as its offset from `L` ("null" for null). */
-const offMax = (x, L) => (x === null || x === undefined ? 4 : isFiniteNum(x) ? numMax(x - L) : 24);
+const offMax = (x, L) => (x === null || x === undefined ? 4 : fin(x) ? iw(x - L) : 24);
 
 /**
  * An upper bound of the UTF-8 bytes present helper `h` takes in the save (its
@@ -1016,29 +1018,58 @@ const offMax = (x, L) => (x === null || x === undefined ? 4 : isFiniteNum(x) ? n
 function presentMax(h, writers) {
   const s = h.stats;
   const L = h.lastSeen;
-  const flag = h.slim === true || h.stub === true;
-  if (!s || typeof s !== "object" || !isFiniteNum(L) || !isFiniteNum(s.tasks) || !isFiniteNum(s.folds) || !isFiniteNum(s.run) || !isFiniteNum(h.rest) || !isFiniteNum(h.warm) || typeof h.id !== "string" || !HEX8.test(h.id) || !knownShape(h, h, flag)) return presentBytes(h);
-  const n0 = parseInt(h.id, 16) >>> 0;
-  const nm = h.name === NAMES[((n0 >>> 8) % 16) * 12 + ((n0 >>> 12) % 12)] ? 1 : jsonBytes(h.name);
-  const kp = typeof h.parent === "string" ? jsonBytes(h.parent) : 1;
+  if (!s || typeof s !== "object" || !fin(L) || !fin(s.tasks) || !fin(s.folds) || !fin(s.run) || !fin(h.rest) || !fin(h.warm) ||
+    !knownShape(h, h, h.slim === true || h.stub === true)) return presentBytes(h);
   const sb = h.seenBy;
   const w = sb === null ? 4 : writers[sb] !== undefined ? numBytes(writers[sb]) : jsonBytes(sb);
-  const turn = isFiniteNum(h.lastTurn) ? numMax(h.lastTurn) : 24;
-  // "<id>": and a comma
-  if (h.stub === true) return 12 + 13 + nm + kp + w + numMax(L) + turn + (h.status === "blocked" ? 1 + offMax(h.blockedAt, L) : 0); // [3,nm,kp,st,w,L,turn(,ba)]
+  // "<id>": and a comma, name and kp (strBytes), seenBy, lastSeen and lastTurn
+  const n0 = 12 + w + iw(L) + iw(h.lastTurn);
+  if (h.stub === true) return n0 + 13 + strBytes(h, false) + (h.status === "blocked" ? 1 + offMax(h.blockedAt, L) : 0); // [3,nm,kp,st,w,L,turn(,ba)]
   // folds and run grow while it works (a fledgling, or another window's
   // helper at the unseen rate, may earn whatever its status), rest while it
   // idles or has finished; the rest changes only at observations
   const earns = h.status === "working" || h.kind === "kid" || h.group === "elsewhere";
-  const fm = earns ? growMax : numMax;
-  let n = 12 + 28 + jsonBytes(h.addr) + nm + kp + w + numMax(L) + turn + offMax(h.created, L) + offMax(h.joined, L) + numMax(h.env) +
-    numMax(s.tasks) + fm(s.folds) + fm(s.run) + numMax(s.envelopes) + numMax(s.checkIns);
-  if (s.kidsPast !== undefined || s.kidsFolds !== undefined) n += 2 + numMax(s.kidsPast) + numMax(s.kidsFolds);
+  let n = n0 + 28 + strBytes(h, true) + offMax(h.created, L) + offMax(h.joined, L) + iw(h.env) +
+    iw(s.tasks) + (earns ? growMax(s.folds) + growMax(s.run) : iw(s.folds) + iw(s.run)) + iw(s.envelopes) + iw(s.checkIns);
+  if (s.kidsPast !== undefined || s.kidsFolds !== undefined) n += 2 + iw(s.kidsPast) + iw(s.kidsFolds);
   if (h.slim === true) return n + (h.blockedAt === null ? 0 : 1 + offMax(h.blockedAt, L)); // [2,S(,ba)]
   // [1,S,X]: X = [rest,warm,warmUntil',thanksUntil',lastFinishAt',unitAt',kidUnitAt',blockedAt']
   const rests = (h.status === "idle" || h.status === "done") && h.rest < 1;
-  return n + 1 + 10 + (rests ? growMax(h.rest) : numMax(h.rest)) + numMax(h.warm) + (h.warmUntil === 0 ? 4 : offMax(h.warmUntil, L)) +
+  return n + 11 + (rests ? growMax(h.rest) : iw(h.rest)) + iw(h.warm) + (h.warmUntil === 0 ? 4 : offMax(h.warmUntil, L)) +
     (h.thanksUntil === 0 ? 4 : offMax(h.thanksUntil, L)) + offMax(h.lastFinishAt, L) + offMax(h.unitAt, L) + offMax(h.kidUnitAt, L) + offMax(h.blockedAt, L);
+}
+
+/** numMax, quicker for an integer below 1e15 (most of a record's numbers: times, offsets, counts); 24 for a non-number. */
+function iw(x) {
+  if (typeof x !== "number") return 24;
+  if (x % 1 !== 0 || !(x > -1e15 && x < 1e15)) return numMax(x);
+  const v = x < 0 ? -x : x;
+  const d = v < 1e8
+    ? v < 1e4 ? (v < 1e2 ? (v < 10 ? 1 : 2) : v < 1e3 ? 3 : 4) : v < 1e6 ? (v < 1e5 ? 5 : 6) : v < 1e7 ? 7 : 8
+    : v < 1e12 ? (v < 1e10 ? (v < 1e9 ? 9 : 10) : v < 1e11 ? 11 : 12) : v < 1e14 ? (v < 1e13 ? 13 : 14) : 15;
+  return x < 0 ? d + 1 : d;
+}
+
+// The UTF-8 bytes of a present record's name and kp as written (and of its
+// address, which a stub does not write), kept while those strings stay the
+// same (keyed by the record: a pure cache; prune measures every present
+// helper at every observation, and they rarely change).
+let strMemo = null;
+
+function strBytes(h, withAddr) {
+  if (strMemo === null) strMemo = new WeakMap();
+  const a = h.addr;
+  const p = h.parent;
+  const nm = h.name;
+  let c = strMemo.get(h);
+  if (c === undefined || c.a !== a || c.p !== p || c.nm !== nm) {
+    const id = parseInt(h.id, 16) >>> 0;
+    const t = typeof nm === "string" ? nameText(nm, NAMES[((id >>> 8) % 16) * 12 + ((id >>> 12) % 12)]) : '""';
+    const nb = (t.charCodeAt(0) === 34 ? jsonBytes(nm) : t.length) + (typeof p === "string" ? jsonBytes(p) : 1);
+    c = { a, p, nm, nb, ab: jsonBytes(a) };
+    strMemo.set(h, c);
+  }
+  return withAddr ? c.nb + c.ab : c.nb;
 }
 
 /** Estimated saved bytes of helper record `h` written whole, or as a compact Album entry. */
@@ -1057,17 +1088,20 @@ function recordBytes(h) {
 function restBytes(state) {
   let n = K.saveBytesRest;
   const envs = state.envelopes;
-  for (const id in envs) {
-    const e = envs[id];
-    n += e && isFiniteNum(e.units) && isFiniteNum(e.landedAt) && isFiniteNum(e.lastAt)
-      ? jsonBytes(id) + 8 + numBytes(e.units) + numBytes(e.landedAt) + numBytes(e.lastAt - e.landedAt)
-      : K.saveBytesEnvelope;
-  }
+  for (const id in envs) n += envelopeBytes(id, envs[id]);
   const pot = state.away && state.away.pot;
-  if (pot && Array.isArray(pot.tasks0)) {
-    for (const x of pot.tasks0) n += Array.isArray(x) ? jsonBytes(x[0]) + 4 + (isFiniteNum(x[1]) ? numBytes(x[1]) : 4) : 16;
-  }
+  if (pot && Array.isArray(pot.tasks0)) for (const x of pot.tasks0) n += potBytes(x);
   return n;
+}
+
+/** Bytes of an away pot's task snapshot entry ["<id>",tasks] and its comma. */
+const potBytes = (x) => (Array.isArray(x) ? jsonBytes(x[0]) + 4 + (isFiniteNum(x[1]) ? numBytes(x[1]) : 4) : 16);
+
+/** Bytes of envelope `e` of helper `id` in the save: packed, counted exactly (`"<id>":[type,units,landedAt,lastAt'],`), or K.saveBytesEnvelope whole. */
+function envelopeBytes(id, e) {
+  return e && isFiniteNum(e.units) && isFiniteNum(e.landedAt) && isFiniteNum(e.lastAt)
+    ? jsonBytes(id) + 8 + numBytes(e.units) + numBytes(e.landedAt) + numBytes(e.lastAt - e.landedAt)
+    : K.saveBytesEnvelope;
 }
 
 /**
@@ -1098,7 +1132,8 @@ export function saveBytes(state) {
 //   X = [rest, warm, warmUntil', thanksUntil', lastFinishAt', unitAt', kidUnitAt', blockedAt']
 //   P = [title, pane, paneName, space, tab]
 //
-// name: 0 for the base name of its id; kp: 0 a pane helper, 1 a fledgling with
+// name: 0 for the base name of its id, k for "<base> k" (a namesake's number,
+// from 2), else the name; kp: 0 a pane helper, 1 a fledgling with
 // no parent, else the parent's id; st: the status index (STATUSES: working,
 // blocked, done, idle; the order is part of the format); seenBy: the index of
 // its writer among the writersSeen keys (its id when that writer is not
@@ -1124,11 +1159,13 @@ export function saveBytes(state) {
 // live helpers (seen by their window within K.staleMs of the state's clock)
 // before unseen ones, unseen ones most recently seen first, helpers holding an
 // envelope first, then by id (a fixed spread: no window's roster and no
-// status is favoured). So every agent is a saved helper up to about 22,000
-// present at once, well past the roster an observation can reconcile inside
-// herdr's 500 ms budget (≈ 32 µs a helper in the wasm harness). Past that the
-// last stubs in the order are left out (never a save refused for its roster:
-// a helper left out joins again as a new helper when it is seen). A slim
+// status is favoured). So every agent is a saved helper up to about 10,000
+// (pane agents each holding an envelope while an away pot is open) to 13,000
+// (agents with sub-agents) present at once, near the roster an observation can
+// reconcile inside herdr's 500 ms budget (≈ 30 µs a helper in the wasm
+// harness, ≈ 15,000). Past that the last stubs in the order are left out, each
+// with its envelope and away-pot entry (never a save refused for its roster: a
+// helper left out joins again as a new helper when it is seen). A slim
 // record loads with `slim: true` (its budgets empty at lastSeen, no warmth,
 // thanks or rest), a stub with `stub: true` (no totals, its address and
 // created_ms set again by the observation that sees it), and each is written
@@ -1157,11 +1194,16 @@ const timeOrNull = (v) => v === null || isFiniteNum(v);
 // fifth of a 4,000-helper save plan in the wasm harness).
 let shapeOk = null;
 
-/** True when `h` (and its stats) hold no field a present record does not have; `key` is the live record `h` copies (the cache key). */
+/**
+ * True when `h` (and its stats) hold no field a present record does not have
+ * and its id is an engine id (8 hex digits); `key` is the live record `h`
+ * copies (the cache key).
+ */
 function knownShape(key, h, flagged) {
   if (shapeOk === null) shapeOk = new WeakSet();
   if (shapeOk.has(key)) return true;
   const s = h.stats;
+  if (typeof h.id !== "string" || !HEX8.test(h.id) || !s || typeof s !== "object") return false;
   if (Object.keys(h).length !== RECORD_KEYS + (flagged ? 1 : 0)) return false;
   if (Object.keys(s).length !== (s.kidsPast !== undefined || s.kidsFolds !== undefined ? STAT_N + 2 : STAT_N)) return false;
   shapeOk.add(key);
@@ -1272,7 +1314,7 @@ function presentParts(h, writers, key = h) {
   }
   const w = seenBy === null ? "null" : writers !== undefined && writers[seenBy] !== undefined ? writers[seenBy] : J(seenBy);
   const base = NAMES[((n >>> 8) % 16) * 12 + ((n >>> 12) % 12)];
-  const nm = name === base ? "0" : J(name);
+  const nm = nameText(name, base);
   // the first run's folds are its helper's folds: run is written as null then
   PARTS.sT = `[${J(addr)},${nm},${kp},${st},${w},${L},${lastTurn},${c},${j},${env},[${tasks},${folds},${run === folds ? "null" : run},${envs},${checkIns}${kids}]]`;
   PARTS.xT = `[${rest},${warm},${tOrNull(wu)},${tOrNull(tu)},${tOrNull(lf)},${tOrNull(ua)},${tOrNull(ka)},${tOrNull(ba)}]`;
@@ -1280,6 +1322,32 @@ function presentParts(h, writers, key = h) {
   PARTS.bT = ba === null ? "" : `,${ba}`;
   PARTS.uT = `[3,${nm},${kp},${st},${w},${L},${lastTurn}${st === 1 && ba !== null ? `,${ba}` : ""}]`;
   return true;
+}
+
+const SUFFIX = /^[1-9][0-9]{0,5}$/;
+
+/**
+ * A present helper's name as written: 0 for its id's base name, k for
+ * "<base> k" (k from 2, as freeName numbers a namesake), else the name as a
+ * JSON string (one of an older build, or set by hand).
+ */
+function nameText(name, base) {
+  if (name === base) return "0";
+  const b = base.length;
+  if (name.length > b + 1 && name.charCodeAt(b) === 32 && name.startsWith(base)) {
+    const k = name.slice(b + 1);
+    if (k !== "1" && SUFFIX.test(k)) return k;
+  }
+  return J(name);
+}
+
+/** The name a written name `nm` (nameText) stands for in the record of id `id`, or undefined when it is malformed. */
+function nameOf(nm, id) {
+  if (typeof nm === "string") return nm === "" ? undefined : nm;
+  if (typeof nm !== "number" || !Number.isInteger(nm) || nm < 0 || nm === 1 || nm > 999999) return undefined;
+  const h = parseInt(id, 16) >>> 0;
+  const base = NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)];
+  return nm === 0 ? base : `${base} ${nm}`;
 }
 
 // The place text of a record, kept while its five strings stay the same (keyed
@@ -1370,7 +1438,8 @@ export function unpackPresent(id, a, writers) {
   const kp = S[2];
   const st = S[3];
   const seenBy = seenByOf(S[4], writers);
-  if (typeof addr !== "string" || (nm !== 0 && (typeof nm !== "string" || nm === ""))) return null;
+  const name = nameOf(nm, id);
+  if (typeof addr !== "string" || name === undefined) return null;
   if (kp !== 0 && kp !== 1 && (typeof kp !== "string" || kp === "")) return null;
   if (!Number.isInteger(st) || st < 0 || st > 3 || seenBy === undefined) return null;
   for (let i = 5; i <= 9; i++) if (!isFiniteNum(S[i])) return null;
@@ -1424,7 +1493,7 @@ export function unpackPresent(id, a, writers) {
   const h = parseInt(id, 16) >>> 0;
   const rec = {
     id, addr, created, kind: kp === 0 ? "pane" : "kid", parent: typeof kp === "string" ? kp : null,
-    species: SPECIES[h % 12], hue: (h >>> 4) % 8, name: nm === 0 ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : nm,
+    species: SPECIES[h % 12], hue: (h >>> 4) % 8, name,
     joined, lastSeen: L, seenBy, status, lastTurn: S[6],
     lastFinishAt: lf, unitAt: ua, kidUnitAt: ka, blockedAt: ba,
     rest, warm, warmUntil: wu, thanksUntil: tu, env: S[9], stats,
@@ -1457,7 +1526,8 @@ function unpackStub(id, a, writers) {
   const st = a[3];
   const seenBy = seenByOf(a[4], writers);
   const L = a[5];
-  if ((nm !== 0 && (typeof nm !== "string" || nm === "")) || (kp !== 0 && kp !== 1 && (typeof kp !== "string" || kp === ""))) return null;
+  const name = nameOf(nm, id);
+  if (name === undefined || (kp !== 0 && kp !== 1 && (typeof kp !== "string" || kp === ""))) return null;
   if (!Number.isInteger(st) || st < 0 || st > 3 || seenBy === undefined || !isFiniteNum(L) || !isFiniteNum(a[6])) return null;
   const status = STATUSES[st];
   if (len === 8 && (status !== "blocked" || !isFiniteNum(a[7]))) return null;
@@ -1466,7 +1536,7 @@ function unpackStub(id, a, writers) {
   const h = parseInt(id, 16) >>> 0;
   return {
     id, addr: "", created: 0, kind: kp === 0 ? "pane" : "kid", parent: typeof kp === "string" ? kp : null,
-    species: SPECIES[h % 12], hue: (h >>> 4) % 8, name: nm === 0 ? NAMES[((h >>> 8) % 16) * 12 + ((h >>> 12) % 12)] : nm,
+    species: SPECIES[h % 12], hue: (h >>> 4) % 8, name,
     joined: L, lastSeen: L, seenBy, status, lastTurn: a[6],
     lastFinishAt: null, unitAt: L, kidUnitAt: L, blockedAt: ba,
     rest: 0, warm: 1, warmUntil: 0, thanksUntil: 0, env: 0,
@@ -1537,8 +1607,9 @@ function writerIndex(ws, keep) {
  * The save plan of the present helpers (R13, format 5): for every present
  * helper that packs, the JSON text of its packed array at the tier it is
  * written in (`texts`, id → text: serialize writes it as it is; "" for one
- * left out), and the whole save's estimated bytes (`bytes`: the present
- * helpers exactly, from those texts, everything else as prune counts it).
+ * left out), the ids of the helpers left out, whose envelopes and away-pot
+ * entries are left out with them (`dropped`, or null), and the whole save's estimated bytes (`bytes`: the
+ * present helpers and envelopes exactly, everything else as prune counts it).
  * Deterministic: the same state gives the same plan in every window. Each
  * record's parts are written once (the stringify the save needs anyway) and
  * measured from their texts.
@@ -1569,9 +1640,9 @@ function Cand(id, sT, xT, pT, bT, uT, sizes, lo, hi) {
 /**
  * presentPlan in steps (a generator that yields after every `per` present
  * helpers measured, then returns the plan): serializeSteps drives it so a
- * large roster's plan spreads over task steps. `refs`: id → the live record
- * each of `state`'s helpers copies (the caches' keys; null when `state` is the
- * live state itself).
+ * large roster's plan spreads over task steps. `refs`: a Map of id → the
+ * live record each of `state`'s helpers copies (the caches' keys; null when
+ * `state` is the live state itself).
  */
 export function* presentPlanSteps(state, refs, per) {
   const hs = state.helpers;
@@ -1592,7 +1663,7 @@ export function* presentPlanSteps(state, refs, per) {
       other += recordBytes(h);
       continue;
     }
-    const key = refs === null ? h : refs[id];
+    const key = refs === null ? h : refs.get(id);
     if (!presentParts(h, writers, key)) {
       other += presentBytes(h); // written whole
       continue;
@@ -1622,15 +1693,28 @@ export function* presentPlanSteps(state, refs, per) {
   if (other + hi <= K.saveBudget) {
     // every helper at its largest tier
     for (const c of cand) texts[c.id] = tierText(c.hi, c.sT, c.xT, c.pT, c.bT, c.uT);
-    return { texts, bytes: other + hi };
+    return { texts, bytes: other + hi, dropped: null };
+  }
+  // A helper's envelope and its entry in an away pot's task snapshot are
+  // written with it (and left out with it, below).
+  const none = Object.create(null);
+  const envs = state.envelopes && typeof state.envelopes === "object" ? state.envelopes : none;
+  const pot = state.away && state.away.pot;
+  const snap = Object.create(null);
+  if (pot && Array.isArray(pot.tasks0)) for (const x of pot.tasks0) if (Array.isArray(x) && typeof x[0] === "string") snap[x[0]] = (snap[x[0]] || 0) + potBytes(x);
+  for (const c of cand) {
+    let eb = Object.hasOwn(envs, c.id) ? envelopeBytes(c.id, envs[c.id]) : 0;
+    if (snap[c.id] !== undefined) eb += snap[c.id];
+    if (eb === 0) continue;
+    other -= eb;
+    for (let tier = TIER_STUB; tier <= TIER_FULL; tier++) c.sizes[tier] += eb;
+    lo += eb;
   }
   // Past the budget: the order (live first, unseen ones most recently seen
   // first, helpers holding an envelope first, then id), from what every
   // tier keeps and the state's clock, so it is the same before and after a reload.
   const clock = isFiniteNum(state.clock) ? state.clock : 0;
-  const none = Object.create(null);
   const ws = state.writersSeen && typeof state.writersSeen === "object" ? state.writersSeen : none;
-  const envs = state.envelopes && typeof state.envelopes === "object" ? state.envelopes : none;
   for (const c of cand) {
     const h = hs[c.id];
     const w = h.seenBy !== null ? ws[h.seenBy] : undefined;
@@ -1645,11 +1729,15 @@ export function* presentPlanSteps(state, refs, per) {
   const tiers = new Uint8Array(cand.length);
   for (let i = 0; i < cand.length; i++) tiers[i] = cand[i].lo;
   let bytes = other + lo;
-  // Even the smallest forms pass the budget (past about 22,000 present
-  // helpers): the last in the order are left out.
+  // Even the smallest forms pass the budget (from about 10,000-13,000
+  // present helpers, near what an observation reconciles in herdr's budget):
+  // the last in the order are left out, each with its envelope and away-pot
+  // entry (a helper left out joins again as a new one when it is seen).
+  let dropped = null;
   for (let i = cand.length - 1; i >= 0 && bytes > K.saveBudget; i--) {
     bytes -= cand[i].sizes[tiers[i]];
     tiers[i] = TIER_DROP;
+    (dropped || (dropped = Object.create(null)))[cand[i].id] = true;
   }
   // Then totals, game state and place strings, each for every helper that
   // still fits, in order.
@@ -1668,7 +1756,7 @@ export function* presentPlanSteps(state, refs, per) {
     const c = cand[i];
     texts[c.id] = tiers[i] === TIER_DROP ? "" : tierText(tiers[i], c.sT, c.xT, c.pT, c.bT, c.uT);
   }
-  return { texts, bytes };
+  return { texts, bytes, dropped };
 }
 
 /** The save plan's order (presentPlanSteps; keys k0 live, k1 −lastSeen when unseen, k2 an envelope, then id). */
@@ -1719,9 +1807,7 @@ export function prune(state, t, ctx, ev) {
   const compacts = [];
   let other = restBytes(state); // estimated bytes of everything but compact records (r5-07)
   let cbytes = 0; // and of the compact records
-  // (a seenBy is written as its writer's index among the writers that stay)
-  const ws = state.writersSeen;
-  const writers = writerIndex(ws, (w) => !(t - ws[w] > K.writerPruneMs));
+  const present = [];
   for (const id in hs) {
     const h = hs[id];
     if (!h.gone) {
@@ -1729,7 +1815,7 @@ export function prune(state, t, ctx, ev) {
       // by a hot reload (an id's salt, kidFinishAt), is brought to this
       // build's shape here, as a load does (normalizePresent): packed from now on.
       if (h.stats && typeof h.stats === "object" && !knownShape(h, h, h.slim === true || h.stub === true)) normalizePresent(h);
-      other += presentMax(h, writers); // the place strings yield first (presentPlan), then the Album
+      present.push(h);
       continue;
     }
     if (h.kind === "kid") {
@@ -1765,8 +1851,17 @@ export function prune(state, t, ctx, ev) {
     for (let i = 0; i < full.length && excess > 0; i++) if (compactRecord(full[i])) excess--;
     if (excess !== n0) rosterChanged(state);
   }
-  const keep = albumKeepFor(compacts.length, cbytes, other);
-  if (keep < compacts.length) archiveOldest(state, compacts, keep);
+  if (compacts.length > 0) {
+    // Each present helper counts the upper bound of its lean form (presentMax):
+    // the place strings yield first (presentPlan), then the Album. Measured
+    // only when there are compact records to decide on. (A seenBy is written
+    // as its writer's index among the writers that stay.)
+    const ws = state.writersSeen;
+    const writers = writerIndex(ws, (w) => !(t - ws[w] > K.writerPruneMs));
+    for (let i = 0; i < present.length; i++) other += presentMax(present[i], writers);
+    const keep = albumKeepFor(compacts.length, cbytes, other);
+    if (keep < compacts.length) archiveOldest(state, compacts, keep);
+  }
   if (ctx && ev) settleOld(state, ctx, t, ev);
   settledNotices(state);
   for (const w in state.writersSeen) {

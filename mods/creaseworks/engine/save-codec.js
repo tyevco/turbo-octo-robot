@@ -73,8 +73,8 @@ const asIs = (v) => v;
 /** The value mapper of a live state (or a parsed file's, whose packed entries pass through): each compact Album record as its short array, anything else whole. */
 const packed = (h) => (h && h.compact === true && packAlbum(h)) || h;
 
-/** The texts of a state's packed present helpers (presentPlan), or null. */
-const presentTexts = (state) => (isObj(state.helpers) ? finish(presentPlanSteps(state, null, Infinity)).texts : null);
+/** The save plan of a state's present helpers (presentPlan), or null. */
+const planOf = (state) => (isObj(state.helpers) ? finish(presentPlanSteps(state, null, Infinity)) : null);
 
 // An envelope's type is written as its index in ENVELOPES (content.js): that
 // order is part of the file format (format 5), as STATUSES' is (helpers.js).
@@ -99,11 +99,11 @@ function unpackEnvelope(a) {
   return { type: ENV_TYPES[a[0]], units: a[1], landedAt: a[2], lastAt };
 }
 
-/** The envelopes map as written (packed entries), or `envs` itself when nothing packs. */
-function packEnvelopes(envs) {
+/** The envelopes map as written (packed entries; none of the helpers the save plan leaves out, `skip`), or `envs` itself when it is not a map. */
+function packEnvelopes(envs, skip = null) {
   if (!isObj(envs)) return envs;
   const out = Object.create(null);
-  for (const k of Object.keys(envs)) out[k] = packEnvelope(envs[k]);
+  for (const k of Object.keys(envs)) if (skip === null || skip[k] !== true) out[k] = packEnvelope(envs[k]);
   return out;
 }
 
@@ -179,11 +179,45 @@ function* encodeSteps(state, value, pre, memo, out, hash, body, per, restText = 
   return { body: text, check: hash ? fnv1a32(`${rest}\n${digests}`) : null };
 }
 
-/** The JSON text of `state` with its helpers map replaced by a marker (envelopes packed for a live state). */
-export function restOf(state, live) {
+/**
+ * The JSON text of `state` with its helpers map replaced by a marker
+ * (envelopes packed for a live state; without the envelopes and away-pot
+ * entries of the helpers the save plan leaves out, `skip`; with `holes`, the
+ * envelopes and the away state are markers too, filled later: fillHoles).
+ */
+function restOf(state, live, skip = null, holes = false) {
   const copy = Object.create(null);
-  for (const k of Object.keys(state)) copy[k] = k === "helpers" ? MARK : k === "envelopes" && live ? packEnvelopes(state[k]) : state[k];
+  for (const k of Object.keys(state)) {
+    const v = state[k];
+    if (k === "helpers") copy[k] = MARK;
+    else if (holes && (k === "envelopes" || k === "away")) copy[k] = k === "away" ? AWAY_MARK : ENV_MARK;
+    else if (k === "envelopes" && live) copy[k] = packEnvelopes(v, skip);
+    else if (k === "away" && skip !== null) copy[k] = awayWithout(v, skip);
+    else copy[k] = v;
+  }
   return JSON.stringify(copy);
+}
+
+const ENV_MARK = "\u0001envelopes";
+const ENV_HOLE = `"envelopes":${JSON.stringify(ENV_MARK)}`;
+const AWAY_MARK = "\u0001away";
+const AWAY_HOLE = `"away":${JSON.stringify(AWAY_MARK)}`;
+
+/** The away state without the task snapshot entries of the helpers in `skip` (a copy; `away` itself when it has none). */
+function awayWithout(away, skip) {
+  const pot = isObj(away) ? away.pot : null;
+  if (!isObj(pot) || !Array.isArray(pot.tasks0)) return away;
+  return { ...away, pot: { ...pot, tasks0: pot.tasks0.filter((x) => !(Array.isArray(x) && skip[x[0]] === true)) } };
+}
+
+/** A snapshot's rest text (restOf with holes) with its envelopes and away state filled in from the snapshot's copies. */
+function fillHoles(rest, src, skip) {
+  let text = rest;
+  let at = text.indexOf(ENV_HOLE);
+  if (at >= 0) text = text.slice(0, at) + `"envelopes":${JSON.stringify(packEnvelopes(src.envelopes, skip))}` + text.slice(at + ENV_HOLE.length);
+  at = text.indexOf(AWAY_HOLE);
+  if (at >= 0) text = text.slice(0, at) + `"away":${JSON.stringify(skip === null ? src.awayAll : awayWithout(src.awayAll, skip))}` + text.slice(at + AWAY_HOLE.length);
+  return text;
 }
 
 /** Run a step generator to its end at once. */
@@ -199,12 +233,14 @@ function finish(it) {
  * already packed, as a parsed file holds them, as they are). Tests only.
  */
 export function saveCheck(state) {
-  return finish(encodeSteps(state, packed, presentTexts(state), null, null, true, false, Infinity)).check;
+  const plan = planOf(state);
+  return finish(encodeSteps(state, packed, plan && plan.texts, null, null, true, false, Infinity, plan && plan.dropped ? restOf(state, true, plan.dropped) : null)).check;
 }
 
 /** The state text serialize writes for `state` (as saveCheck packs it). Tests only. */
 export function canonicalState(state) {
-  return finish(encodeSteps(state, packed, presentTexts(state), null, null, false, true, Infinity)).body;
+  const plan = planOf(state);
+  return finish(encodeSteps(state, packed, plan && plan.texts, null, null, false, true, Infinity, plan && plan.dropped ? restOf(state, true, plan.dropped) : null)).body;
 }
 
 /** The digest cache of `state` as a Map (text → hex), or null. */
@@ -271,8 +307,12 @@ export function* serializeSteps(state, per = SAVE_STEP_HELPERS) {
     yield;
   }
   const out = { texts: [], digests: [] };
-  const pre = isObj(src.helpers) ? (yield* presentPlanSteps(src, refs, per)).texts : null;
-  const { body, check } = yield* encodeSteps(src, packed, pre, memo, out, true, true, per, rest);
+  const plan = isObj(src.helpers) ? yield* presentPlanSteps(src, refs, per) : null;
+  const skip = plan && plan.dropped;
+  // (the snapshot's text, its envelopes and away state filled in, but those of the helpers left out)
+  if (rest !== null) rest = fillHoles(rest, src, skip || null);
+  else if (skip) rest = restOf(state, true, skip);
+  const { body, check } = yield* encodeSteps(src, packed, plan && plan.texts, memo, out, true, true, per, rest);
   remember(state, out);
   return `{"format":${JSON.stringify(SAVE_FORMAT)},"version":${SAVE_VERSION},"check":"${check}","state":${body}}`;
 }
@@ -287,14 +327,17 @@ function copyEntry(h) {
 }
 
 /** What serializeSteps' later steps read of `state`, as it is now (see there). */
-export function snapshot(state) {
+function snapshot(state) {
   const hs = state.helpers;
   const copy = Object.create(null);
-  const refs = Object.create(null);
+  // (a Map: a second object given the same keys in the same order would
+  // share each of `copy`'s growing shapes in QuickJS, and every key added to
+  // a shared shape copies it: ≈ 450 ms instead of ≈ 55 at 12,500 helpers)
+  const refs = new Map();
   for (const id in hs) {
     const h = hs[id];
     copy[id] = copyEntry(h);
-    refs[id] = h;
+    refs.set(id, h);
   }
   const envs = state.envelopes;
   let envCopy = envs;
@@ -302,15 +345,17 @@ export function snapshot(state) {
     envCopy = Object.create(null);
     for (const k in envs) envCopy[k] = isObj(envs[k]) ? { ...envs[k] } : envs[k];
   }
-  const pot = isObj(state.away) ? state.away.pot : null;
+  // the away state as JSON text writes it (its pot's task snapshot, one entry per pane helper, is the plan's to trim)
+  const awayAll = state.away === undefined ? undefined : JSON.parse(JSON.stringify(state.away));
   const st = {
     helpers: copy,
     envelopes: envCopy,
     writersSeen: isObj(state.writersSeen) ? Object.assign(Object.create(null), state.writersSeen) : state.writersSeen,
     clock: state.clock,
-    away: isObj(pot) && Array.isArray(pot.tasks0) ? { pot: { tasks0: pot.tasks0.map((x) => (Array.isArray(x) ? x.slice() : x)) } } : null,
+    away: awayAll,
+    awayAll,
   };
-  return { state: st, refs, rest: restOf(state, true) };
+  return { state: st, refs, rest: restOf(state, true, null, true) };
 }
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
