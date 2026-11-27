@@ -75,6 +75,9 @@ export function cardWidth(width) {
   return Math.floor((inner - CARD.gap * (cols - 1)) / cols);
 }
 
+/** Cards narrower than this show the short effect label instead of the three-line effect. */
+export const SHORT_BELOW = 96;
+
 /** The tier pips row's width: three 8 px pips 2 px apart. */
 export const PIPS_W = 3 * CARD.pip + 2 * 2;
 
@@ -233,7 +236,11 @@ function card(c, narrow, w, h, ctx) {
   body.child(text(name, { size: 12, weight: 600, color: state === "hidden" ? T.muted : T.foreground, truncate: true }, T).w_full().h(CARD.name).line_height(`${CARD.name}px`));
   if (state === "found") {
     body.child(line(clip(str(c.status), BOOK_CLIP.status), T, T.foreground));
+    // the short label at Narrow and on cards under 96 px (280-319 and 400-439 px panels), where
+    // three lines of 70-80 px cut most effects short; the full text is in the tooltip
+    // (wrapped in the effect's three lines there, so a 16-grapheme label is never cut)
     if (narrow) body.child(line(clip(str(c.short), BOOK_CLIP.short), T));
+    else if (w < SHORT_BELOW) body.child(lines(clip(str(c.short), BOOK_CLIP.short), 3, T));
     else body.child(lines(clip(str(c.effect), BOOK_CLIP.effect), 3, T));
   } else if (state === "next") {
     body.child(line(sub, T, T.foreground));

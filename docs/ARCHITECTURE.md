@@ -942,7 +942,7 @@ calls `cx.notify()` itself. Renderers call them from element handlers and call
 
 | handler | from | does |
 |---|---|---|
-| `click(target, id, event, cx)` | mat pieces, rail/ribbon mini Sheet, rail crane | B5 `click`; `target` ∈ `sheet mini node scrap crane boat ream`, `id` the vm item id (node: `nodes[].id`), `event` `{ x, y }` in mat px (pop position) or null |
+| `click(target, id, event, cx)` | mat pieces, rail/ribbon mini Sheet, rail crane | B5 `click`; `target` ∈ `sheet mini node scrap crane boat ream dot fold`, `id` the vm item id (node: `nodes[].id`; dot: `<fieldId>-<i>`, i = row · 3 + col; fold: the fold piece's id `mat.fold.id`), `event` `{ x, y }` in mat px (pop position) or null |
 | `open(helperId, cx)` | tray envelope, tile/ribbon envelope marker, ✉ buttons | B5 `open` |
 | `openHelper(helperId, cx)` | needs-you chips, needs/finished marks and pips, away "Open ›"; counts chip ▲/✓ and rail ▲ pass the group key `"needs"` / `"finished"` instead (glue picks the longest-waiting / oldest and cycles on repeat) | §5.6 focus the pane (+ `checkin`) |
 | `buy(item, count, cx)` | Shop rows, tier sub-rows | B5 `buy` |
@@ -1472,16 +1472,22 @@ bookInfo(state) → { found, marks, next: diagramId | null }
   `hand.steady = 1`; `nextCraneAt = max(activeMs + gullMinMs, nextCraneAt − gullPullMs)` once per
   `cranesSeen` via `gullFor`; `afterglowMs += napkinGlowMs` to the cap; `frame = max(frame,
   lozengeFrame)`; `r = min(40, r + stairBeats)`; `windUntil = activeMs + windMs`; `nextChainAt =
-  min(nextChainAt, activeMs + hurryMs)` and `spawn.hurry = 1`; `fieldIn = 1`; `coilEnd = max(coilEnd, t + coilMs)`);
+  min(nextChainAt, activeMs + hurryMs)` and `spawn.hurry = 1`; `fieldIn = 1`; `coilEnd = max(coilEnd, max(t, stormEnd, rushEnd) + coilMs)`, so a Coil clicked under Rush or Confetti runs its 10 s after they end);
   sets `book.found[id].ready = activeMs + patternRestMs` (not when a Gull fold pulled nothing);
   pushes `p:<id>` onto `hand.figures`. A Gull match drops no fold while `gullFor === cranesSeen`
-  (`lastField.pulled`, the chip "Gull · crane pulled").
+  (`lastField.pulled`, the chip "Gull · pull used").
 * **`chain-in`** with `spawn.hurry === 1` and no free chain key (a chain still live): tried again
   in `fieldWaitMs`, not a full interval later, so Hurry's chain comes within a second of the live
   one ending; placing a chain or field clears `hurry`.
 * `handHit`: a pause over the rhythm gap but ≤ `K.slipMs` with `hand.steady === 1` keeps `r` and
   clears `steady`. `hitBoost`: Confetti, else Rush, else `coilMult` while `t < coilEnd`, else 1.
-  Scrap and crane spawns made while `activeMs < windUntil` carry `wind: true`.
+  Scrap and crane spawns made while `activeMs < windUntil` carry `wind: true`. `away.js` moves
+  `coilEnd` with `rushEnd` and `stormEnd` in an away segment, a skipped stretch and a clock-back
+  rebase, so Wind-up is frozen while away and never stretched by a clock moved back.
+* **`chain-in`** while a field is up waits only while the field has been shown ≤ `K.fieldLifeMs`
+  (its normal-mode life, whatever `E.life`): in calm the chain then comes beside the field, so
+  calm's longer field life costs no chains (BALANCE §12.3 B18). A `fieldIn` of 1 with a field
+  still up places a numbered chain and keeps `fieldIn` at 1.
 * **Buying** `crease-field` sets `book.open = true` and `spawn.fieldIn = 1` (every purchase, so a
   rebuy after a wish brings a field at the next chain). `effects()` gains `field` (bool),
   `fieldLifeMs`, `foldLifeMs`; `estimate()` returns 0 for it (no best-buy dot, BALANCE §12.1).
@@ -1508,7 +1514,8 @@ spawn: { …, fieldIn: null | 1..5,
          field: null | { id: "p<seq>", born, path: [0..8, …] },  // distinct, ≤ 9
          fold:  null | { id: "f<seq>", kind: diagramId, slot, born },
          lastField: null | { pattern: diagramId | null, path, closed, tier, first, near: diagramId | null,
-                             more, rest: ms | null, at },  // more: dots `near` still needs; rest: left when no fold dropped
+                             more, close, rest: ms | null, at },  // more: dots `near` still needs; close: `near` is a
+                                                                  // closed diagram traced in full but set open; rest: left when no fold dropped
          gullFor: -1, windUntil: 0 },                             // scrap / crane items: wind?: true
 hand:  { …, steady: 0 | 1 },                                      // figures may hold "p:<diagramId>"
 boosts: { …, coilEnd: 0 },                                        // wall ms on the hand timeline, like rushEnd
@@ -1538,7 +1545,16 @@ stats.bySource / stats.runBySource: + pattern, fold
   save is due at once. That write is a CAS rejection, so `mergeFromDisk` takes the file in and
   replays what is still pending onto it: the other window's progress is kept, nothing counts
   twice, and the window saves again. A file still newer than the new build makes it read-only
-  again there, with the banner (the CAS `conflict` notice is dropped for it).
+  again there, with the banner (the CAS `conflict` notice is dropped for it). Going read-only on
+  a newer file records `save.readOnlyFor = { gen, version, format }` (the code generation, state
+  `VERSION` and `SAVE_VERSION` that found it so); `adopt` lifts it only for another code
+  generation with a higher `VERSION` or `SAVE_VERSION` (or a slot with no record, left by a build
+  before it was kept), so a second copy opening in the same generation keeps the banner and
+  writes and records nothing.
+* A backup from a newer build is never damaged: with save.json damaged, missing or unreadable,
+  `load` goes read-only on it (notice `newer`, "Save was damaged; its backup is from a newer
+  Creaseworks. Read-only until updated."), keeps the damaged save.json aside, and neither keeps
+  the backup aside nor writes a fresh game.
 * `validateHead` checks that `book` is an object with a boolean `open` and that every
   `book.found` entry has an integer `n` in 1..9,999 and finite `at ≥ 0` and `ready ≥ 0`; otherwise
   it returns `"book"`. A present `spawn.field` must have a string `id`, a finite `born` and a
@@ -1560,12 +1576,14 @@ sheet: { …,
   fieldResult: null | { line: [[col, row]…], closed, style: "found"|"learned"|"mastered"|"loose", text } },
 mat: { …, fold: null | { id, kind, x, y, tooltip, fading }, shelf: [species | "p:<diagramId>"…] },
 boosts: [ …, { type: "coil", label: "Coil ×2", msLeft, msTotal: 10000 },
+             // or, while Rush or Confetti still runs, static: { type: "coil", label: "Coil ×2 · waits",
+             //   msLeft: null, msTotal: null, after: "Rush" | "Confetti" }
              { type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null } ],   // static chip
 book: { open, newMarks, found, of: 9, marks, marksOf: 27, count: "5 / 9 · 14 / 27 marks",
         line, help: string | null, cards: [Card] }     // cards only when opts.tab === "book"
 Card = { id, name, state: "found"|"next"|"hidden", n, closed, dots: [[col, row]…] | null,
          sub: "4 dots · closed", tier: 0..3, pips: [bool, bool, bool], count: "×7",
-         status: "ready"|"rests 1:40"|"fold on the mat"|"crane pulled"|null, effect, short, hint,
+         status: "ready"|"rests 1:40"|"fold on the mat"|"pull used"|null, effect, short, hint,
          fold: "Fold piece: Paper gull" | null, tooltip }   // mat.fold.tooltip "Paper gull · …": one name
 ```
 
@@ -1602,13 +1620,16 @@ Shop's Crease Helper row carries `note: "Only your own hands fill the book"`.
 **Glue.** No new timer, command or herdr call. `session.js` passes `click("dot" | "fold", id,
 pos)` as click actions and pops; opening the Book tab dispatches `hint` `book` with
 `vm.book.marks` when it is higher than `ui.hints.book`. `glue/views.js` gains the views `field`,
-`field-calm`, `fold`, `book`, `book-narrow` (with `test/fixtures/vm-fixtures.mjs VIEW_NAMES` and
+`field-calm`, `fold`, `book`, `book-narrow`, `book-280`, `book-400` (with `test/fixtures/vm-fixtures.mjs VIEW_NAMES` and
 DESIGN §15.3's list, in one commit).
 
 **Simulator (B12).** BALANCE §12.1: the hit order, the tracer (`trace:<field.born, mat-shown ms>:<attempt>`, BALANCE §12.1 says why not the active clock;
 draws, success per profile), fold clicks, P15, the flags `--no-book`, `--no-pattern-fx` and
 `--fx-off <id>`, the keys `buy:crease-field` and `book:found|learned|mastered>=N`, and
-`SHARE_BUCKETS.click` with `pattern` and `fold`. §3's table, §8's knob list and
+`SHARE_BUCKETS.click` with `pattern` and `fold`. Variant job ids `P1~nobook`, `P1~nofx`,
+`P1~rotate`, `P1~rotate+fxoff:<id>` (B12, replaying `P1~rotate`'s purchases and pauses),
+`P1~trace0` and `P12~trace0` (B18, `traceSuccess` 0); `runProfile` returns `foldN`, fold-piece
+clicks per play-clock hour and diagram, beside `foldBy`. §3's table, §8's knob list and
 `test/pacing/balance.test.mjs` change in the same commit as the sim (BALANCE §12.6).
 
 **Tests.**

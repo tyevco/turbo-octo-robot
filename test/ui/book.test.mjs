@@ -536,6 +536,12 @@ test("Book cards: at every panel width 280-460 the column beside the drawing hol
       assert.equal(styleVal(findById(el, `cw-book-${c.id}-draw`), "w"), drawSize(cardWidth(width)));
       assert.equal(styleVal(findById(el, `cw-book-${c.id}-side`), "min_w"), PIPS_W);
       assert.ok(styleVal(el, "h") >= cardHeight(cardLines(c, width < 280)), `${width} ${c.id}: as tall as at full size`);
+      // under 96 px a found card shows the short label, never a three-line effect cut short
+      if (c.state === "found") {
+        const t = texts(el);
+        if (cardWidth(width) < 96) assert.ok(t.includes(c.short) && !t.includes(c.effect), `${width} ${c.id}: the short label`);
+        else assert.ok(t.includes(c.effect), `${width} ${c.id}: the effect`);
+      }
     }
   }
 });

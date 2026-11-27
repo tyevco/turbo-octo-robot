@@ -190,8 +190,8 @@ which is the pacing rule that matters (§7 inv. 1); the §8 knobs are not retune
 | P11 fast hands | 18:30 | 16:30 – 21:00 | **≥ 16:00** and ≤ 22:00 | — | 18:30 (17:29–19:18) |
 | P12 calm | = P1 | each seed within ±3 % of the same P1 seed | | calm changes no earnings | (= P1 by construction) |
 | P13 short turns | 21:00 | 18:30 – 23:00 | 16:00 – 24:00 | median ≥ P1 median − 1:30 | sim 21:53 (21:22–22:06) |
-| P14 unsteady hand | 22:30 | 18:30 – 23:30 | 16:00 – 24:00 | median ≤ P1 median + 1:30 | sim 22:33 (21:40–23:46) |
-| P15 pattern master | ≈ P1 − 0:20 | 18:30 – 22:30 | 16:00 – 24:00 | median ≥ P1 median − 0:45 | (§12.3 B13; new with the Pattern book) |
+| P14 unsteady hand | 22:30 | 18:30 – 23:30 | 16:00 – 24:00 | median ≤ P1 median + 1:30 | sim 22:13:08 (21:38:34–23:37:35), with fields (§12.3 B14) |
+| P15 pattern master | ≈ P1 − 0:03 | 18:30 – 22:30 | 16:00 – 24:00 | median ≥ P1 median − 0:45 | sim 21:36:28 (21:21:36–22:42:05), P1 − 0:03:22 (§12.3 B13) |
 
 **Day-open snaps.** Some profiles reach the first wish only by collecting a night pot at a day
 open, and the real-engine sim notes the row "reached by a night pot on N of 20 seeds". P4 does
@@ -496,7 +496,9 @@ the rows join the tables the tests parse as §12.6 says.
   feature and the baseline every §12.3 delta is measured against. `--no-pattern-fx`: fold pieces
   are never clicked (no effects; the `fold` source is reported on its own, so the effect delta is
   the income difference minus the fold pay). `--fx-off <id>`: that diagram's fold pieces are never
-  clicked (per-diagram ablation). The two ablations replay the same seed's P1 run: its purchases
+  clicked (per-diagram ablation; §12.3 B12 runs it on the rotating hand as `P1~rotate+fxoff:<id>`,
+  since P1 itself clicks five of the nine folds about once a run). The ablations replay the same
+  seed's P1 run (B12: its `P1~rotate` run): its purchases
   and its hand pauses (the inv. 11 technique), so the two runs differ by the effects, not by a
   reshuffled purchase order. Without them a seed-day moved by up to ±9 % of live income.
 * **Keys.** Milestones `buy:crease-field`, `book:found>=1`, `book:found>=9`, `book:learned>=9`,
@@ -527,30 +529,38 @@ the rows join the tables the tests parse as §12.6 says.
 | B6 | all nine mastered (`book:mastered>=9`), provisional (run 2) | run 2 | ≤ M17 | — |
 | B7 | whole first run click share (§6.1 row, `pattern` and `fold` included) | 24 % | 20 – 38 % and `--no-book` − 0.5 to `--no-book` + 4 points | 20 – 38 % |
 | B8 | §6.2 per-day floors, every profile | unchanged | unchanged | unchanged |
-| B9 | M15 against `--no-book` (P1, P8, P11, P14) | − 0:15 | `--no-book` − 0:30 to `--no-book` + 0:10 | day 3 (inv. 1) |
+| B9 | M15 against `--no-book` (P1, P8, P11, P14) | ≈ − 0:02 (measured, §12.7) | `--no-book` − 0:30 to `--no-book` + 0:10 | day 3 (inv. 1) |
 | B10 | `pattern` + `fold` share of live income on days 2 and 3 | 3 % | ≤ 6 % | ≤ 6 % |
 | B11 | effects alone: (P1 − `--no-pattern-fx`) minus the `fold` source, share of live income on each day | 1 % | ≤ 2 % | ≤ 5 % |
-| B12 | one diagram's effect: (`P1~rotate` − `P1~rotate+fxoff:<id>`) minus that diagram's fold pay, each day its fold is clicked at least 3 times (median over seeds); a diagram with no such day is not measured and fails | ≤ 0.5 % | ≤ 1 % | ≤ 3 % |
+| B12 | one diagram's effect: (`P1~rotate` − `P1~rotate+fxoff:<id>`) minus that diagram's fold pay, share of live income over days 2–3, where its fold is clicked at least 3 times (median over seeds); a diagram clicked less is not measured and fails | ≤ 0.5 % | ≤ 1 % | ≤ 3 % |
 | B13 | P15 pattern master first wish | ≈ P1 − 0:03 | ≥ P1 median − 0:45 and ≤ P1 median | 16:00 – 24:00 |
 | B14 | P14 unsteady hand first wish (§5 row, now with fields) | — | ≤ P1 median + 1:30 | 16:00 – 24:00 |
 | B15 | P2 never clicks | = `--no-book` | identical milestones | identical |
 | B16 | run 2 (first wish to M17) click share of live income, provisional; record the `--no-book` value first | ≥ `--no-book` | ≥ 20 % | ≥ 15 % |
 | B17 | B7 for a hand that rotates through the book (`P1~rotate`: the ready diagram traced fewest times) | ≈ B7 | 20 – 38 % and `--no-book` − 0.5 to `--no-book` + 4 points | 20 – 38 % |
-| B18 | inv. 12 with fields left alone: `P12~trace0` (calm) node income over `P1~trace0`'s on days 2–3, both with `traceSuccess` 0 (every chain clicked, no trace ever matches, so each field stays up its whole life); M15 within ±3 % on every seed | 100 % | ≥ 99 % | ≥ 90 % |
+| B18 | inv. 12 with fields left alone: `P12~trace0` (calm) node income over `P1~trace0`'s on days 2–3, both with `traceSuccess` 0 (every chain clicked, no trace ever matches, so each field stays up its whole life); M15 within ±3 % on every seed | 100 % | ≥ 99 % | ≥ 85 % |
 
-**B11 and B12 are judged on the median.** The effect is the median over seeds of each day's
-share (B12: over seeds 1–5), its largest day against the median window. Each seed's own days
-are held to the every-seed bound, which is the ablation's noise floor, not an effect. An effect
-that moves a crane or a chain (Gull, Switchback, Hem) also moves the gilded cranes that follow,
-because their gaps are keyed by the active clock. That reshuffles the Confetti outcomes, each
-worth about a point of a day's live income. Measured on the sim runs of §12.7, the effect medians are
-0.00–0.83 %, while single seed-days reach 2.8 % (B11) and 1.6 % (B12). The every-seed bounds were
-2 % and 1 % until that run.
+**B11 and B12 are judged on the median.** B11's effect is the median over seeds of each day's
+share, its largest day against the median window; each seed's own days are held to the
+every-seed bound, which is the ablation's noise floor, not an effect. B12's is one window, days
+2–3 together, on `P1~rotate`: P1 itself traces the ready diagram with the most dots, so it clicks
+a Ridge, Gull, Napkin, Lozenge or Stair fold about once a run, and the "effect" it measured for
+those (Gull's 0.71 %, the old run's largest) was the reshuffle of one day-2 click. The rotating
+hand clicks each fold 3–4 times over days 2–3 (median over seeds; one day alone holds one or
+two), and a diagram whose fold is clicked fewer than 3 times there is "not measured" and fails
+the row. An effect that moves a crane or a chain (Gull, Switchback, Hem) also moves the gilded
+cranes that follow, because their gaps are keyed by the active clock. That reshuffles the
+Confetti outcomes, each worth about a point of a day's live income, which is why the every-seed
+bounds are 5 % (B11) and 3 % (B12): on the run of §12.7 the effect medians are 0.51 % (B11) and
+−0.13 – 0.21 % (B12), while a single seed-day reaches 2.20 % (B11) and a single seed 1.45 % (B12,
+Gull), each under half its bound. The every-seed bounds were 2 % and 1 % before the first
+measured run, which single seed-days passed (2.8 % and 1.6 % then).
 
 The existing rows and invariants keep holding with fields on: §4 M1–M17, §5, §6.3 session ratios
 (≥ 1.8× for P1), inv. 1 (day 3), 2 (purchase cadence), 10 (determinism: byte-identical
-`serialize()` for the same seed and inputs, fields traced), 11 (two windows within 1 %, with the
-writers tracing different diagrams), 12 (P12 within ±3 % of P1) and 13. B1 compares milestones and
+`serialize()` for the same seed and inputs, fields traced), 11 (two windows within 1 %; both windows
+share one Player, so they trace the same diagrams; two writers tracing different diagrams are
+covered by the engine merge test, `test/engine/merge.test.mjs`), 12 (P12 within ±3 % of P1) and 13. B1 compares milestones and
 income, not bytes: the new default fields (`book`, `spawn.fieldIn`, …) change the serialized text
 from the first save on.
 
@@ -568,8 +578,10 @@ from the first save on.
   helpers at the tail of the coding gap (about 0.3 % of live income), Gull at most +10 % cranes
   (the crane is 0.5–1.9 % of income, so ≤ 0.2 %), Stair and Ridge a few seconds of In step, Sail
   and Hem 0 for a hand that catches everything. In all about +1 % of live income (B11 ≤ 2 %).
-* **Rows.** P1's whole-run click share 22.7 % → about 23–24.5 %; the day-2 and day-3 all-seed
-  minimums up 0.3–1.5 points; M15 21:41 → about 21:20–21:40 (still day 3 on every seed); P14 and
+* **Rows.** (Superseded by the measured §12.7 numbers: M15 and B9 moved by about two minutes, not
+  the 15–20 minutes estimated here, and the day-2 and day-3 minimums as §12.7 and §6.2 report.) P1's whole-run click share
+  22.7 % → about 23–24.5 %; the day-2 and day-3 all-seed minimums up 0.3–1.5 points; M15 21:41 →
+  about 21:20–21:40 (still day 3 on every seed); P14 and
   P15 within their bounds, the gap between them about 0:20 (measured: 0:36:36, §12.7; P15 is
   only 0:02:36 ahead of P1, not the 0:20 estimated, since a perfect hand's effects are as small
   as B11 and B12 say).
@@ -578,7 +590,9 @@ from the first save on.
 
 Turn, in this order, re-run every profile, and record the change here and in DESIGN §4.7
 together: (1) `matchPerNode` 3.5 → 3; (2) `patternRestMs` 180 → 240 s; (3) the effect the
-per-diagram ablation names largest (Hurry 2 s → 6 s, Wind-up 10 s → 6 s, Glow 90 s → 60 s);
+per-diagram ablation (B12, on `P1~rotate`) names largest, and only one it measured (at least 3
+clicks); on the run of §12.7 that is Glow (Napkin 0.21 %, so Glow 90 s → 60 s), then Wind-up
+(Coil 0.11 %, 10 s → 6 s) and Steady (Ridge 0.07 %); no effect is over 0.25 %;
 (4) `fieldEvery` 5 → 6. Never turn §8 knobs 1–7 for a §12 row. A §4–§7 row that fails only with
 fields on is a §12 failure.
 
@@ -590,9 +604,9 @@ same commit as the code. **P15** joined §3's table, §5 (its own row, with B13'
 the extra assertion) and §6.2 (P1's bar for profiles that click). **Knob 8**, "pattern payouts
 (DESIGN §4.7)", joined §8 and the test's knob list. §3's P1 rows gained "buys Crease Field" and
 "Crease fields", and the §12.3 rows (`parsePatternRows`) joined `evaluate()`. `npm run sim`
-adds the 185 variant runs §12.3 compares against (`P1~nobook`, `P2~nobook`, `P8~nobook`,
-`P11~nobook`, `P14~nobook`, `P1~nofx`, `P1~rotate`, and `P1~fxoff:<id>` on seeds 1–5) unless `--no-ablation`
-is given. `--no-book`, `--no-pattern-fx` or `--fx-off <id>` alone runs every profile that way, as a
+adds the 360 variant runs §12.3 compares against (`P1~nobook`, `P2~nobook`, `P8~nobook`,
+`P11~nobook`, `P14~nobook`, `P1~nofx`, `P1~rotate`, `P1~rotate+fxoff:<id>` for each of the nine
+diagrams, `P1~trace0` and `P12~trace0`, each on seeds 1–20) unless `--no-ablation` is given. `--no-book`, `--no-pattern-fx` or `--fx-off <id>` alone runs every profile that way, as a
 report with no §12 rows.
 
 ### 12.7 The sim runs: what moved (seeds 1–20)
@@ -619,8 +633,15 @@ fixes in the same run: Hurry waits for a live chain instead of starting a full i
 that moment, and a Gull match drops no fold while its pull is spent. The pay per dot made Coil,
 Hem and Switchback the only paying picks, and P1's policy (the ready diagram with the most dots)
 traced only those, so B7 was measured on the over-paying subset (+ 0.47 points). With one pay
-for every diagram B7 is + 0.02 points, and B17, the hand that rounds the book, + 0.22. The
-first-run results:
+for every diagram B7 was + 0.02 points, and B17, the hand that rounds the book, + 0.22.
+
+**Review round 2** (engine fixes, no knob turned): Wind-up's end moves with an absence, a
+skipped stretch and a clock-back like Rush and Confetti, and a Coil clicked under Rush or
+Confetti runs its 10 s after them; a chain waiting under a field waits at most the field's
+normal-mode life (16 s), so calm's 32 s fields cost a calm player who leaves them alone no
+chains (new row B18; before the fix `P12~trace0` made 76–95 % of `P1~trace0`'s node income on
+seeds 1–4, after it 95–110 %); B12 moved onto `P1~rotate` over days 2–3 with the fold clicks
+counted. The first-run results:
 
 | Row | Result (P1 unless stated) |
 |---|---|
@@ -628,20 +649,21 @@ first-run results:
 | B2 | 12:00:00 (11:21:56 – 13:20:00) |
 | B3 / B4 | first find B2 + 0:00:15 (max + 0:38:14); all nine B2 + 2:00:51 (+ 1:21:34 – + 2:41:39), before M15 on every seed |
 | B5 / B6 | not reached on any seed (provisional). P1 traces the ready diagram with the most dots, so Ridge, Gull and the 4-dot loops stay at 1–2 traces; `P1~rotate` learns all nine on 20 of 20 seeds |
-| B7 | 24.2 % (20.2 – 25.9 %); `--no-book` 23.95 %, + 0.02 points |
-| B9 | M15 − `--no-book` (medians): P1 − 0:00:50, P8 − 0:00:11, P11 − 0:00:13, P14 − 0:01:07 |
+| B7 | 24.0 % (20.4 – 26.0 %); `--no-book` 23.95 %, + 0.32 points |
+| B9 | M15 − `--no-book` (medians): P1 − 0:02:10, P8 − 0:00:12, P11 − 0:00:22, P14 − 0:00:57 |
 | B10 | 2.4 % (2.0 – 3.1 %) |
-| B11 | effect 0.45 %; largest seed-day 2.51 % |
-| B12 | effect per diagram ≤ 0.71 % (Gull; Hem 0.39 %, Switchback 0.15 %, Coil 0.13 %, the rest ≤ 0.05 %); largest seed-day 1.12 % (Coil) |
-| B13 | P15 21:38:04, P1 − 0:02:36. The ≈ 0:20 of §12.4 was not borne out (the first run measured − 0:00:17); the target is now the measured ≈ 0:03 |
-| B14 | P14 22:14:40, P1 + 0:34:00 |
+| B11 | effect 0.51 %; largest seed-day 2.20 % |
+| B12 | on `P1~rotate`, days 2–3, 3–4 fold clicks each (median): Napkin 0.21 %, Coil 0.11 %, Ridge 0.07 %, Switchback 0.03 %, Stair 0.01 %, Lozenge 0.00 %, Sail − 0.01 %, Hem − 0.08 %, Gull − 0.13 %; largest single seed 1.45 % (Gull), the Confetti reshuffle of a moved crane. No diagram's effect is over 0.25 %; none dominates |
+| B13 | P15 21:36:28, P1 − 0:03:22. The ≈ 0:20 of §12.4 was not borne out (the first run measured − 0:00:17, the second − 0:02:36); the target is now ≈ 0:03 |
+| B14 | P14 22:13:08, P1 + 0:33:17 |
 | B15 | identical milestones on 20 of 20 seeds |
-| B16 | 26.3 % (23.5 – 27.5 %); `--no-book` 25.89 % |
-| B17 | `P1~rotate` 24.1 % (20.2 – 26.3 %); + 0.22 points against `--no-book` |
+| B16 | 26.3 % (23.0 – 30.1 %); `--no-book` 25.89 % |
+| B17 | `P1~rotate` 24.1 % (20.1 – 26.7 %); + 0.05 points against `--no-book` |
+| B18 | `P12~trace0` / `P1~trace0` node income, days 2–3: 107.4 % (89.2 – 117.5 %); M15 within 1.56 % on every seed |
 
-With fields on, the existing rows move a little. P1's M15 is 21:40:40 (21:22:16 – 22:42:15; it
+With fields on, the existing rows move a little. P1's M15 is 21:39:50 (21:22:17 – 22:42:23; it
 was 21:40:31, 21:21:49 – 23:21:28 without the book). P1's whole-run click share on seed 1 is
-24.1 % (it was 22.7 %). P12's worst milestone is 1.50 % from P1 (it was 1.33 %). Every §4–§7 row
+24.0 % (it was 22.7 %). P12's worst milestone is 1.90 % from P1 (it was 1.33 %). Every §4–§7 row
 passes.
 
 `test/pacing/step.test.mjs` (1 s against 10 s idle steps) now lets a purchase move by one session

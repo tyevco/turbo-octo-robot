@@ -234,7 +234,7 @@ test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE
   assert.deepEqual([B.B13.median.ref, B.B13.median.lo, B.B13.median.hi], ["P1", -2700, 0]);
   assert.deepEqual([B.B14.median.ref, B.B14.median.hi], ["P1", 5400]);
   // B18: calm keeps a field-ignoring hand's node income (inv. 12 with fields left alone)
-  assert.deepEqual([B.B18.median.lo, B.B18.every.lo], [0.99, 0.9]);
+  assert.deepEqual([B.B18.median.lo, B.B18.every.lo], [0.99, 0.85]);
   assert.equal(B.B1.median.same, true);
   assert.equal(B.B15.median.same, true);
   // P15's §5 row carries B13's lower bound

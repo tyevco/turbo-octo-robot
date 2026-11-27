@@ -1324,58 +1324,54 @@ function patternRows(runs, bal, medians, rows) {
       pass: within(e.effect, R.B11.median) && e.perSeed.every((v) => within(v, R.B11.every)),
       note: `effect (largest day of the per-day medians) ${pct(e.effect)}; largest seed-day ${pct(e.worst)}` });
   }
-  // B12: one diagram's effect, each day, on P1~rotate (every diagram fires there) against
-  // P1~rotate+fxoff:<id> (the same purchases and pauses, that diagram's fold never clicked).
-  // A day counts only where the diagram's fold was clicked at least B12_MIN times (median over
-  // seeds): with fewer, the "effect" is the Confetti reshuffle one click starts, not the effect.
+  // B12: one diagram's effect on P1~rotate (every diagram fires there) against
+  // P1~rotate+fxoff:<id> (the same purchases and pauses, that diagram's fold never clicked),
+  // over days 2-3 together (fields come from the day-2 purchase; a rotating hand clicks each
+  // diagram's fold about twice a day, so one day alone is a click or two). The window counts only
+  // where the diagram's fold was clicked at least B12_MIN times (median over seeds): with fewer,
+  // the "effect" is the Confetti reshuffle one click starts, not the effect, and it fails.
   if (rot) {
     const B12_MIN = 3;
     const parts = [];
     let ok = true;
     let n = 0;
     let worst = -Infinity;
-    const clicksOn = (run, id, d) => {
-      let c = 0;
-      for (let h = d * 8; h < (d + 1) * 8; h++) c += (run.foldN && run.foldN[h] ? run.foldN[h][id] || 0 : 0);
-      return c;
-    };
+    const span = (r, x) => [8, Math.min(24, Math.floor(Math.min(r.m15 ?? Infinity, x.m15 ?? Infinity) / HOUR))];
     for (const p of PATTERNS) {
       const x = runs[`P1~rotate+fxoff:${p.id}`];
       if (!x) continue;
       n++;
       const pairs = same(rot, x);
-      const fold = (run, lo, hi) => {
-        let y = 0;
-        for (let h = lo; h < hi; h++) y += (run.foldBy[h] || {})[p.id] || 0;
-        return y;
-      };
-      const clicks = [0, 1, 2].map((d) => median(pairs.map(([r]) => clicksOn(r, p.id, d))));
-      const days = [0, 1, 2].filter((d) => clicks[d] >= B12_MIN);
-      const perDay = [[], [], []];
-      const perSeed = [];
+      const vals = [];
+      const clicks = [];
       for (const [r, y] of pairs) {
-        let m = -Infinity;
-        for (const d of days) {
-          const v = fxShare(r, y, d, fold);
-          if (!Number.isFinite(v)) continue;
-          perDay[d].push(v);
-          m = Math.max(m, v);
+        const [lo, hi] = span(r, y);
+        let c = 0;
+        let fold = 0;
+        for (let h = lo; h < hi; h++) {
+          c += r.foldN && r.foldN[h] ? r.foldN[h][p.id] || 0 : 0;
+          fold += (r.foldBy[h] || {})[p.id] || 0;
         }
-        perSeed.push(m);
+        clicks.push(c);
+        if (!(hi > lo) || !r.hourly[hi] || !y.hourly[hi]) { vals.push(NaN); continue; }
+        const live = (run, k) => totalOf(run.hourly[k].src) - (run.hourly[k].src.away || 0);
+        const la = live(r, hi) - live(r, lo);
+        const lb = live(y, hi) - live(y, lo);
+        vals.push(la > 0 ? (la - lb - fold) / la : NaN);
       }
-      const effect = days.length ? Math.max(...days.map((d) => (perDay[d].length ? median(perDay[d]) : -Infinity))) : NaN;
-      const at = days.find((d) => perDay[d].length && median(perDay[d]) === effect);
-      const clickNote = `clicks/day ${clicks.map((c) => (Number.isFinite(c) ? c : 0)).join("/")}`;
-      if (!Number.isFinite(effect)) {
-        ok = false; // never measured: fewer than B12_MIN clicks on every day
+      const mc = median(clicks);
+      const effect = median(vals.filter(Number.isFinite));
+      const clickNote = `${mc} clicks (median; ${Math.min(...clicks)}–${Math.max(...clicks)})`;
+      if (!(mc >= B12_MIN) || !Number.isFinite(effect)) {
+        ok = false;
         parts.push(`${p.id} not measured (${clickNote})`);
         continue;
       }
-      if (!within(effect, R.B12.median) || !perSeed.every((v) => !Number.isFinite(v) || within(v, R.B12.every))) ok = false;
+      if (!within(effect, R.B12.median) || !vals.every((v) => !Number.isFinite(v) || within(v, R.B12.every))) ok = false;
       worst = Math.max(worst, effect);
-      parts.push(`${p.id} ${pct(effect)} day ${at + 1} (seed-day ≤ ${pct(maxOf(perSeed))}; ${clickNote})`);
+      parts.push(`${p.id} ${pct(effect)} (seed ≤ ${pct(maxOf(vals))}; ${clickNote})`);
     }
-    if (n) rows.push({ section: "§12", id: "B12", what: R.B12.what, unit: "text", pass: ok, value: worst, note: `effect per diagram on P1~rotate (${rot.length} seeds): ${parts.join(", ")}` });
+    if (n) rows.push({ section: "§12", id: "B12", what: R.B12.what, unit: "text", pass: ok, value: worst, note: `effect per diagram on P1~rotate, days 2–3 (${rot.length} seeds): ${parts.join(", ")}` });
   }
   // B13, B14: P15 and P14 first wish against P1
   for (const [id, pid] of [["B13", "P15"], ["B14", "P14"]]) {
