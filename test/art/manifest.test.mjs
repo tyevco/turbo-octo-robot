@@ -40,14 +40,14 @@ function designFiles() {
   return { files, species };
 }
 
-test("DESIGN §13.3 lists 12 species and 120 SVG files (+ layout-preview.png)", () => {
+test("DESIGN §13.3 lists 12 species and 139 SVG files (+ layout-preview.png)", () => {
   const { files, species } = designFiles();
   assert.equal(species.length, 12);
   const svgs = files.filter((f) => f.endsWith(".svg"));
   assert.equal(new Set(svgs).size, svgs.length, "duplicate names in the table");
-  // The table's rows sum to 120 SVGs; its "Total: 121 SVG + 1 PNG" line counts
-  // the PNG twice. The rows are the authority.
-  assert.equal(svgs.length, 120);
+  // The table's rows sum to 139 SVGs (120 before the Pattern book's 18 fold
+  // layers and its tab glyph, DESIGN §4.7). The rows are the authority.
+  assert.equal(svgs.length, 139);
   assert.deepEqual(files.filter((f) => !f.endsWith(".svg")), ["layout-preview.png"]);
 });
 

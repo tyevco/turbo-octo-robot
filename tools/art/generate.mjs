@@ -437,6 +437,64 @@ const SCENE = {
   "boat-sail": { w: 40, h: 28, shapes: [P(1, "10,16 20,2 30,16")] },
 };
 
+// Pattern book fold pieces (DESIGN §4.7 "Art"): flat two-layer sprites like
+// the boat on a 24 grid (drawn 20 on the mat, 16 on the shelf and in the
+// book); the base is tinted S.sheet, the shade S.sheetShade and lies on the
+// base. Each is our own plain paper object, not a copied model.
+const FOLDS = {
+  // a paper strip with one raised ridge (side view); the ridge's far face shaded
+  ridge: {
+    base: [P(1, "1,15 8,15 12,6 16,15 23,15 23,19.5 1,19.5")],
+    shade: [P(1, "12,6 16,15 12,15"), P(1, "1,18 23,18 23,19.5 1,19.5")],
+  },
+  // two wings meeting in a flat V; the right wing shaded
+  gull: {
+    base: [P(1, "1,6 12,12.5 23,6 21,11.5 12,18 3,11.5")],
+    shade: [P(1, "12,12.5 23,6 21,11.5 12,18")],
+  },
+  // a square folded on its diagonal: the lower half shaded
+  napkin: {
+    base: [P(1, "3,3 21,3 21,21 3,21")],
+    shade: [P(1, "21,3 21,21 3,21")],
+  },
+  // a diamond with one centre crease: two facets shaded
+  lozenge: {
+    base: [P(1, "12,1 23,12 12,23 1,12")],
+    shade: [P(1, "12,1 23,12 12,12"), P(1, "1,12 12,12 12,23")],
+  },
+  // three steps seen from the side: treads shaded, risers in sheet
+  stair: {
+    base: [P(1, "1,23 1,16 8,16 8,10 15,10 15,4 23,4 23,23")],
+    shade: [R(1, 1, 16, 7, 2.5), R(1, 8, 10, 7, 2.5), R(1, 15, 4, 8, 2.5)],
+  },
+  // a triangle on a short mast stick; its lower corner shaded
+  sail: {
+    base: [P(1, "7,1 21,17 7,17"), R(1, 4.5, 1, 2.5, 22)],
+    shade: [P(1, "7,9.5 14,17 7,17")],
+  },
+  // an accordion fan of four panels from one point: panels 2 and 4 shaded
+  switchback: {
+    base: [P(1, "12,22.5 1,7 6,3 12,1.5 18,3 23,7")],
+    shade: [P(1, "12,22.5 6,3 12,1.5"), P(1, "12,22.5 18,3 23,7")],
+  },
+  // four mitred strips round an empty middle: the right and bottom strips shaded
+  hem: {
+    base: [H(1, P(1, "2,2 22,2 22,22 2,22"), P(1, "7.5,7.5 16.5,7.5 16.5,16.5 7.5,16.5"))],
+    shade: [P(1, "22,2 22,22 2,22 7.5,16.5 16.5,16.5 16.5,7.5")],
+  },
+  // a flat square spiral band turning in to the centre; its inner turns shaded
+  coil: {
+    base: [
+      P(1, "2,2 22,2 22,22 2,22 2,8 16.5,8 16.5,16.5 8,16.5 8,13 13,13 13,11.5 5.5,11.5 5.5,18.5 18.5,18.5 18.5,5.5 2,5.5"),
+    ],
+    shade: [P(1, "5.5,8 16.5,8 16.5,16.5 8,16.5 8,13 13,13 13,11.5 5.5,11.5")],
+  },
+};
+for (const [id, { base, shade }] of Object.entries(FOLDS)) {
+  SCENE[`fold-${id}-base`] = { w: 24, h: 24, shapes: base };
+  SCENE[`fold-${id}-shade`] = { w: 24, h: 24, shapes: shade };
+}
+
 // ---------------------------------------------------------------------------
 // Workshops (24 grid; drawn 28)
 
@@ -562,6 +620,8 @@ const UI = {
   ],
   step: [C(1, 5, 12.5, 3), P(1, "6.5,1.5 8,1.5 8,12.5 6.5,12.5"), P(1, "8,1.5 13,4.5 13,7.5 8,5")],
   cloud: [C(1, 4.5, 10.5, 3.5), C(1, 8.5, 7.5, 4.5), C(1, 12, 10.5, 3.5), R(1, 4.5, 9.5, 7.5, 4.5)],
+  // the Pattern book's tab (DESIGN §4.7): an open book, two pages and a spine gap
+  book: [P(1, "0.5,2.5 7.5,4 7.5,14.5 0.5,13"), P(2, "8.5,4 15.5,2.5 15.5,13 8.5,14.5")],
 };
 
 // garland strand: 50 crane silhouettes, 4 units each, in one path

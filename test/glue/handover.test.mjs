@@ -60,6 +60,40 @@ test("hot reload adopts the slot: same writer, no disk read, no rollback", async
   assert.equal(parsed(w.ctl).state.stats.hits, before.hits + 1);
 });
 
+// ARCHITECTURE B17: a code generation from before the Pattern book hands over a state of
+// version 1; the new one migrates it in place (no disk read, no rollback) and plays on.
+test("hot reload from a state-version-1 generation migrates the live state in place: no rollback, the book playable", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000);
+  await w.hits(v, 5);
+  // the old generation's live state: everything B17 added taken out
+  const st = w.slot.state;
+  st.version = 1;
+  delete st.book;
+  for (const k of ["fieldIn", "field", "fold", "lastField", "gullFor", "windUntil"]) delete st.spawn[k];
+  delete st.hand.steady;
+  delete st.boosts.coilEnd;
+  delete st.ui.hints.field;
+  delete st.ui.hints.book;
+  const before = { hits: st.stats.hits, bank: st.bank };
+  const reads = w.ctl.log.filter((e) => e.type === "read").length;
+  await w.reload();
+  assert.equal(w.ctl.log.filter((e) => e.type === "read").length, reads, "no disk read on reload");
+  assert.equal(w.slot.state, st, "the same state object, migrated in place");
+  assert.equal(st.version, engine.VERSION);
+  assert.equal(st.book.open, false);
+  assert.equal(Object.getPrototypeOf(st.book.found), null);
+  assert.equal(st.spawn.fieldIn, null);
+  assert.equal(st.stats.hits, before.hits);
+  assert.ok(st.bank >= before.bank);
+  await w.hits(w.copies[0], 1);
+  await w.advance(16000);
+  const p = parsed(w.ctl);
+  assert.equal(p.state.version, engine.VERSION);
+  assert.equal(p.state.stats.hits, before.hits + 1);
+});
+
 for (const variant of [
   { name: "the old write landed", latency: { write: 200, read: 400 }, cas: 0 },
   { name: "the old write lands after the new read", latency: { write: 600, read: 0 }, cas: 1 },

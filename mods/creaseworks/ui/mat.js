@@ -2,9 +2,10 @@
 // (ARCHITECTURE B11). Layering is sibling order (later paints on top): grid
 // and edge (paint_path), confetti flecks, crease line, the Sheet and its fold
 // ticks, the boat (in its lane above the band, r6-06), crease nodes, scraps,
-// the ream, the gilded crane, the top band (needs-you chips or the figure
-// shelf), the bottom band (tray and streak meter), floating numbers, the
-// first-run hint.
+// the crease field (its trace line and nine dots, DESIGN §4.7) and its
+// result chip, the ream, the gilded crane, the fold piece, the top band
+// (needs-you chips or the figure shelf), the bottom band (tray and streak
+// meter), floating numbers, the first-run hint, the first-field hint.
 //
 // Positions in the vm are logical px in the 304×232 mat (304×184 with
 // `sheet.short`). The mat drawn here is `ctx.width − 16` wide and 184 / 232 /
@@ -16,13 +17,13 @@
 import { div, svg, PathBuilder, Background } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { clip } from "../engine/index.js";
-import { validateBackgroundColor } from "./color.js";
-import { sheetPaths, spritePath, speciesSprite, icon, sprite } from "./art.js";
+import { validateBackgroundColor, withAlpha } from "./color.js";
+import { sheetPaths, spritePath, speciesSprite, icon, sprite, foldPaths, foldSprite } from "./art.js";
 import { HUE_DARK } from "./palette.js";
 import { chip, pop, progressBar, text } from "./widgets.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const MAT_CLIP = Object.freeze({ chip: 10, more: 6, label: 8, pop: 10, hint: 40, craneHint: 48 });
+export const MAT_CLIP = Object.freeze({ chip: 10, more: 6, label: 8, pop: 10, hint: 40, craneHint: 48, fieldChip: 40, fieldHint: 60, tip: 40 });
 
 const SRC_W = 304;
 const STD = Object.freeze({ h: 232, sheet: 112, sx: 96, sy: 58 });
@@ -255,6 +256,246 @@ function theSheet(vm, g, S, click, zoom) {
     .gap(4);
   for (let i = 0; i < 8; i++) ticks.child(div().w(6).h(2).flex_none().bg(i < done ? S.sheet : S.crease));
   return [el, ticks];
+}
+
+// ---------------------------------------------------------------------------
+// Crease fields (DESIGN §4.7, ARCHITECTURE B17 UI)
+
+/**
+ * A field dot's look per state (tested): the ring or dot size, its edge, and
+ * whether it is filled. Each state has its own shape; colour is only a
+ * second cue. `last` is a 10 px ink dot in a 3 px S.node ring (16 px box);
+ * `close` a 10 px ink dot in an 18 px 2 px ink ring; `used` a 10 px ink dot
+ * on a 14 px paper disc. Every mark sits on S.sheet (`paper`): the fold
+ * frames past the first leave dots over the mat, where ink alone reads
+ * about 2.4:1, and a paper disc reads 5.93 / 8.12 there and vanishes on
+ * the paper.
+ */
+export const DOT_LOOK = Object.freeze({
+  free: Object.freeze({ ring: 12, edge: 2 }),
+  centre: Object.freeze({ ring: 8, edge: 1.5 }),
+  next: Object.freeze({ ring: 20, edge: 2 }),
+  used: Object.freeze({ dot: 10, ring: 14, edge: 0 }),
+  last: Object.freeze({ dot: 10, ring: 16, edge: 3, node: true }),
+  close: Object.freeze({ dot: 10, ring: 18, edge: 2 }),
+});
+/** The field's hit boxes (28 × 28, the §14 minimum) and the result chip's and first-field hint's geometry. */
+export const FIELD = Object.freeze({ hit: 28, chipH: 22, chipPad: 8, hintMaxW: 216, px: 5.8 });
+
+/** Sheet-local centre of grid cell (col | row) on a `size` px Sheet: size · (2c + 1) / 6. */
+export function dotCentre(size, c) {
+  return r1((size * (2 * num(c) + 1)) / 6);
+}
+
+/**
+ * The nine dots' hit boxes in mat px for `vm.sheet.field` on the drawn
+ * Sheet: `[{ i, id, x, y, w, h }]` (x, y the box's left / top). Tested: every
+ * box lies on the Sheet and no two overlap.
+ */
+export function fieldBoxes(field, g) {
+  if (!field || !Array.isArray(field.dots)) return [];
+  return field.dots.map((d) => ({
+    i: d.i,
+    id: `${field.id}-${d.i}`,
+    x: r1(g.sx + dotCentre(g.sheet, d.col) - FIELD.hit / 2),
+    y: r1(g.sy + dotCentre(g.sheet, d.row) - FIELD.hit / 2),
+    w: FIELD.hit,
+    h: FIELD.hit,
+  }));
+}
+
+/** A dot's visible mark, centred in its 28 px box (on its paper disc, DOT_LOOK). */
+function dotMark(state, S) {
+  const look = DOT_LOOK[state] || DOT_LOOK.free;
+  const ring = h_flex().w(look.ring).h(look.ring).flex_none().rounded_full().justify_center().items_center();
+  if (look.node) return ring.border(look.edge).border_color(S.node).bg(S.ink); // the 10 px ink dot inside a 3 px node edge
+  ring.bg(S.sheet);
+  if (look.edge) ring.border(look.edge).border_color(S.ink);
+  if (look.dot) ring.child(div().w(look.dot).h(look.dot).flex_none().rounded_full().bg(S.ink));
+  return ring;
+}
+
+/** Percent of the Sheet for a grid point (col or row 0..2). */
+const cellPct = (c) => `${r1(((2 * num(c) + 1) / 6) * 100)}%`;
+
+/**
+ * The trace (or result) line over the Sheet: two stroke paths, an edge
+ * under the line, so it reads where a fold frame leaves the mat under it
+ * (ink on mat is about 2.4:1). `style` is "trace" (the live trace: solid
+ * 2 px ink on a 4 px paper edge), "found" (dashed ink on a dashed paper
+ * edge), "learned" (solid ink on paper), "mastered" (2 px S.goldInk on a
+ * 4 px S.node edge) or "loose" (dashed 1 px ink at 0.5 on a 3 px paper edge
+ * at 0.6).
+ */
+function traceLine(line, closed, style, g, S) {
+  if (!Array.isArray(line) || line.length < 2) return [];
+  const stroke = (width, dash) => {
+    const b = PathBuilder.stroke(width);
+    line.forEach((p, k) => {
+      const x = cellPct(p[0]);
+      const y = cellPct(p[1]);
+      if (k === 0) b.move_to(x, y);
+      else b.line_to(x, y);
+    });
+    if (closed && line.length > 2) b.line_to(cellPct(line[0][0]), cellPct(line[0][1]));
+    if (dash) b.dash_array(dash);
+    return b.build();
+  };
+  const at = (el, id) => (el ? el.id(id).absolute().left(g.sx).top(g.sy).w(g.sheet).h(g.sheet) : null);
+  const solid = (c) => Background.solid(validateBackgroundColor(c));
+  const out = [];
+  if (style === "mastered") {
+    out.push(at(paint(stroke(4), solid(S.node)), "cw-field-edge"));
+    out.push(at(paint(stroke(2), solid(S.goldInk)), "cw-field-line"));
+  } else if (style === "loose") {
+    out.push(at(paint(stroke(3, [4, 3]), solid(withAlpha(S.sheet, 0.6))), "cw-field-edge"));
+    out.push(at(paint(stroke(1, [4, 3]), solid(withAlpha(S.ink, 0.5))), "cw-field-line"));
+  } else {
+    const dash = style === "found" ? [5, 3] : null;
+    out.push(at(paint(stroke(4, dash), solid(S.sheet)), "cw-field-edge"));
+    out.push(at(paint(stroke(2, dash), solid(S.ink)), "cw-field-line"));
+  }
+  return out.filter(Boolean);
+}
+
+/**
+ * The crease field over the Sheet (§4.7): the trace line (or the 3 s result
+ * line when no trace is drawn), then nine 28 × 28 `div#cw-dot-<fieldId>-<i>`
+ * that take the Sheet's own left press and stop it, so one press is one
+ * action. Static in every mode; the last-2 s fade is a 2 s opacity
+ * transition, a plain 0.4 in calm mode.
+ */
+function creaseField(vm, g, S, click, calm, zoom) {
+  const sheet = vm.sheet || {};
+  const field = sheet.field && typeof sheet.field === "object" ? sheet.field : null;
+  const result = sheet.fieldResult && typeof sheet.fieldResult === "object" ? sheet.fieldResult : null;
+  const out = [];
+  const live = field && Array.isArray(field.line) && field.line.length >= 2;
+  if (live) out.push(...traceLine(field.line, false, "trace", g, S));
+  else if (result) out.push(...traceLine(result.line, result.closed === true, String(result.style || "found"), g, S));
+  if (!field) return out;
+  const z = zoom > 0 ? zoom : 1;
+  const byI = new Map((Array.isArray(field.dots) ? field.dots : []).map((d) => [d.i, d]));
+  for (const b of fieldBoxes(field, g)) {
+    const d = byI.get(b.i);
+    const el = h_flex()
+      .id(`cw-dot-${b.id}`)
+      .absolute()
+      .left(b.x)
+      .top(b.y)
+      .w(b.w)
+      .h(b.h)
+      .justify_center()
+      .items_center()
+      .cursor_pointer()
+      .on_mouse_down("left", (e, cx) => {
+        if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+        // the press point in mat px, for the pop only (B17)
+        const lp = e && e.local_position;
+        const lx = lp && typeof lp.x === "number" ? lp.x / z : b.w / 2;
+        const ly = lp && typeof lp.y === "number" ? lp.y / z : b.h / 2;
+        return click("dot", b.id, { x: r1(b.x + lx), y: r1(b.y + ly) }, cx);
+      })
+      .child(dotMark(d.state, S));
+    if (typeof d.tip === "string" && d.tip) el.tooltip(clip(d.tip, MAT_CLIP.tip));
+    if (field.fading) {
+      el.opacity(0.4);
+      if (!calm) el.transition("opacity", 2000);
+    }
+    out.push(el);
+  }
+  return out;
+}
+
+/**
+ * Where the field's chip goes (mat px): `{ x, y, w, h, lines }`. The result
+ * chip (one line) sits over the Sheet's top edge, its foot at the top of the
+ * top row's largest ring (20 px on the short mat's 96 px Sheet, where it
+ * fits 20 px under the top band); the first-field hint wraps to
+ * as few lines as fit `FIELD.hintMaxW` (or the mat) and keeps the same foot,
+ * so it may reach up into the top band on the short mat (it shows only
+ * until the first match). Never wider than the mat less 8 px.
+ */
+export function fieldChipBox(str, g, hint = false) {
+  const maxW = Math.min(g.w - 8, hint ? FIELD.hintMaxW : g.w - 8);
+  // the result chip is one line (it truncates past the mat: "Loose · Switchback needs 4 more",
+  // the longest, measures about 174 px at 11/600); the hint wraps (the over-estimate)
+  const need = Math.ceil(Array.from(String(str)).length * (hint ? CHIP_TEXT.px : FIELD.px)) + 2 * FIELD.chipPad + 2;
+  const w = r1(Math.max(CHIP_TEXT.minW, Math.min(maxW, need)));
+  const lines = hint ? chipLines(str, w - 2 * FIELD.chipPad) : 1;
+  // its foot at the top of the top row's largest ring (the 20 px next step)
+  const foot = g.sy + dotCentre(g.sheet, 0) - DOT_LOOK.next.ring / 2;
+  // one line: 22 px, or as little as 18 where the short mat leaves less under the top band
+  const h = lines <= 1 ? Math.max(18, Math.min(FIELD.chipH, foot - TOP_BAND)) : lines * CHIP_TEXT.line + CHIP_TEXT.padY;
+  const y = r1(Math.max(hint ? 2 : TOP_BAND, foot - h));
+  const x = r1(Math.max(4, Math.min(g.w - w - 4, g.sx + g.sheet / 2 - w / 2)));
+  return { x, y, w, h, lines };
+}
+
+/**
+ * The result chip (3 s after a set; `hint` false) or, before any match and
+ * with no result showing, the first-field hint (`hint` true); static, no
+ * handlers. The result chip is painted under the play pieces (a fold piece
+ * that lands beside it stays whole); the hint over everything, since it may
+ * reach into the top band on the short mat.
+ */
+function fieldChip(vm, g, T, hint) {
+  const sheet = vm.sheet || {};
+  const result = sheet.fieldResult && typeof sheet.fieldResult.text === "string" && sheet.fieldResult.text ? sheet.fieldResult : null;
+  const field = !result && sheet.field && typeof sheet.field.hint === "string" && sheet.field.hint ? sheet.field : null;
+  if (hint ? !field : !result) return null;
+  const str = result ? clip(result.text, MAT_CLIP.fieldChip) : clip(field.hint, MAT_CLIP.fieldHint);
+  const b = fieldChipBox(str, g, !result);
+  return div()
+    .id(result ? "cw-field-chip" : "cw-field-hint")
+    .absolute()
+    .left(b.x)
+    .top(b.y)
+    .w(b.w)
+    .h(b.h)
+    .px(FIELD.chipPad)
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(b.lines > 1 ? 8 : b.h / 2)
+    .bg(T.popover)
+    .border(1)
+    .border_color(T.border)
+    .child(result
+      ? text(str, { size: 11, weight: 600, color: T.foreground, truncate: true }).whitespace_nowrap()
+      : text(str, { size: 11, weight: 600, color: T.foreground }).whitespace_normal().line_height("127%").text_center());
+}
+
+/** The fold piece (§4.7): a 28 × 28 hit box like a scrap holding the diagram's 20 px fold, base S.sheet, shade S.sheetShade. */
+function foldPiece(f, g, S, click, calm) {
+  const [x, y] = place(g, f.x, f.y, 28, 28);
+  let art;
+  try {
+    art = foldSprite(String(f.kind), 20, S.sheet, S.sheetShade);
+  } catch {
+    return null; // a diagram from a newer save draws nothing rather than failing the render
+  }
+  const el = h_flex()
+    .id(`cw-fold-${f.id}`)
+    .absolute()
+    .left(r1(x - HALF_HIT))
+    .top(r1(y - HALF_HIT))
+    .w(28)
+    .h(28)
+    .justify_center()
+    .items_center()
+    .cursor_pointer()
+    .tooltip(clip(String(f.tooltip || "A fold piece"), 140))
+    .on_click((e, cx) => {
+      if (cx && typeof cx.stop_propagation === "function") cx.stop_propagation();
+      return click("fold", f.id, { x: r1(x), y: r1(y) }, cx);
+    })
+    .child(art);
+  if (f.fading) {
+    el.opacity(0.4);
+    if (!calm) el.transition("opacity", 2000);
+  }
+  return el;
 }
 
 /** The centre of a `size` hit area at vm (x, y), mapped and kept off the Sheet. */
@@ -599,7 +840,9 @@ function topBand(vm, g, T, S, openHelper, calm) {
   const fit = Math.max(0, Math.floor((g.w - 12) / 18));
   for (const sp of shelf.slice(-fit)) {
     try {
-      band.child(speciesSprite(sp, 16, S.sheet, { surface: S.mat }));
+      // "p:<diagram>": a fold piece clicked on the mat, drawn with its base layer (§4.7)
+      if (typeof sp === "string" && sp.startsWith("p:")) band.child(sprite(foldPaths(sp.slice(2)).base, 16, S.sheet));
+      else band.child(speciesSprite(sp, 16, S.sheet, { surface: S.mat }));
     } catch {
       // An unknown species from a newer save draws nothing rather than failing the render.
     }
@@ -794,12 +1037,20 @@ export function renderMat(vm, ui, ctx) {
   const line = creaseLine(mat.creaseLine, g, S);
   if (line) root.child(line);
   for (const el of theSheet(vm, g, S, click, zoom)) root.child(el);
+  // The crease field right after the Sheet and its ticks (§4.7): its dots take the Sheet's presses.
+  for (const el of creaseField(vm, g, S, click, calm, zoom)) root.child(el);
+  const resultChip = fieldChip(vm, g, T, false);
+  if (resultChip) root.child(resultChip);
   // The boat under the play pieces (r6-06): its lane is the bottom slot row.
   if (mat.boat) root.child(boat(mat.boat, g, S, click, calm));
   for (const n of Array.isArray(mat.nodes) ? mat.nodes : []) root.child(node(n, g, S, click, calm));
   for (const s of Array.isArray(mat.scraps) ? mat.scraps : []) root.child(scrap(s, g, S, click));
   if (mat.ream) root.child(ream(mat.ream, g, S, click));
   if (mat.crane) root.child(crane(mat.crane, g, S, click, calm, zoom));
+  if (mat.fold) {
+    const piece = foldPiece(mat.fold, g, S, click, calm);
+    if (piece) root.child(piece);
+  }
   root.child(topBand(vm, g, T, S, openHelper, calm));
   root.child(bottomBand(vm, g, T, S, open, calm, zoom));
   for (const p of pops(vm, ui, S, calm)) root.child(p);
@@ -807,5 +1058,7 @@ export function renderMat(vm, ui, ctx) {
   if (hint) root.child(hint);
   const callout = craneHint(mat.crane, g, T, calm);
   if (callout) root.child(callout);
+  const hintChip = fieldChip(vm, g, T, true);
+  if (hintChip) root.child(hintChip);
   return root;
 }

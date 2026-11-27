@@ -40,6 +40,9 @@ const SCENE_BOX = {
   "crane-gilded-outline": [40, 28], "crane-gilded-body": [40, 28], "crane-gilded-shade": [40, 28],
   "boat-hull": [40, 28], "boat-sail": [40, 28],
 };
+/** The Pattern book's fold pieces (DESIGN §4.7): two 24-unit layers per diagram. */
+export const FOLD_IDS = ["ridge", "gull", "napkin", "lozenge", "stair", "sail", "switchback", "hem", "coil"];
+for (const id of FOLD_IDS) for (const layer of ["base", "shade"]) SCENE_BOX[`fold-${id}-${layer}`] = [24, 24];
 
 /** The names DESIGN §13.3 lists per folder (the checker refuses anything else). */
 export const NAMES = {
@@ -47,7 +50,7 @@ export const NAMES = {
   status: ["working-arc", "needs", "done-check", "rest", "envelope", "pip-work", "pip-rest", "pip-needs"],
   workshops: ["stack", "bonefolder", "scissors", "gluepot", "bench", "vat", "press", "loft", "kite"],
   ui: ["fold", "wish", "gear", "flock", "shop", "string", "back", "chevron", "close", "info", "warn", "check", "dots",
-    "arrows", "lock", "clock", "hand", "paw", "ribbon", "curio", "cog", "step", "cloud", "garland-strand"],
+    "arrows", "lock", "clock", "hand", "paw", "ribbon", "curio", "cog", "step", "cloud", "book", "garland-strand"],
   scene: Object.keys(SCENE_BOX),
 };
 

@@ -120,6 +120,20 @@ const CHECKS = {
   short: (r) => r.vm.sheet.short === true,
   calm: (r) => r.vm.calm === true,
   "rail-banner": (r) => r.vm.rail.save !== null,
+  // The Pattern book (DESIGN §4.7), each through the real engine's dot and fold clicks.
+  field: (r) => r.vm.sheet.short === true && !!r.vm.sheet.field && typeof r.vm.sheet.field.hint === "string" &&
+    ["close", "used", "last", "next"].every((st) => r.vm.sheet.field.dots.some((d) => d.state === st)) && r.vm.book.open === true,
+  "field-calm": (r) => r.vm.calm === true && !!r.vm.sheet.field && r.vm.sheet.field.hint === null &&
+    r.vm.sheet.fieldResult && r.vm.sheet.fieldResult.style === "loose" && /^Loose · Napkin needs 1 more$/.test(r.vm.sheet.fieldResult.text),
+  fold: (r) => r.vm.sheet.short === true && r.vm.mat.fold && r.vm.mat.fold.kind === "gull" && r.vm.sheet.fieldResult.text === "Gull · new diagram" &&
+    r.vm.mat.shelf.includes("p:ridge") && r.vm.boosts.some((b) => b.type === "steady"),
+  book: (r) => r.vm.book.cards.length === 9 && r.vm.book.found === 5 && r.vm.book.help === null &&
+    r.vm.book.cards.find((c) => c.id === "ridge").tier === 3 && r.vm.book.cards.find((c) => c.id === "gull").tier === 2 &&
+    r.vm.book.cards.some((c) => c.status === "ready") && r.vm.book.cards.some((c) => c.status === "fold on the mat") &&
+    r.vm.book.cards.find((c) => c.id === "sail").state === "next" && r.vm.book.newMarks === false &&
+    // opening the tab marked its marks seen (a hint action: two windows merge to the larger)
+    r.slot.state.ui.hints.book === r.vm.book.marks,
+  "book-narrow": (r) => r.vm.sheet.short === true && r.vm.book.cards.length === 9 && r.vm.book.found === 2 && typeof r.vm.book.help === "string",
 };
 
 test("every view runs as a real game in graphite and paper, shows what it is named for", async () => {

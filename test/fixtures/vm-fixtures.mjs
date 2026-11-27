@@ -26,6 +26,8 @@ export const BANNER_KINDS = Object.freeze(["recovered", "fresh", "conflict", "me
 export const RIBBON_COUNTS = Object.freeze([0, 4, 34, 64, 130]);
 /** Window width → ribbon work width W (window − 268 px sidebar, DESIGN §3.10). */
 export const RIBBON_WIDTHS = Object.freeze({ 1100: 832, 1440: 1172 });
+/** The Pattern book's views (DESIGN §4.7, §15.3). */
+export const BOOK_VIEWS = Object.freeze(["field", "field-calm", "fold", "book", "book-narrow"]);
 
 export const VIEW_NAMES = Object.freeze([
   "empty", "first-run", "standard-4", "needs-you-3", "finished-2", "tray-full", "storm", "crane", "boat",
@@ -37,6 +39,8 @@ export const VIEW_NAMES = Object.freeze([
   "rail", "rail-64", "rail-banner",
   ...RIBBON_COUNTS.map((n) => `ribbon-${n}`),
   "narrow", "wide", "short", "calm",
+  // the Pattern book (DESIGN §4.7)
+  ...BOOK_VIEWS,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -324,6 +328,88 @@ function stringVm(o = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The Pattern book (DESIGN §4.7; ARCHITECTURE B17 vm shape)
+
+const BOOK_HELP = "Join neighbouring dots on the Sheet's crease field. Click the last dot again to set, or end on the first to close. Any turn or mirror counts.";
+const tierOfN = (n) => (n >= 12 ? 3 : n >= 4 ? 2 : n >= 1 ? 1 : 0);
+
+/**
+ * vm.book for `found` ({ id: [n, status] }), with cards when `cards`: the
+ * first unfound diagram in book order is "next" (Ridge always shows).
+ */
+function bookVm(o = {}) {
+  const found = o.found || {};
+  const ids = CONTENT.PATTERNS.map((p) => p.id);
+  const next = ids.find((id) => !Object.hasOwn(found, id)) ?? null;
+  const marks = Object.values(found).reduce((a, [n]) => a + tierOfN(n), 0);
+  const nFound = Object.keys(found).length;
+  const cards = !o.cards ? [] : CONTENT.PATTERNS.map((p) => {
+    const rec = Object.hasOwn(found, p.id) ? found[p.id] : null;
+    const state = rec ? "found" : p.id === next || p.id === "ridge" ? "next" : "hidden";
+    const shown = state !== "hidden";
+    const n = rec ? rec[0] : 0;
+    const tier = tierOfN(n);
+    return {
+      id: p.id,
+      name: shown ? p.name : "???",
+      state,
+      n: p.n,
+      closed: p.closed,
+      dots: shown ? p.dots.map(([c, r]) => [c, r]) : null,
+      sub: `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+      tier,
+      pips: [tier >= 1, tier >= 2, tier >= 3],
+      count: rec ? `×${n}` : null,
+      status: rec ? rec[1] : null,
+      effect: shown ? p.text : null,
+      short: shown ? p.short : null,
+      hint: state === "found" || p.hint === null ? null : p.hint,
+      fold: rec ? p.fold : null,
+      tooltip: shown ? `${p.text} · found 1 · learned 4 · mastered 12` : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+    };
+  });
+  return {
+    open: o.open ?? true,
+    newMarks: Boolean(o.newMarks),
+    found: nFound,
+    of: 9,
+    marks,
+    marksOf: 27,
+    count: `${nFound} / 9 · ${marks} / 27 marks`,
+    line: o.line ?? (next ? `Next field in 3 chains · next to find: ${CONTENT.PATTERNS.find((p) => p.id === next).name}` : "All nine found"),
+    help: nFound < 3 ? BOOK_HELP : null,
+    cards,
+  };
+}
+
+const DOT_TIPS = { free: "Crease field", centre: "Start on any other dot", next: "Next", used: null, last: "Click again to set", close: "Click to close" };
+
+/** vm.sheet.field for a trace `path` (dots 0..8) on field `id`. */
+function fieldVm(id, path, o = {}) {
+  const near = (a, b) => a !== b && Math.abs((a % 3) - (b % 3)) <= 1 && Math.abs(Math.floor(a / 3) - Math.floor(b / 3)) <= 1;
+  const n = path.length;
+  const last = path[n - 1];
+  const dots = [];
+  for (let i = 0; i < 9; i++) {
+    let state;
+    if (n === 0) state = i === 4 ? "centre" : "free";
+    else if (i === last) state = "last";
+    else if (i === path[0] && n >= 3 && near(i, last)) state = "close";
+    else if (path.includes(i)) state = "used";
+    else state = near(i, last) ? "next" : "free";
+    dots.push({ i, col: i % 3, row: Math.floor(i / 3), state, tip: state === "last" && n < 3 ? null : DOT_TIPS[state] });
+  }
+  return {
+    id,
+    dots,
+    line: path.map((i) => [i % 3, Math.floor(i / 3)]),
+    fading: Boolean(o.fading),
+    hint: o.hint ?? null,
+    barHint: o.barHint ?? "Crease field · next to find: Ridge",
+  };
+}
+
 function garlandsList(n, present) {
   const out = [];
   for (let g = 0; g < n; g++) {
@@ -413,7 +499,7 @@ function base(name, o = {}) {
       wishes: o.wishes ?? 0,
       counts,
     },
-    sheet: { frame: o.frame ?? 3, ticks: o.ticks ?? 3, firstRunHint: Boolean(o.firstRunHint), short },
+    sheet: { frame: o.frame ?? 3, ticks: o.ticks ?? 3, firstRunHint: Boolean(o.firstRunHint), short, field: o.field ?? null, fieldResult: o.fieldResult ?? null },
     mat: {
       chips,
       more: Math.max(0, needs.length - 4),
@@ -425,6 +511,7 @@ function base(name, o = {}) {
       ream: null,
       storm: false,
       creaseLine: null,
+      fold: null,
     },
     tray: { envelopes: trayAll.slice(0, 6), more: Math.max(0, trayAll.length - 6) },
     streak: { fill: 0.35, label: "×1.2", inStep: false, afterglow: null },
@@ -439,6 +526,7 @@ function base(name, o = {}) {
     },
     shop: shopFor(bank, rate, o.owned || STANDARD_OWNED, o.bought || STANDARD_BOUGHT),
     string: stringVm(o.string),
+    book: bookVm(o.book || { open: false }),
     settings: settingsVm(o.settings),
     away: o.away ?? null,
     notices: o.notices ?? [],
@@ -521,6 +609,9 @@ function busyCard() {
 const STD = { finished: 1, working: 2, resting: 1, envelopes: 0.5 };
 
 const PANEL = { role: "panel", width: 320, height: 784 };
+/** 1100 × 700 as shipped: the Narrow panel (226) and the short mat (DESIGN §2.3). */
+const NARROW = { role: "panel", width: 226, height: 584 };
+const BOOK_BOUGHT = new Set([...STANDARD_BOUGHT, "long-crease", "grand-crease", "crease-field"]);
 const ui = (over = {}) => ({ tab: "flock", segment: "works", selected: null, confirm: false, details: false, ...over });
 
 function boost(type, label, msLeft, msTotal) {
@@ -632,6 +723,47 @@ const BUILDERS = {
   short: () => [{ role: "panel", width: 320, height: 584 }, ui(), base("short", {
     roster: STD, short: true,
     mat: (at) => ({ nodes: [21, 12, 27].map((slot, j) => ({ id: `c5-${j + 1}`, i: j + 1, ...at(slot), due: j === 0, fading: false })) }),
+  })],
+
+  // The Pattern book (DESIGN §4.7): the views of glue/views.js, by hand.
+  field: () => [NARROW, ui(), base("field", {
+    roster: STD, short: true, width: 226, frame: 0, ticks: 0, bought: BOOK_BOUGHT,
+    field: fieldVm("p1", [0, 1, 4], { hint: "Join neighbouring dots. Click the last one again to set." }),
+    book: { found: {} },
+  })],
+
+  "field-calm": () => [PANEL, ui(), base("field-calm", {
+    roster: STD, frame: 5, ticks: 5, bought: BOOK_BOUGHT, settings: { values: { calm: true, pops: false } },
+    field: fieldVm("p5", [], { barHint: "Crease field · next to find: Napkin" }),
+    fieldResult: { line: [[0, 0], [1, 0], [1, 1]], closed: false, style: "loose", text: "Loose · Napkin needs 1 more" },
+    shelf: ["fox", "p:ridge", "p:gull", "frog"],
+    book: { found: { ridge: [1, "rests 2:55"], gull: [1, "rests 2:58"] }, newMarks: true, line: "A field is on the Sheet · next to find: Napkin" },
+  })],
+
+  fold: () => [NARROW, ui(), base("fold", {
+    roster: STD, short: true, width: 226, frame: 2, ticks: 2, bought: BOOK_BOUGHT,
+    fieldResult: { line: [[0, 0], [1, 1], [2, 0]], closed: false, style: "found", text: "Gull · new diagram" },
+    mat: (at) => ({ fold: { id: "f4", kind: "gull", ...at(21), tooltip: "Gull fold · the next crane comes 20 s sooner", fading: false } }),
+    shelf: ["fox", "p:ridge"],
+    boosts: [{ type: "steady", label: "Steady", msLeft: null, msTotal: null }],
+    book: { found: { ridge: [1, "rests 2:58"], gull: [1, "fold on the mat"] }, newMarks: true },
+  })],
+
+  book: () => [PANEL, ui({ tab: "book" }), base("book", {
+    roster: STD, bought: BOOK_BOUGHT,
+    fieldResult: { line: [[0, 0], [1, 0], [1, 1], [0, 1]], closed: true, style: "found", text: "Napkin" },
+    mat: (at) => ({ fold: { id: "f26", kind: "napkin", ...at(19), tooltip: "Napkin fold · banks 90 s of afterglow", fading: false } }),
+    shelf: ["koi", "p:gull", "crane", "p:stair", "rabbit", "p:lozenge", "boat"],
+    book: {
+      cards: true,
+      found: { ridge: [12, "rests 1:50"], gull: [5, "rests 2:22"], napkin: [2, "fold on the mat"], lozenge: [1, "ready"], stair: [1, "rests 2:36"] },
+    },
+  })],
+
+  "book-narrow": () => [NARROW, ui({ tab: "book" }), base("book-narrow", {
+    roster: STD, short: true, width: 226, bought: BOOK_BOUGHT,
+    shelf: ["fox", "p:ridge", "crane"],
+    book: { cards: true, found: { ridge: [4, "rests 2:50"], gull: [1, "fold on the mat"] } },
   })],
 
   calm: () => [PANEL, ui(), base("calm", {

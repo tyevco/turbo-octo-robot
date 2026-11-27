@@ -16,7 +16,7 @@
 // reading one also forgets a handover slot this view's previous run left in
 // the rig's process).
 
-import { newGame, serialize, apply, wishInfo } from "../engine/index.js";
+import { newGame, serialize, apply, wishInfo, CONTENT } from "../engine/index.js";
 import { WISH_MOMENT } from "../engine/view.js";
 import { localDay } from "./clock.js";
 import { getSlot, dropSlot } from "./live.js";
@@ -560,6 +560,113 @@ add("calm", { roster: { needs: 2, finished: 1, working: 3, resting: 2 } }, async
   act(v, { type: "setting", key: "calm", value: true });
   act(v, { type: "setting", key: "pops", value: false });
   await finish(tools, ["t3", "t4"]);
+});
+
+// The Pattern book (DESIGN §4.7): crease fields traced by hand through the
+// real engine. `bookGame` buys Grand Crease and Crease Field; `trace` brings
+// a field on (the next chain, as Crease Field and the Margin fold do) and
+// clicks a diagram's dots in its book order, then sets it (the last dot
+// again, or the first to close).
+
+/** A game with Grand Crease and Crease Field (the book open; the next chain is a field). */
+function bookGame(view, folds = 2.5e7) {
+  midGame(view, folds);
+  buyAll(view, [["long-crease", 1], ["grand-crease", 1], ["crease-field", 1]]);
+}
+
+/** The live field, brought on now when none is up. */
+async function fieldNow(view, tools) {
+  const sp = state().spawn;
+  if (!sp.field) {
+    sp.fieldIn = 1;
+    await spawnNow(view, tools, "nextChainAt");
+  }
+  return state().spawn.field;
+}
+
+const dotsOf = (id) => CONTENT.PATTERNS.find((p) => p.id === id).dots.map(([c, r]) => r * 3 + c);
+const dot = (view, f, i) => act(view, { type: "click", target: "dot", id: `${f.id}-${i}` });
+
+/** Dot clicks `path` on the live field, 250 ms apart (each also a Sheet fold); then sets it unless `set` is false. */
+async function traceDots(view, tools, path, { set = true, closed = false } = {}) {
+  const f = await fieldNow(view, tools);
+  for (const i of path) {
+    dot(view, f, i);
+    await tools.advance(250);
+  }
+  if (set && state().spawn.field === f) {
+    dot(view, f, closed ? path[0] : path[path.length - 1]);
+    await tools.advance(250);
+  }
+}
+
+/** Traces diagram `id` `times` times; `clickFold` clicks the fold piece a match drops (its effect, its rest, the shelf). */
+async function trace(view, tools, id, times = 1, clickFold = false) {
+  const closed = CONTENT.PATTERNS.find((p) => p.id === id).closed;
+  for (let k = 0; k < times; k++) {
+    await traceDots(view, tools, dotsOf(id), { closed });
+    const fold = state().spawn.fold;
+    if (clickFold && fold && fold.kind === id) {
+      act(view, { type: "click", target: "fold", id: fold.id });
+      await tools.advance(250);
+    }
+  }
+}
+
+const BOOK_SIZE = { width: 320, height: 784 };
+const NARROW_SIZE = { width: 226, height: 584 };
+
+// The first field ever at 1100 × 700 (Narrow, the short mat's 96 px Sheet):
+// the first-field hint, and a trace of three dots that shows every dot state
+// (first and closable, used, last, the next steps, free).
+add("field", { roster: STD, size: NARROW_SIZE }, async (v, tools) => {
+  bookGame(v);
+  await traceDots(v, tools, [0, 1, 4], { set: false });
+});
+// Calm mode at 1440 × 900 after two finds: a loose set (an L of three) names
+// the found diagram it starts ("Loose · Napkin needs 1 more" once Napkin is
+// next), the dashed loose line, the field up again for another try.
+add("field-calm", { roster: STD, size: BOOK_SIZE }, async (v, tools) => {
+  bookGame(v);
+  act(v, { type: "setting", key: "calm", value: true });
+  act(v, { type: "setting", key: "pops", value: false });
+  await trace(v, tools, "ridge", 1, true);
+  await trace(v, tools, "gull", 1, true);
+  await tools.advance(4000);
+  await traceDots(v, tools, [0, 1, 4]);
+});
+// A match at 1100 × 700: the result chip names the new diagram, its fold
+// piece lands on the mat, the Ridge fold clicked before sits on the shelf and
+// its Steady charge in the boost bar.
+add("fold", { roster: STD, size: NARROW_SIZE }, async (v, tools) => {
+  bookGame(v);
+  await trace(v, tools, "ridge", 1, true);
+  await trace(v, tools, "gull", 1, false);
+  // Ridge's Steady charge, kept past the field's spawn pause (a pause would
+  // spend it), shown by the next Sheet hit (in the beat: it keeps the charge)
+  state().hand.steady = 1;
+  act(v, { type: "click", target: "sheet" });
+});
+// The Book tab at 1440 × 900: five found in every tier (Ridge mastered,
+// Gull learned, Napkin's fold on the mat, Ridge, Gull and Stair resting,
+// Lozenge ready), Sail next to find, the rest hidden; the help in the tooltip.
+add("book", { roster: STD, size: BOOK_SIZE }, async (v, tools) => {
+  bookGame(v);
+  await trace(v, tools, "ridge", 12, true);
+  await trace(v, tools, "gull", 5, true);
+  await trace(v, tools, "stair", 1, true);
+  await trace(v, tools, "lozenge", 1, false);
+  await tools.advance(16000); // Lozenge's fold piece goes unclicked (no rest: ready); the next match drops one
+  await trace(v, tools, "napkin", 2, false);
+  S(v).handlers.tab("book", undefined);
+});
+// The Book tab at 1100 × 700 (Narrow: two columns, the short effect labels,
+// Book as its icon in the tab row): two found, so the help line still shows.
+add("book-narrow", { roster: STD, size: NARROW_SIZE }, async (v, tools) => {
+  bookGame(v);
+  await trace(v, tools, "ridge", 4, true);
+  await trace(v, tools, "gull", 1, false);
+  S(v).handlers.tab("book", undefined);
 });
 
 /** A parsed save state with its null-prototype maps (for another writer's edits). */

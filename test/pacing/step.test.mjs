@@ -1,11 +1,12 @@
 // The simulator's results do not depend on its step size outside sessions
-// (ARCHITECTURE A11): 1 s and 10 s steps give the same milestones within 1 %.
+// (ARCHITECTURE A11): 1 s and 10 s steps give the same milestones within 1 %
+// (a purchase within one session gap: see compare).
 // Sessions always run in 1 s steps; outside them the engine's advance is
 // closed form per segment, and agent changes land on their exact second.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runProfile } from "../../tools/sim/pacing.mjs";
-import { fmtClock } from "../../tools/sim/profiles.mjs";
+import { fmtClock, PROFILES } from "../../tools/sim/profiles.mjs";
 
 const REL = 0.01;
 
@@ -23,7 +24,14 @@ function compare(id, seed) {
     if ((a ?? Infinity) > stop && (b ?? Infinity) > stop) continue;
     n++;
     if (a === undefined || b === undefined) { bad.push(`${k}: ${fmtClock(a)} vs ${fmtClock(b)}`); continue; }
-    if (Math.abs(a - b) > REL * Math.max(a, 1)) bad.push(`${k}: ${fmtClock(a)} (1 s) vs ${fmtClock(b)} (10 s)`);
+    // A purchase is made in a session, so the last bit of a float sum that tips it past a
+    // session's end moves it to the next session: one session gap (40 min), more than 1 % of
+    // any time after 33 h. The bank's closed-form sums differ in their last digit between the
+    // two step sizes (seed 1, at 0:08:20), so a purchase may move by one session and nothing more.
+    // Measured with the engine as it was before the Pattern book (P1~nobook): seeds 2, 3 and 5
+    // of 1-6 move a purchase by a session; with it, seeds 1 and 5.
+    const slack = k.startsWith("buy:") || k.startsWith("would:") ? PROFILES[id].sessionGap : 0;
+    if (Math.abs(a - b) > Math.max(REL * Math.max(a, 1), slack)) bad.push(`${k}: ${fmtClock(a)} (1 s) vs ${fmtClock(b)} (10 s)`);
   }
   assert.ok(n > 10, `${id}: only ${n} milestones compared`);
   assert.deepEqual(bad, [], `${id} seed ${seed}`);

@@ -1493,7 +1493,8 @@ book: { open: false, found: MAP<diagramId, { n, at, ready }> },  // n 1..9999; a
 spawn: { …, fieldIn: null | 1..5,
          field: null | { id: "p<seq>", born, path: [0..8, …] },  // distinct, ≤ 9
          fold:  null | { id: "f<seq>", kind: diagramId, slot, born },
-         lastField: null | { pattern: diagramId | null, path, closed, tier, first, near: diagramId | null, at },
+         lastField: null | { pattern: diagramId | null, path, closed, tier, first, near: diagramId | null,
+                             more, rest: ms | null, at },  // more: dots `near` still needs; rest: left when no fold dropped
          gullFor: -1, windUntil: 0 },                             // scrap / crane items: wind?: true
 hand:  { …, steady: 0 | 1 },                                      // figures may hold "p:<diagramId>"
 boosts: { …, coilEnd: 0 },                                        // wall ms on the hand timeline, like rushEnd
@@ -1515,8 +1516,8 @@ stats.bySource / stats.runBySource: + pattern, fold
   `st.version > VERSION` path, A4): read-only with the banner, never silent, never written, so it
   can never misread a field, a `dot` action or a `p:` shelf entry. Two windows on mixed builds
   therefore show the banner in the old one until it reloads.
-* Hot reload (A6): the new generation adopts the slot and migrates the live state in place; no
-  disk read, no rollback.
+* Hot reload (A6): the new generation adopts the slot and migrates the live state in place
+  (`glue/store.js adopt` calls `migrate` on a state of a lower version); no disk read, no rollback.
 * `validateHead` checks that `book` is an object with a boolean `open` and that every
   `book.found` entry has an integer `n` in 1..9,999 and finite `at ≥ 0` and `ready ≥ 0`; otherwise
   it returns `"book"`. A present `spawn.field` must have a string `id`, a finite `born` and a
@@ -1531,7 +1532,9 @@ stats.bySource / stats.runBySource: + pattern, fold
 ```js
 sheet: { …,
   field: null | { id, dots: [{ i, col, row, state: "free"|"centre"|"next"|"used"|"last"|"close", tip }],
-                  line: [[col, row]…], fading: bool, hint: string | null },
+                  line: [[col, row]…], fading: bool,
+                  hint: string | null,       // the first-field chip, until the first match (ui.hints.field)
+                  barHint: string },         // the boost bar's muted line: "Crease field · next to find: Napkin"
   fieldResult: null | { line: [[col, row]…], closed, style: "found"|"learned"|"mastered"|"loose", text } },
 mat: { …, fold: null | { id, kind, x, y, tooltip, fading }, shelf: [species | "p:<diagramId>"…] },
 boosts: [ …, { type: "coil", label: "Wind-up ×2", msLeft, msTotal: 10000 },
@@ -1546,22 +1549,30 @@ Card = { id, name, state: "found"|"next"|"hidden", n, closed, dots: [[col, row]�
 Field dots are given as grid `col, row`, not px: the drawn Sheet is 96 or 112 px by the panel's
 width as well as the vm's `short` (`matGeometry`), so `ui/mat.js` places dot centres at
 `sheet · (2·col + 1) / 6` inside the Sheet it draws. The fold piece is a slot centre like a scrap.
-`opts.tab` accepts `"book"`; the glue's vm cache already keys on `tab`.
+`opts.tab` accepts `"book"`; the glue's vm cache already keys on `tab`. Once the book is open, the
+Shop's Crease Helper row carries `note: "Only your own hands fill the book"`.
 
 **UI (B11).**
 * `ui/book.js` exports `renderBook(vm, ui, ctx)` and `BOOK_CLIP` (`name 12, short 16, effect 44,
-  hint 40, line 60, chip 40`); 9 cards, 2 paint_paths each, built only on the Book tab.
+  hint 44, line 60, chip 40`, plus `count`, `sub`, `status`, `tooltip`, `help`), `CARD`,
+  `cardLines` / `cardHeight` (a row of cards is as tall as its tallest), `bookColumns`,
+  `cardWidth`; 9 cards, 2 paint_paths each, built only on the Book tab. `ui/art.js` gains
+  `foldPaths(kind)` and `foldSprite(kind, size, base, shade)`.
 * `ui/panel.js`: `TABS` gains `{ key: "book", label: "Book", icon: "book" }`, shown when
   `vm.book.open`; `RENDER.book`; with four tabs and `ctx.width < 280` every tab is `px(6)` and Book
   is its icon, and below 220 the Flock tab drops its count; the `T.accent` dot when
   `vm.book.newMarks`; Settings' back may be `"book"`.
-* `ui/mat.js`: after the Sheet and its ticks, one paint_path for the trace (or `fieldResult`)
-  line and nine `div#cw-dot-<fieldId>-<i>` (28×28) with `on_mouse_down("left", …)` and
-  `cx.stop_propagation()` calling `click("dot", id, pos)`; the result chip and the first-field
-  hint in the first-run chip's place; `div#cw-fold-<id>` like a scrap calling `click("fold", id,
-  pos)`; `p:` shelf entries drawn with the fold's base layer. No `.loop()` or `.spin()`; the dots'
-  2 s fade only when not calm.
-* Mat cost while a field is up: ≤ 9 dots, 1 path, 1 chip and 1 fold piece.
+* `ui/mat.js`: after the Sheet and its ticks, the trace (or `fieldResult`) line as two
+  paint_paths (the line on its edge: `#cw-field-edge`, `#cw-field-line`) and nine
+  `div#cw-dot-<fieldId>-<i>` (28×28, each mark on a paper disc: `DOT_LOOK`) with
+  `on_mouse_down("left", …)` and `cx.stop_propagation()` calling `click("dot", id, pos)`
+  (`fieldBoxes`, `dotCentre`); the result chip (`#cw-field-chip`, under the play pieces) and the
+  first-field hint (`#cw-field-hint`, painted last) placed by `fieldChipBox`; `div#cw-fold-<id>`
+  like a scrap calling `click("fold", id, pos)`; `p:` shelf entries drawn with the fold's base
+  layer. No `.loop()` or `.spin()`; the dots' and the fold piece's 2 s fade only when not calm.
+  `ui/panel.js`'s boost bar shows `sheet.field.barHint` while no chip shows, and the `steady`
+  (static, no countdown) and `coil` chips with their diagrams' fold icons.
+* Mat cost while a field is up: ≤ 9 dots, 2 paths, 1 chip and 1 fold piece.
 
 **Glue.** No new timer, command or herdr call. `session.js` passes `click("dot" | "fold", id,
 pos)` as click actions and pops; opening the Book tab dispatches `hint` `book` with

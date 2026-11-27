@@ -12,7 +12,7 @@ import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { clip } from "../engine/index.js";
 import { statusColor } from "./color.js";
-import { icon, spritePath, sprite, statusGlyphPath } from "./art.js";
+import { icon, spritePath, sprite, statusGlyphPath, foldPaths } from "./art.js";
 import { countdownBar, iconButton, text, hoverOn } from "./widgets.js";
 import { renderMat, matGeometry, isCalm } from "./mat.js";
 import { renderBanner, bannerLayout, saveProblem } from "./banner.js";
@@ -21,10 +21,11 @@ import { renderRail } from "./rail.js";
 import { flockParts } from "./flock.js";
 import { renderShop } from "./shop.js";
 import { renderString } from "./string.js";
+import { renderBook } from "./book.js";
 import { renderSettings } from "./settings.js";
 
 /** Grapheme limits for every string this module draws (tested). */
-export const PANEL_CLIP = Object.freeze({ folds: 10, rate: 12, count: 5, wishes: 6, boost: 22, footer: 60, tab: 12, glow: 24 });
+export const PANEL_CLIP = Object.freeze({ folds: 10, rate: 12, count: 5, wishes: 6, boost: 22, footer: 60, tab: 12, glow: 24, barHint: 40 });
 
 /**
  * Fixed heights of the frame (DESIGN §3.1). The away card sits at mat y
@@ -46,9 +47,19 @@ const TABS = Object.freeze([
   { key: "flock", label: "Flock" },
   { key: "shop", label: "Shop" },
   { key: "string", label: "String" },
+  // the Pattern book (DESIGN §4.7): shown once vm.book.open
+  { key: "book", label: "Book", icon: "book" },
 ]);
 
-const RENDER = Object.freeze({ shop: renderShop, string: renderString, settings: renderSettings });
+/**
+ * The tab row's geometry (DESIGN §4.7 "The Book tab"; tested): side padding
+ * and gap, each tab's padding (10; 6 with four tabs below `narrowBelow`),
+ * Book's 14 px icon there, and below `countBelow` the Flock tab without its
+ * count (the header's counts chip shows it). The `T.accent` dot is 6 px.
+ */
+export const TAB_ROW = Object.freeze({ px: 4, gap: 2, pad: 10, tightPad: 6, iconGap: 4, icon: 14, dot: 6, narrowBelow: 280, countBelow: 220 });
+
+const RENDER = Object.freeze({ shop: renderShop, string: renderString, book: renderBook, settings: renderSettings });
 
 const COUNT_SEGMENTS = Object.freeze([
   { group: "needs", status: "blocked", word: "need you", open: true },
@@ -70,7 +81,12 @@ const num = (v, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 /** The active tab key ("flock" by default; unknown keys fall back too). */
 export function activeTab(ui) {
   const t = ui && ui.tab;
-  return t === "shop" || t === "string" || t === "settings" ? t : "flock";
+  return t === "shop" || t === "string" || t === "book" || t === "settings" ? t : "flock";
+}
+
+/** True when the vm opens the Book tab (the Pattern book, once Crease Field is first bought). */
+export function bookOpen(vm) {
+  return Boolean(vm && vm.book && vm.book.open === true);
 }
 
 function countsChip(vm, T, ctx) {
@@ -143,25 +159,34 @@ function boostBar(vm, ctx) {
   const boosts = Array.isArray(vm.boosts) ? vm.boosts : [];
   const bar = h_flex().id("cw-boostbar").w_full().h(FRAME.boost).flex_none().px(8).gap(6).overflow_hidden();
   if (!boosts.length) {
-    return bar.child(text("Open envelopes when you're ready", { size: 11, color: T.muted }, T));
+    // While a crease field is up the muted hint says so in words (§4.7).
+    const field = vm.sheet && vm.sheet.field;
+    const hint = field && typeof field.barHint === "string" && field.barHint ? clip(field.barHint, PANEL_CLIP.barHint) : "Open envelopes when you're ready";
+    return bar.child(text(hint, { size: 11, color: T.muted, truncate: true }, T).id("cw-boostbar-hint"));
   }
   for (const b of boosts) {
     const type = String(b.type ?? "");
-    const seal = Object.hasOwn(SEAL, type) ? spritePath("scene", SEAL[type]) : spritePath("ui", type === "song" ? "step" : "arrows");
-    bar.child(
-      h_flex()
-        .id(`cw-boostbar-${type}`)
-        .h(22)
-        .flex_none()
-        .px(6)
-        .gap(4)
-        .rounded(11)
-        .bg(T.raised)
-        .tooltip(clip(`${b.label ?? type}: ${Math.ceil(num(b.msLeft) / 1000)} s left`, 60))
-        .child(sprite(seal, 12, T.foreground))
-        .child(text(clip(String(b.label ?? type), PANEL_CLIP.boost), { size: 11, weight: 600, color: T.foreground }, T))
-        .child(countdownBar(`cw-boostbar-${type}-bar`, num(b.msLeft), num(b.msTotal, 1), { width: 48, height: 3, calm }, T, ctx.S)),
-    );
+    // Pattern book chips (§4.7) carry their diagram's fold: Wind-up the spring, Steady the ridge pleat.
+    const seal = Object.hasOwn(SEAL, type) ? spritePath("scene", SEAL[type])
+      : type === "coil" ? foldPaths("coil").base
+        : type === "steady" ? foldPaths("ridge").base
+          : spritePath("ui", type === "song" ? "step" : "arrows");
+    // Steady is a static charge (msLeft null): no countdown, a tooltip that says what it does.
+    const timed = typeof b.msLeft === "number";
+    const tip = timed ? `${b.label ?? type}: ${Math.ceil(num(b.msLeft) / 1000)} s left` : type === "steady" ? "Steady: your next short pause costs no beats" : String(b.label ?? type);
+    const el = h_flex()
+      .id(`cw-boostbar-${type}`)
+      .h(22)
+      .flex_none()
+      .px(6)
+      .gap(4)
+      .rounded(11)
+      .bg(T.raised)
+      .tooltip(clip(tip, 60))
+      .child(sprite(seal, 12, T.foreground))
+      .child(text(clip(String(b.label ?? type), PANEL_CLIP.boost), { size: 11, weight: 600, color: T.foreground }, T));
+    if (timed) el.child(countdownBar(`cw-boostbar-${type}-bar`, num(b.msLeft), num(b.msTotal, 1), { width: 48, height: 3, calm }, T, ctx.S));
+    bar.child(el);
   }
   return bar;
 }
@@ -169,14 +194,17 @@ function boostBar(vm, ctx) {
 function tabsRow(vm, ui, ctx) {
   const T = ctx.T;
   const go = handler(ctx, "tab");
-  const current = activeTab(ui);
-  const row = h_flex().id("cw-tabs").w_full().h(FRAME.tabs).flex_none().px(4).gap(2).border_b(1).border_color(T.border);
-  const tabEl = (key, label, selected, target) => {
+  const current = activeTab(ui) === "book" && !bookOpen(vm) ? "flock" : activeTab(ui);
+  const row = h_flex().id("cw-tabs").w_full().h(FRAME.tabs).flex_none().px(TAB_ROW.px).gap(TAB_ROW.gap).border_b(1).border_color(T.border);
+  const book = bookOpen(vm);
+  const width = num(ctx.width, 320);
+  const tight = book && width < TAB_ROW.narrowBelow;
+  const tabEl = (key, label, selected, target, opts = {}) => {
     const el = h_flex()
       .id(`cw-tab-${key}`)
       .h(FRAME.tabs)
-      .px(10)
-      .gap(4)
+      .px(tight ? TAB_ROW.tightPad : TAB_ROW.pad)
+      .gap(TAB_ROW.iconGap)
       .flex_none()
       .cursor_pointer()
       .role("tab")
@@ -185,13 +213,17 @@ function tabsRow(vm, ui, ctx) {
       .font_weight(600)
       .text_color(selected ? T.foreground : T.muted)
       .hover((s) => s.text_color(T.foreground))
-      .on_click((e, cx) => go(target, cx))
-      .child(clip(label, PANEL_CLIP.tab + 4));
+      .on_click((e, cx) => go(target, cx));
+    if (opts.icon) el.child(icon(opts.icon, TAB_ROW.icon, selected ? T.foreground : T.muted));
+    else el.child(clip(label, PANEL_CLIP.tab + 4));
+    if (opts.tooltip) el.tooltip(opts.tooltip);
+    // new marks since the tab was last opened: a static accent dot (no pulse)
+    if (opts.dot) el.child(div().id(`cw-tab-${key}-dot`).w(TAB_ROW.dot).h(TAB_ROW.dot).flex_none().rounded_full().bg(T.accent));
     if (selected) el.border_b(2).border_color(T.accent);
     return el;
   };
   if (current === "settings") {
-    const back = ui && (ui.back === "shop" || ui.back === "string") ? ui.back : "flock";
+    const back = ui && (ui.back === "shop" || ui.back === "string" || (ui.back === "book" && book)) ? ui.back : "flock";
     row.child(
       h_flex()
         .id("cw-tab-back")
@@ -213,8 +245,17 @@ function tabsRow(vm, ui, ctx) {
   // Tiles only: waiting fledglings count in needs (r2-17) but are pips on their parent's tile.
   const total = Math.max(0, ["needs", "finished", "working", "resting"].reduce((a, k) => a + Math.max(0, num(counts[k], 0)), 0) - Math.max(0, num(vm.header && vm.header.kidsWaiting, 0)));
   for (const t of TABS) {
-    const label = t.key === "flock" && total > 0 ? `${t.label} ${total}` : t.label;
-    row.child(tabEl(t.key, label, current === t.key, t.key));
+    if (t.key === "book" && !book) continue;
+    const count = t.key === "flock" && total > 0 && !(book && width < TAB_ROW.countBelow);
+    const label = count ? `${t.label} ${total}` : t.label;
+    const opts = {};
+    if (t.key === "book") {
+      const fresh = Boolean(vm.book.newMarks) && current !== "book";
+      if (tight) opts.icon = t.icon;
+      opts.tooltip = fresh ? "Pattern book · new" : "Pattern book";
+      opts.dot = fresh;
+    }
+    row.child(tabEl(t.key, label, current === t.key, t.key, opts));
   }
   return row;
 }
@@ -281,7 +322,8 @@ export function renderPanel(vm, ui, ctx) {
   const width = num(ctx.width, 320);
   if (width < FULL_BELOW) return renderRail(vm, ui, ctx);
   const T = ctx.T;
-  const tab = activeTab(ui);
+  // A Book tab the vm does not open (a stale ui.tab) shows the Flock.
+  const tab = activeTab(ui) === "book" && !bookOpen(vm) ? "flock" : activeTab(ui);
   const root = v_flex().id("cw-panel").relative().size_full().min_h(0).bg(T.chrome).text_color(T.foreground).overflow_hidden();
   root.child(header(vm, ui, ctx));
   const banner = renderBanner(vm, ui, ctx);

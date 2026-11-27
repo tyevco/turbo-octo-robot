@@ -16,7 +16,7 @@
 // generation's init releases such a claim (adopt) instead of waiting forever.
 
 import { readTextFile, writeTextFile, shared, setShared } from "herdr";
-import { serialize, serializeSteps, parseSave, parseSaveSteps, newGame, apply, advance, migrate, clip, graphemes, CONTENT } from "../engine/index.js";
+import { serialize, serializeSteps, parseSave, parseSaveSteps, newGame, apply, advance, migrate, VERSION, clip, graphemes, CONTENT } from "../engine/index.js";
 import { localDay, localTime } from "./clock.js";
 import { touch, markDirty, dueAt, codeGeneration, confirmLog, clearLog, flash, DEBOUNCE_MS } from "./live.js";
 
@@ -431,6 +431,10 @@ function orphaned(slot, t) {
  */
 export function adopt(slot, t) {
   const S = slot.save;
+  // An older code generation's live state (state version 1 before the
+  // Pattern book, ARCHITECTURE B17) is brought to this build's shape in place:
+  // no disk read, so nothing rolls back. A newer one is left as it is.
+  if (slot.state && typeof slot.state.version === "number" && slot.state.version < VERSION) migrate(slot.state);
   if (S.writing !== null && S.writingGen !== codeGeneration()) {
     // A Settings save tool (Check, Reset, Restore, a share cut off before its
     // pointer write) may not have taken effect: said, never silent (r3-07). A

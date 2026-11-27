@@ -477,10 +477,15 @@ the rows join the tables the tests parse as §12.6 says.
   if none is ready, Coil. It traces the `PATTERNS[].dots` tracing as listed (never starting on the
   centre) at its normal hand rhythm and sets it (the last dot again, or the first to close).
 * **Success.** Per attempt: P1 **90 %**, P14 **75 %**, P11 **90 %**, every other hand profile as
-  P1; P12 (calm) is P1. The draw is keyed `trace:<activeMs at the field's first sighting>:<attempt>`
-  (the chain draws' rule, ARCHITECTURE B12), so calm and two-window runs choose the same. A failure stops one
+  P1; P12 (calm) is P1. The draw is keyed `trace:<the field's birth, mat-shown ms>:<attempt>`, so
+  calm and two-window runs choose the same. (It was to be keyed by the active clock at the first
+  sighting, as chain draws are, but the active clock moves with the sim's idle step: 0.7 s by day
+  2 between 1 s and 10 s steps, measured with `--no-book`. That flipped trace draws, and
+  test/pacing/step.test.mjs failed. The shown clock does not move.) A failure stops one
   dot short and sets there (a loose crease), then the profile tries again from scratch while the
-  field lives. Life end with 3 or more dots traced sets automatically (DESIGN §4.7).
+  field lives. Where one dot short is under 3 dots (Ridge, Gull) or is itself a diagram (the
+  Lozenge's first three dots are a Gull), the failure instead takes a wrong last dot: the first
+  unused neighbour, in dot order, that leaves the trace loose. Life end with 3 or more dots traced sets automatically (DESIGN §4.7).
 * **P15 pattern master** (new): P1 with **100 %** success that picks, among ready diagrams, the
   first of Switchback, Coil, Napkin, Lozenge, Gull, Stair, Ridge, Sail, Hem (largest estimated
   effect first, §12.4), and otherwise as P1. It bounds what a perfect hand can get.
@@ -533,8 +538,8 @@ share (B12: over seeds 1–5), its largest day against the median window. Each s
 are held to the every-seed bound, which is the ablation's noise floor, not an effect. An effect
 that moves a crane or a chain (Gull, Switchback, Hem) also moves the gilded cranes that follow,
 because their gaps are keyed by the active clock. That reshuffles the Confetti outcomes, each
-worth about a point of a day's live income. Measured on the first sim run, the effect medians are
-0.00–0.83 %, while single seed-days reach 2.3 % (B11) and 1.6 % (B12). The every-seed bounds were
+worth about a point of a day's live income. Measured on the sim runs of §12.7, the effect medians are
+0.00–0.83 %, while single seed-days reach 2.8 % (B11) and 1.6 % (B12). The every-seed bounds were
 2 % and 1 % until that run.
 
 The existing rows and invariants keep holding with fields on: §4 M1–M17, §5, §6.3 session ratios
@@ -602,18 +607,24 @@ passes. No knob of §8 was turned.
 |---|---|
 | B1 | identical on 20 of 20 seeds |
 | B2 | 12:00 (11:21:56 – 13:20) |
-| B3 / B4 | first find B2 + 0:00:15 (max + 0:38:14); all nine B2 + 2:00:48 (+ 1:21:35 – + 2:39:41), before M15 on every seed |
-| B5 / B6 | not reached on any seed (provisional): P1 traces the ready diagram with the most dots, so Ridge, Gull and the 4-dot loops stay at 1–2 traces |
-| B7 | 24.4 % (20.7 – 26.2 %); `--no-book` 23.95 %, + 0.41 points |
-| B9 | M15 − `--no-book` (medians): P1 − 3:05, P8 − 0:24, P11 − 0:25, P14 − 1:28 |
-| B10 | 2.8 % (2.2 – 3.4 %) |
-| B11 | effect 0.10 %; largest seed-day 2.28 % |
-| B12 | effect per diagram ≤ 0.83 % (Hem; Switchback 0.23 %, the rest ≤ 0.04 %); largest seed-day 1.55 % (Gull) |
-| B13 | P15 21:37:34, P1 − 1:35 |
-| B14 | P14 22:12:40, P1 + 33:31 |
+| B3 / B4 | first find B2 + 0:00:15 (max + 0:38:14); all nine B2 + 2:00:53 (+ 1:21:34 – + 2:41:28), before M15 on every seed |
+| B5 / B6 | not reached on any seed (provisional). P1 traces the ready diagram with the most dots, so Ridge, Gull and the 4-dot loops stay at 1–2 traces |
+| B7 | 24.4 % (20.7 – 26.1 %); `--no-book` 23.95 %, + 0.47 points |
+| B9 | M15 − `--no-book` (medians): P1 − 3:00, P8 − 0:15, P11 − 0:27, P14 − 0:52 |
+| B10 | 2.7 % (2.1 – 3.1 %) |
+| B11 | effect 0.00 %; largest seed-day 2.75 % |
+| B12 | effect per diagram ≤ 0.13 % (Switchback; Napkin 0.04 %, the rest ≤ 0.02 %); largest seed-day 0.66 % (Hem). An earlier run, before the trace draw's key changed (§12.1), measured Hem 0.83 % and Gull 1.55 % for a seed-day |
+| B13 | P15 21:37:34, P1 − 0:17 |
+| B14 | P14 22:15:38, P1 + 37:48 |
 | B15 | identical milestones on 20 of 20 seeds |
-| B16 | 26.2 % (24.1 – 28.7 %); `--no-book` 25.89 % |
+| B16 | 26.1 % (24.0 – 28.7 %); `--no-book` 25.89 % |
 
-With fields on, the existing rows move a little: P1's M15 is 21:39:09 (21:21:36 – 22:41:38; it
-was 21:40:31, 21:21:49 – 23:21:28). P1's whole-run click share on seed 1 is 24.9 %. P12's worst
-milestone is 2.27 % from P1 (it was 1.33 %). Every §4–§7 row passes.
+With fields on, the existing rows move a little. P1's M15 is 21:37:51 (21:21:45 – 22:41:36; it
+was 21:40:31, 21:21:49 – 23:21:28). P1's whole-run click share on seed 1 is 24.3 % (it was
+22.7 %). P12's worst milestone is 1.52 % from P1 (it was 1.33 %). Every §4–§7 row passes.
+
+`test/pacing/step.test.mjs` (1 s against 10 s idle steps) now lets a purchase move by one session
+gap. The bank's closed-form sums differ in their last digit between the two step sizes, and a
+purchase tipped past a session's end moves 40 minutes. The engine as it was before this feature
+does that too: `P1~nobook` moves a purchase by a session on seeds 2, 3 and 5 of 1–6. Seed 1, the one
+the test runs, did not move before the book and did after.

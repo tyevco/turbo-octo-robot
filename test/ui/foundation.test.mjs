@@ -339,7 +339,8 @@ test("art: FACETS default, root, and every listed asset exists on disk", () => {
       n += 1;
     }
   }
-  assert.equal(n, 12 + 16 + 8 + 13 + 9 + 24);
+  // folk, sheet, status, scene (13 + the Pattern book's 18 fold layers), workshops, ui (+ book)
+  assert.equal(n, 12 + 16 + 8 + 13 + 18 + 9 + 25);
   for (const species of A.ASSETS.folk) {
     for (const p of A.splitPaths(A.spritePath("folk", species))) assert.ok(existsSync(join(root, p)), p);
   }
@@ -713,7 +714,10 @@ test("widgets: iconButton is a 28 px div#id carrying tooltip and handler around 
 // ---------------------------------------------------------------------------
 // ViewModel fixtures (ARCHITECTURE B6)
 
-const VM_KEYS = ["rev", "header", "sheet", "mat", "tray", "streak", "boosts", "helpers", "shop", "string", "settings", "away", "notices", "ribbon", "rail"];
+const VM_KEYS = ["rev", "header", "sheet", "mat", "tray", "streak", "boosts", "helpers", "shop", "string", "book", "settings", "away", "notices", "ribbon", "rail"];
+const BOOK_KEYS = ["open", "newMarks", "found", "of", "marks", "marksOf", "count", "line", "help", "cards"];
+const CARD_KEYS = ["id", "name", "state", "n", "closed", "dots", "sub", "tier", "pips", "count", "status", "effect", "short", "hint", "fold", "tooltip"];
+const DIAGRAMS = CONTENT.PATTERNS.map((p) => p.id);
 const TILE_KEYS = ["helperId", "name", "species", "hue", "status", "statusWord", "envelope", "pips", "rest", "pulse", "spin", "dashed", "opacity", "tooltip", "pane", "addr", "kind"];
 const MARK_KEYS = ["helperId", "status", "hue", "envelope", "dashed", "opacity", "tooltip"];
 const ROW_KEYS = ["id", "name", "owned", "cost", "affordable", "best", "eta", "effect", "icon", "tier", "revealed", "sub"];
@@ -757,12 +761,30 @@ function checkVm(vm, where) {
   assert.equal(typeof vm.rev, "number");
   same(vm.header, ["folds", "rate", "wishes", "counts"], `${where}.header`);
   same(vm.header.counts, ["needs", "finished", "working", "resting"], `${where}.header.counts`);
-  same(vm.sheet, ["frame", "ticks", "firstRunHint", "short"], `${where}.sheet`);
+  same(vm.sheet, ["frame", "ticks", "firstRunHint", "short", "field", "fieldResult"], `${where}.sheet`);
+  if (vm.sheet.field) {
+    same(vm.sheet.field, ["id", "dots", "line", "fading", "hint", "barHint"], `${where}.sheet.field`);
+    assert.equal(vm.sheet.field.dots.length, 9);
+    for (const d of vm.sheet.field.dots) {
+      same(d, ["i", "col", "row", "state", "tip"], `${where}.sheet.field.dots`);
+      assert.ok(["free", "centre", "next", "used", "last", "close"].includes(d.state), d.state);
+      assert.equal(d.i, d.row * 3 + d.col);
+    }
+  }
+  if (vm.sheet.fieldResult) {
+    same(vm.sheet.fieldResult, ["line", "closed", "style", "text"], `${where}.sheet.fieldResult`);
+    assert.ok(["found", "learned", "mastered", "loose"].includes(vm.sheet.fieldResult.style));
+  }
   assert.ok(vm.sheet.frame >= 0 && vm.sheet.frame <= 7 && vm.sheet.ticks >= 0 && vm.sheet.ticks <= 8);
-  same(vm.mat, ["chips", "more", "shelf", "nodes", "scraps", "crane", "boat", "ream", "storm", "creaseLine"], `${where}.mat`);
+  same(vm.mat, ["chips", "more", "shelf", "nodes", "scraps", "crane", "boat", "ream", "storm", "creaseLine", "fold"], `${where}.mat`);
+  if (vm.mat.fold) {
+    same(vm.mat.fold, ["id", "kind", "x", "y", "tooltip", "fading"], `${where}.mat.fold`);
+    assert.ok(DIAGRAMS.includes(vm.mat.fold.kind));
+  }
   for (const c of vm.mat.chips) same(c, ["helperId", "name", "pulse"], `${where}.mat.chips`);
   assert.ok(vm.mat.chips.length <= 4);
-  assert.ok(vm.mat.shelf.length <= 12 && vm.mat.shelf.every((s) => CONTENT.SPECIES.includes(s)));
+  // figures and, once the book is open, "p:<diagram>" fold pieces (§4.7)
+  assert.ok(vm.mat.shelf.length <= 12 && vm.mat.shelf.every((s) => CONTENT.SPECIES.includes(s) || (s.startsWith("p:") && DIAGRAMS.includes(s.slice(2)))));
   const H = vm.sheet.short ? 184 : 232;
   for (const n of vm.mat.nodes) {
     same(n, ["id", "i", "x", "y", "due", "fading"], `${where}.mat.nodes`);
@@ -797,6 +819,13 @@ function checkVm(vm, where) {
   for (const [seg, rows] of Object.entries(vm.shop.segments)) rows.forEach((r) => checkRow(r, `${where}.shop.${seg}`));
   assert.ok(vm.shop.segments.works.filter((r) => r.best).length <= 1);
   same(vm.string, ["cranes", "of", "nextIn", "lifetime", "gain", "can", "perks", "garlands"], `${where}.string`);
+  same(vm.book, BOOK_KEYS, `${where}.book`);
+  for (const c of vm.book.cards) {
+    same(c, CARD_KEYS, `${where}.book.cards`);
+    assert.ok(["found", "next", "hidden"].includes(c.state) && DIAGRAMS.includes(c.id));
+    assert.equal(c.dots === null, c.state === "hidden");
+  }
+  assert.ok(vm.book.cards.length === 0 || vm.book.cards.length === 9);
   for (const p of vm.string.perks) same(p, ["at", "text", "have"], `${where}.string.perks`);
   for (const g of vm.string.garlands) {
     same(g, ["wish", "day", "stripes", "wishes"], `${where}.string.garlands`);
@@ -986,7 +1015,8 @@ test("fixtures: header counts match the roster; groups in fixed order; join orde
       const panes = g.tiles.map((t) => Number(t.pane.slice(2)));
       assert.deepEqual(panes, [...panes].sort((a, b) => a - b), `${s.name} ${g.key} join order`);
     }
-    assert.equal(v.helpers.dense, v.helpers.groups.reduce((a, g) => a + g.count, 0) >= 21 || s.name === "narrow", s.name);
+    // dense from 21 tiles, or in the narrow panel (below 280 px)
+    assert.equal(v.helpers.dense, v.helpers.groups.reduce((a, g) => a + g.count, 0) >= 21 || (s.width >= 140 && s.width < 280), s.name);
   }
 });
 

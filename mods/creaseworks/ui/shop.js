@@ -209,7 +209,9 @@ function itemRow(row, seg, count, ctx, sub = false) {
   // cost" used to fall off a one-line truncate); both cut by estimate here,
   // and the whole of both in the column's tooltip when anything was.
   const ownedLabel = seg === "works" && !sub && owned > 0 ? clip(`×${owned}`, SHOP_CLIP.owned) : "";
-  const fit = rowText(row.name, row.effect, rowTextWidth(ctx.width, sub, row.best === true), sub, ownedLabel ? 6 + 7 * Array.from(ownedLabel).length : 0);
+  // A row's note follows its effect (the Crease Helper once the book is open: "Only your own hands fill the book", §4.7).
+  const effect = typeof row.note === "string" && row.note ? `${str(row.effect)} · ${row.note}` : row.effect;
+  const fit = rowText(row.name, effect, rowTextWidth(ctx.width, sub, row.best === true), sub, ownedLabel ? 6 + 7 * Array.from(ownedLabel).length : 0);
   const name = h_flex()
     .gap(6)
     .min_w(0)

@@ -314,7 +314,9 @@ export class Player {
   nextDot(s, f) {
     let fp = this.fieldPlan.get(f.id);
     if (!fp) {
-      fp = { at: Math.round(s.spawn.activeMs), attempt: 0, plan: null, started: false };
+      // keyed by the field's birth on the mat-shown clock: the active clock moves with the step
+      // size by up to a second (BALANCE §12.1), the shown clock does not
+      fp = { at: Math.round(f.born), attempt: 0, plan: null, started: false };
       this.fieldPlan.set(f.id, fp);
     }
     const path = f.path;

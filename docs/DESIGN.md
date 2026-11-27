@@ -1060,32 +1060,40 @@ set crease line is dashed `S.ink` while found, solid `S.ink` once learned, and s
 book counts 27 marks (9 diagrams × 3 tiers).
 
 **Reading the field.** Each dot state has its own shape; colour is only a second cue. Ink on
-paper measures 12.86 (light) and 10.11 (dark), ink on the Sheet's shade facets 10.10 and 7.41, so
-the dots read on every fold frame.
+paper measures 12.86 (light) and 10.11 (dark), ink on the Sheet's shade facets 10.10 and 7.41.
+Every fold frame past the first leaves some of the 3 × 3 grid over the mat, where ink alone is
+about 2.4:1, so every mark sits on a disc of `S.sheet` (paper on the mat: 5.93 / 8.12; on the
+paper it vanishes) and every line on an edge 2 px wider (the shots showed rings and lines lost on
+the green on frames 2–7; `ui/mat.js DOT_LOOK`).
 
 | Dot | Drawn as | Tooltip |
 |---|---|---|
-| free | 12 px ring, 2 px `S.ink` | "Crease field" |
-| centre, before a trace starts | 8 px ring, 1.5 px `S.ink` (smaller: not a start) | "Start on any other dot" |
-| a valid next step | 20 px ring, 2 px `S.ink` (static; the "due" language of nodes) | "Next" |
-| used | filled 10 px `S.ink` dot; used dots joined by one 2 px `S.ink` paint_path line | |
+| free | 12 px paper disc, 2 px `S.ink` ring | "Crease field" |
+| centre, before a trace starts | 8 px paper disc, 1.5 px `S.ink` ring (smaller: not a start) | "Start on any other dot" |
+| a valid next step | 20 px paper disc, 2 px `S.ink` ring (static; the "due" language of nodes) | "Next" |
+| used | filled 10 px `S.ink` dot on a 14 px paper disc; used dots joined by a 2 px `S.ink` line on a 4 px `S.sheet` edge | |
 | last | filled 10 px dot in a 3 px `S.node` ring | "Click again to set" |
-| first, when it can close | filled 10 px dot in an 18 px `S.ink` ring | "Click to close" |
+| first, when it can close | filled 10 px dot in an 18 px `S.ink` ring on paper | "Click to close" |
 
 In its last 2 s the field's dots fade to 0.4 (a 2 s transition; calm: static 0.4), as nodes do.
 While a field is up and no boost chip shows, the boost bar's muted hint says it in words: "Crease
 field · next to find: Napkin" (or "· Coil ready" once all nine are found). On a set:
 
-* **Match**: for `K.fieldResultMs` (3 s) the line shows in its tier style, closed shapes drawn
-  closed, and a chip over the Sheet's top edge (the first-run chip's style: 11/600
-  `T.foreground` on `T.popover`) names it in words: "Gull", "Gull · new diagram", "Gull ·
-  learned", "Gull · mastered" or "Gull · rests 1:40" (no fold dropped).
-* **Loose**: the line turns dashed 1 px `S.ink` at 0.5 and the chip reads "Loose crease", or, when
+* **Match**: for `K.fieldResultMs` (3 s) the line shows in its tier style (each on its edge:
+  `S.sheet` under ink, `S.node` under gold), closed shapes drawn closed, and a one-line chip
+  over the Sheet's top edge (the first-run chip's style: 11/600 `T.foreground` on `T.popover`;
+  its foot at the top of the top row's largest ring, 20 px tall on the short mat, painted under
+  the play pieces so a fold piece landing beside it stays whole) names it in words: "Gull",
+  "Gull · new diagram", "Gull · learned", "Gull · mastered" or "Gull · rests 1:40" (no fold
+  dropped).
+* **Loose**: the line turns dashed 1 px `S.ink` at 0.5 (on a dashed 3 px paper edge at 0.6) and the chip reads "Loose crease", or, when
   the trace is the start of a found diagram or of the next one to find, "Loose · Napkin needs 1
   more". A hidden diagram is never named, so the chip never gives a shape away. The dots clear
   for another try.
 * **The first field ever** shows a static chip, "Join neighbouring dots. Click the last one again
-  to set.", until the first match (`ui.hints.field`).
+  to set.", until the first match (`ui.hints.field`). It wraps to two lines above the Sheet and
+  is painted last; on the short mat it reaches into the top band's lower half for that one field
+  (there is no other room at 1100×700: the margins beside the 96 px Sheet are 57 px).
 
 The setting click's pop (§13.5) shows the fold and the match together; there is no other number.
 
@@ -1125,23 +1133,28 @@ At 320 px (Standard; 1440×900, content about 304 × 424):
 
 At 1100×700 (Narrow, 226 px; content about 210 × 272): the header keeps "Pattern book" and
 "5 / 9"; the line under it wraps to two lines; the help shows until 3 diagrams are found and then
-moves into the header's tooltip (12 px `info` icon); cards are 2 columns of 101 × 132 (5 rows,
+moves into the header's tooltip (12 px `info` icon); cards are 2 columns of 101 × 116–158 (5 rows,
 scrolling, about two rows in view) and show the short effect label ("Crane sooner") instead of the
 two-line effect, whose full text is in the card's tooltip. Wide (≥ 400 px) gives 4 columns.
 
-Each card (`div#cw-book-<id>`, `T.raised`, `rounded(6)`, 6 px padding):
+Each card (`div#cw-book-<id>`, `T.raised`, `rounded(6)`, 6 px padding; as tall as its text, and
+every card in a row as tall as the row's tallest: 144 px for a found card at Standard, 158 for
+the next one with its three-line hint, 116 for a found card at Narrow; `ui/book.js cardLines`):
 
 * A 56 × 56 paper square (`S.sheet`, `rounded(4)`) with the diagram drawn from the same
   `PATTERNS[].dots` the classifier's canons are tested against, so the picture is the shape by
-  construction: one fill paint_path for the nine dots (used ones 6 px, others 3 px) and one 2 px
-  `S.ink` stroke path for the line (closed shapes closed, the start dot ringed). Two paint_paths a
-  card, 18 for the book.
-* The name 12/600 `T.foreground` (clipped to 12 graphemes) and the fold's 16 px icon.
-* Three tier pips (`status/pip-work` filled and `status/pip-rest` hollow diamonds, 6 px: a shape
-  cue) and the count "×7"; then the status in 11 `T.muted`: "ready", "rests 1:40" or "fold on the
-  mat".
-* The effect, 2 lines of 11 `T.muted` (clipped to 44 graphemes) at Standard and Wide, the short
-  label (16) at Narrow. The tooltip has the full effect and "found 1 · learned 4 · mastered 12".
+  construction: one fill paint_path for the nine dots (used ones 6 px octagons, others 3 px
+  diamonds: half the path commands, measured in QuickJS) and one 2 px `S.ink` stroke path for the
+  line (closed shapes closed, the start dot ringed). Two paint_paths a card, 18 for the book.
+* Beside it, right-aligned: the fold's 16 px piece on a 20 px `S.mat` tile (its base `S.sheet`,
+  shade `S.sheetShade`, as on the mat; tooltip the fold's name), the three tier pips
+  (`status/pip-work` filled and `status/pip-rest` hollow diamonds, 8 px: a shape cue) and the
+  count "×7" (11/600).
+* Under it the name 12/600 `T.foreground` (clipped to 12 graphemes), then the status in 11
+  `T.foreground`: "ready", "rests 1:40" or "fold on the mat".
+* The effect, up to 3 lines of 11 `T.muted` (clipped to 44 graphemes) at Standard and Wide, the
+  short label (16) at Narrow. The tooltip has the full effect and "found 1 · learned 4 ·
+  mastered 12".
 * **States.** Found: all of the above. **Next to find** (the first unfound diagram in book order):
   its drawing at 0.6 opacity with a dashed line, its name, "4 dots · closed", its short effect and
   its hint. Every other unfound diagram: the nine dots only, "???", its dot count and open or
@@ -2193,14 +2206,15 @@ because a bad one there fails silently (gpui §5).
 | `scene/scrap.svg`, `scene/ream.svg` | 2 | 16; 28×20 | torn quadrilateral; ream of paper with a band |
 | `scene/crane-gilded-{outline,body,shade}.svg` | 3 | 40×28 | outline = body grown 1.5 units |
 | `scene/boat-{hull,sail}.svg` | 2 | 40×28 | Paper Boat |
+| `scene/fold-{ridge,gull,napkin,lozenge,stair,sail,switchback,hem,coil}-{base,shade}.svg` | 18 | 24 → 20, 16 | Pattern book fold pieces (§4.7), flat two layers like the boat: ridge pleat, paper gull, folded napkin, lozenge tile, stair pleat, sail on a mast, accordion fan, paper frame, paper spring |
 | `workshops/{stack,bonefolder,scissors,gluepot,bench,vat,press,loft,kite}.svg` | 9 | 24 → 28 | shop icons |
-| `ui/{fold,wish,gear,flock,shop,string,back,chevron,close,info,warn,check,dots,arrows,lock,clock,hand,paw,ribbon,curio,cog,step,cloud}.svg` | 23 | 16 → 11–24 | interface glyphs (`cloud` = Elsewhere) |
+| `ui/{fold,wish,gear,flock,shop,string,back,chevron,close,info,warn,check,dots,arrows,lock,clock,hand,paw,ribbon,curio,cog,step,cloud,book}.svg` | 24 | 16 → 11–24 | interface glyphs (`cloud` = Elsewhere, `book` = the Pattern book's tab) |
 | `ui/garland-strand.svg` | 1 | 12×200 | 50 crane silhouettes |
 | `notify-icon.svg` | 1 | 36×36 intrinsic, drawn 18×18 | the **only** full-colour SVG (toast `image()`, ≥ half its largest on-screen size × 2): crane `#fbf7ee` on mat `#2f6a55` |
 | `layout-preview.png` | 1 | 216×124 | from the 1440×900 whole-window shot (A10) |
 | `logo.svg` | 1 | 64 | README, RECIPE |
 
-Total: 120 SVG + 1 PNG in the mod (121 files), plus repo `preview.png`. If the facet split is not needed the
+Total: 139 SVG + 1 PNG in the mod (140 files), plus repo `preview.png`. If the facet split is not needed the
 36 `-a/-b/-c` files are still generated but unused (they cost nothing at run time). Runtime vector
 art (no files): mat grid (2 elements), mat edge, crease lines, streak track, progress and countdown
 bars, confetti flecks, garland stripes, all `PathBuilder` in `%` coordinates.
@@ -2312,7 +2326,10 @@ banner,away,color,palette,art,widgets}.js`. Each import on one line (pat §8).
   `shop-{works,tools,folk,charms,curios,auto}`, `string-locked`, `string-ready`, `string-confirm`,
   `garlands`, `settings`, `away`, `busy`, `banner-{recovered,fresh,conflict,merged,error,newer,clock}`,
   `rail`, `rail-64`, `rail-banner`, `ribbon-{0,4,34,64,130}` at 1100 and 1440 widths, `narrow`,
-  `wide`, `short`, `calm` — each in **all six shipped themes** at zoom 1 and 1.5 (so are the
+  `wide`, `short`, `calm`, and the Pattern book's (§4.7) `field` and `fold` at 1100×700 (the first
+  field's hint and every dot state; a match's chip, its fold piece and the Steady chip),
+  `field-calm` (a loose set in calm mode), `book` and `book-narrow` (the Book tab at 1440×900 and
+  1100×700) — each in **all six shipped themes** at zoom 1 and 1.5 (so are the
   review-state views `tray-fraction`, `boat-tray`, `boat-calm`, `afterglow`, `string-gate` and
   `string-pot`: a fractional stack count, the boat over a full tray gliding and calm, the
   afterglow chip, the String's gate mark, and the wish card's away-pot note); greyscale,

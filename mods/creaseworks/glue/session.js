@@ -67,7 +67,7 @@ export const READ_FAIL_TEXT = Object.freeze({
   layout: "Layout unreadable: herdr's layout failed, so the panel keeps its last place.",
 });
 const SAVE_KINDS = { recovered: 1, fresh: 1, conflict: 1, merged: 1, error: 1, newer: 1 };
-const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1 };
+const MAT_TARGETS = { sheet: 1, node: 1, scrap: 1, crane: 1, boat: 1, ream: 1, dot: 1, fold: 1 };
 
 const map = () => Object.create(null);
 const notifyCx = (cx) => {
@@ -1171,6 +1171,15 @@ export class Session {
         u.tab = next;
         u.confirm = false;
         u.armedAt = null;
+        // Opening the Pattern book marks its marks seen (DESIGN §4.7: the
+        // tab's dot shows marks earned since it was last opened); a hint
+        // action, so two windows merge to the larger count (B17).
+        if (next === "book") {
+          const s = self.state();
+          const vm = s ? self.vm() : null;
+          const marks = vm && vm.book ? vm.book.marks : 0;
+          if (s && typeof marks === "number" && marks > (s.ui.hints.book || 0)) self.dispatch({ type: "hint", key: "book", n: marks }, undefined);
+        }
         self.changed(cx);
       },
       segment(name, cx) {

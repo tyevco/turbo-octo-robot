@@ -30,11 +30,14 @@ export const ASSETS = f({
   scene: f([
     "envelope-body", "envelope-flap", "seal-bundle", "seal-rush", "seal-storm", "seal-chorus", "scrap", "ream",
     "crane-gilded-outline", "crane-gilded-body", "crane-gilded-shade", "boat-hull", "boat-sail",
+    "fold-ridge-base", "fold-ridge-shade", "fold-gull-base", "fold-gull-shade", "fold-napkin-base", "fold-napkin-shade",
+    "fold-lozenge-base", "fold-lozenge-shade", "fold-stair-base", "fold-stair-shade", "fold-sail-base", "fold-sail-shade",
+    "fold-switchback-base", "fold-switchback-shade", "fold-hem-base", "fold-hem-shade", "fold-coil-base", "fold-coil-shade",
   ]),
   workshops: f(["stack", "bonefolder", "scissors", "gluepot", "bench", "vat", "press", "loft", "kite"]),
   ui: f([
     "fold", "wish", "gear", "flock", "shop", "string", "back", "chevron", "close", "info", "warn", "check", "dots",
-    "arrows", "lock", "clock", "hand", "paw", "ribbon", "curio", "cog", "step", "cloud", "garland-strand",
+    "arrows", "lock", "clock", "hand", "paw", "ribbon", "curio", "cog", "step", "cloud", "book", "garland-strand",
   ]),
 });
 
@@ -129,6 +132,28 @@ export function pipPath(status) {
 export function sheetPaths(frame) {
   const n = Number.isInteger(frame) ? Math.max(0, Math.min(7, frame)) : 0;
   return { base: spritePath("sheet", `${n}-base`), shade: spritePath("sheet", `${n}-shade`) };
+}
+
+/**
+ * The two layers of a Pattern book diagram's fold piece (DESIGN §4.7 "Art"):
+ * `{ base, shade }` (24-unit files; base tinted S.sheet, shade S.sheetShade).
+ * Throws a TypeError for an unknown diagram, like spritePath.
+ */
+export function foldPaths(kind) {
+  return { base: spritePath("scene", `fold-${kind}-base`), shade: spritePath("scene", `fold-${kind}-shade`) };
+}
+
+/**
+ * A fold piece drawn at `size` px: a relative div holding its base (`color`)
+ * and shade (`shadeColor`) layers. With `shadeColor` null only the base
+ * shows (the shelf's 16 px one-layer icon, like the species there).
+ */
+export function foldSprite(kind, size, color, shadeColor = null) {
+  const { base, shade } = foldPaths(kind);
+  const box = div().relative().w(size).h(size).flex_none();
+  box.child(svg(base).absolute().top(0).left(0).w(size).h(size).text_color(color));
+  if (shadeColor) box.child(svg(shade).absolute().top(0).left(0).w(size).h(size).text_color(shadeColor));
+  return box;
 }
 
 /** True when `path` names a sprite that has a facet split set. */
