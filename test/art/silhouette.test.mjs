@@ -2,7 +2,10 @@
 // blobs and the status glyphs at 12 px (greyscale = coverage, since each is a
 // single colour) are rasterised by Chromium and compared pairwise. Each pair
 // must differ by at least a minimum number of whole pixels of coverage, and
-// each sprite must cover a sensible share of its square.
+// each sprite must cover a sensible share of its square. The nine fold pieces
+// (DESIGN §4.7 "Art"), base and shade drawn together, are held to the same
+// bound against each other and against the scrap, ream, gilded crane, boat
+// and species sprites, and each shade lies on its base.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -97,6 +100,49 @@ test("status glyphs are distinguishable at 12 px in greyscale", { skip }, async 
   }
   const closest = pairwise(maps)[0];
   assert.ok(closest.d >= 16, `closest pair ${closest.pair} differs by only ${closest.d.toFixed(1)} px`);
+});
+
+const FOLDS = ["ridge", "gull", "napkin", "lozenge", "stair", "sail", "switchback", "hem", "coil"];
+const foldLayers = (id) => [uri(`scene/fold-${id}-base.svg`), uri(`scene/fold-${id}-shade.svg`)];
+
+test("the nine fold pieces are distinct 16 px silhouettes, against each other and the scrap, ream, crane, boat and species sprites", { skip }, async () => {
+  const folds = Object.fromEntries(FOLDS.map((id) => [`fold-${id}`, foldLayers(id)]));
+  const others = {
+    scrap: [uri("scene/scrap.svg")],
+    ream: [uri("scene/ream.svg")],
+    crane: ["body", "shade", "outline"].map((l) => uri(`scene/crane-gilded-${l}.svg`)),
+    boat: [uri("scene/boat-hull.svg"), uri("scene/boat-sail.svg")],
+    ...Object.fromEntries(NAMES.folk.map((n) => [n, ["a", "b", "c"].map((s) => uri(`folk/${n}-${s}.svg`))])),
+  };
+  const maps = await withPage((page) => coverage(page, { ...folds, ...others }, 16));
+  for (const n of Object.keys(folds)) {
+    const ink = maps[n].reduce((s, v) => s + v, 0);
+    assert.ok(ink >= 45 && ink <= 180, `${n}: ${ink.toFixed(1)} px of 256 covered`);
+  }
+  // every fold-vs-fold and fold-vs-other pair (other-vs-other pairs are the tests above)
+  const pairs = pairwise(maps).filter((p) => p.pair.split("/").some((x) => x.startsWith("fold-")));
+  assert.equal(pairs.length, 9 * 8 / 2 + 9 * Object.keys(others).length);
+  const closest = pairs[0];
+  assert.ok(closest.d >= 24, `closest pair ${closest.pair} differs by only ${closest.d.toFixed(1)} px`);
+});
+
+test("each fold piece's shade lies on its base at 16 px and 20 px", { skip }, async () => {
+  const sprites = {};
+  for (const id of FOLDS) {
+    sprites[`${id}:base`] = [uri(`scene/fold-${id}-base.svg`)];
+    sprites[`${id}:shade`] = [uri(`scene/fold-${id}-shade.svg`)];
+  }
+  for (const size of [16, 20]) {
+    const maps = await withPage((page) => coverage(page, sprites, size));
+    for (const id of FOLDS) {
+      const base = maps[`${id}:base`], shade = maps[`${id}:shade`];
+      const ink = shade.reduce((s, v) => s + v, 0);
+      assert.ok(ink >= 2, `${id}: a shade to see (${ink.toFixed(1)} px at ${size})`);
+      // a shade pixel at least half covered is never where the base draws nothing
+      const off = shade.reduce((s, v, k) => s + (v >= 0.5 && base[k] === 0 ? 1 : 0), 0);
+      assert.equal(off, 0, `${id}: ${off} shade px off the base at ${size} px`);
+    }
+  }
 });
 
 export { coverage, pairwise };

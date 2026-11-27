@@ -365,8 +365,8 @@ function bookVm(o = {}) {
       effect: shown ? p.text : null,
       short: shown ? p.short : null,
       hint: state === "found" || p.hint === null ? null : p.hint,
-      fold: rec ? p.fold : null,
-      tooltip: shown ? `${p.text} · found 1 · learned 4 · mastered 12` : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+      fold: rec ? `Fold piece: ${p.fold}` : null,
+      tooltip: shown ? `${p.text} · traced ${n} · learned at 4, mastered at 12` : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
     };
   });
   return {
@@ -406,6 +406,7 @@ function fieldVm(id, path, o = {}) {
     line: path.map((i) => [i % 3, Math.floor(i / 3)]),
     fading: Boolean(o.fading),
     hint: o.hint ?? null,
+    hintShort: o.hintShort ?? null,
     barHint: o.barHint ?? "Crease field · next to find: Ridge",
   };
 }
@@ -727,8 +728,8 @@ const BUILDERS = {
 
   // The Pattern book (DESIGN §4.7): the views of glue/views.js, by hand.
   field: () => [NARROW, ui(), base("field", {
-    roster: STD, short: true, width: 226, frame: 0, ticks: 0, bought: BOOK_BOUGHT,
-    field: fieldVm("p1", [0, 1, 4], { hint: "Join neighbouring dots. Click the last one again to set." }),
+    roster: { needs: 2, finished: 1, working: 2, resting: 1, envelopes: 0.5 }, short: true, width: 226, frame: 0, ticks: 0, bought: BOOK_BOUGHT,
+    field: fieldVm("p1", [0, 1, 4], { hint: "Join neighbouring dots. Click the last one again to set.", hintShort: "Join dots, click the last again" }),
     book: { found: {} },
   })],
 
@@ -743,16 +744,16 @@ const BUILDERS = {
   fold: () => [NARROW, ui(), base("fold", {
     roster: STD, short: true, width: 226, frame: 2, ticks: 2, bought: BOOK_BOUGHT,
     fieldResult: { line: [[0, 0], [1, 1], [2, 0]], closed: false, style: "found", text: "Gull · new diagram" },
-    mat: (at) => ({ fold: { id: "f4", kind: "gull", ...at(21), tooltip: "Gull fold · the next crane comes 20 s sooner", fading: false } }),
+    mat: (at) => ({ fold: { id: "f4", kind: "gull", ...at(21), tooltip: "Paper gull · the next crane comes up to 20 s sooner", fading: false } }),
     shelf: ["fox", "p:ridge"],
-    boosts: [{ type: "steady", label: "Steady", msLeft: null, msTotal: null }],
+    boosts: [{ type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null }],
     book: { found: { ridge: [1, "rests 2:58"], gull: [1, "fold on the mat"] }, newMarks: true },
   })],
 
   book: () => [PANEL, ui({ tab: "book" }), base("book", {
     roster: STD, bought: BOOK_BOUGHT,
     fieldResult: { line: [[0, 0], [1, 0], [1, 1], [0, 1]], closed: true, style: "found", text: "Napkin" },
-    mat: (at) => ({ fold: { id: "f26", kind: "napkin", ...at(19), tooltip: "Napkin fold · banks 90 s of afterglow", fading: false } }),
+    mat: (at) => ({ fold: { id: "f26", kind: "napkin", ...at(19), tooltip: "Folded napkin · banks 90 s of afterglow", fading: false } }),
     shelf: ["koi", "p:gull", "crane", "p:stair", "rabbit", "p:lozenge", "boat"],
     book: {
       cards: true,

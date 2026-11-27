@@ -266,7 +266,7 @@ export class Player {
   constructor(prof, seed, o = {}) {
     this.prof = prof;
     this.seed = seed;
-    this.o = o; // { noBook, noFx, fxOff }
+    this.o = o; // { noBook, noFx, fxOff, rotate }
     this.craneSeen = new Set();
     this.chainPlan = new Map();
     this.fieldPlan = new Map();
@@ -281,6 +281,15 @@ export class Player {
       const f = s.book.found[id];
       return f && !(f.ready > sp.activeMs) && !(sp.fold && sp.fold.kind === id);
     };
+    if (this.o.rotate) {
+      // P1~rotate (B17): round the book, as DESIGN §4.7 asks of the late game: the ready
+      // diagram traced fewest times (book order on a tie), else the least traced of all
+      let best = null;
+      for (const p of PATTERNS) if (ready(p.id) && (!best || s.book.found[p.id].n < s.book.found[best].n)) best = p.id;
+      if (best) return best;
+      for (const p of PATTERNS) if (!best || s.book.found[p.id].n < s.book.found[best].n) best = p.id;
+      return best;
+    }
     if (this.prof.bookPick === "master") {
       for (const id of MASTER_ORDER) if (ready(id)) return id;
     } else {
@@ -479,12 +488,14 @@ export function potAttribution(ev, bankAfter, potLeft) {
  */
 /**
  * The run flags of a variant key (BALANCE §12.1): "nobook" → { noBook }, "nofx" → { noFx },
- * "fxoff:<id>" → { fxOff: id }. A job id "P1~nobook" runs P1 with them.
+ * "fxoff:<id>" → { fxOff: id }, "rotate" → { rotate } (round the book, B17). A job id
+ * "P1~nobook" runs P1 with them.
  */
 export function variantFlags(variant) {
   if (!variant) return {};
   if (variant === "nobook") return { noBook: true };
   if (variant === "nofx") return { noFx: true };
+  if (variant === "rotate") return { rotate: true };
   const m = /^fxoff:([a-z]+)$/.exec(variant);
   if (m && PATTERNS.some((x) => x.id === m[1])) return { fxOff: m[1] };
   throw new Error(`unknown variant ${variant}`);
@@ -651,7 +662,7 @@ export function runProfile(profileId, seed, opts = {}) {
   };
 
   // -- the player's actions
-  const player = new Player(prof, seed, { noBook: opts.noBook === true, noFx: opts.noFx === true, fxOff: opts.fxOff || null });
+  const player = new Player(prof, seed, { noBook: opts.noBook === true, noFx: opts.noFx === true, fxOff: opts.fxOff || null, rotate: opts.rotate === true });
   // B1 (BALANCE §12.3): run 0's sources at the purchase, or where --no-book would have bought
   const noteBuy = (win, key) => {
     if (win !== primary || sim.multi || win.state.wishCount !== 0 || sim.atBuy) return;
@@ -1223,6 +1234,15 @@ function patternRows(runs, bal, medians, rows) {
     const ok = within(median(vals), w) && within(median(deltas), w.base) && vals.every((v) => within(v, R.B7.every));
     add("B7", "", "pct", vals, ok, `--no-book median ${pct(median(b1.map((r) => (r.shares ? r.shares.click : NaN))))}; delta ${pts(median(deltas))} (median)`, { window: { lo: w.lo, hi: w.hi } });
   }
+  // B17: the same click-share bounds for a hand that rotates through the book (P1~rotate)
+  const rot = runs["P1~rotate"];
+  if (b1 && rot && R.B17) {
+    const vals = rot.map((r) => (r.shares ? r.shares.click : NaN));
+    const deltas = same(rot, b1).map(([r, b]) => (r.shares && b.shares ? r.shares.click - b.shares.click : NaN));
+    const w = R.B17.median;
+    const ok = within(median(vals), w) && within(median(deltas), w.base) && vals.every((v) => within(v, R.B17.every));
+    add("B17", "", "pct", vals, ok, `delta against --no-book ${pts(median(deltas))} (median)`, { window: { lo: w.lo, hi: w.hi } });
+  }
   // B8: §6.2 per-day floors, every profile (the §6.2 rows, with fields on)
   {
     const d62 = rows.filter((x) => x.section === "§6.2");
@@ -1484,6 +1504,7 @@ export function variantJobs(ids, seeds) {
   }
   if (ids.includes("P1")) {
     for (const seed of seeds) out.push({ id: "P1~nofx", seed, replay: "P1" });
+    for (const seed of seeds) out.push({ id: "P1~rotate", seed });
     for (const p of PATTERNS) for (const seed of seeds.filter((x) => x <= 5)) out.push({ id: `P1~fxoff:${p.id}`, seed, replay: "P1" });
   }
   return out;

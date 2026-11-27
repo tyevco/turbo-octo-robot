@@ -322,10 +322,12 @@ const cellPct = (c) => `${r1(((2 * num(c) + 1) / 6) * 100)}%`;
  * The trace (or result) line over the Sheet: two stroke paths, an edge
  * under the line, so it reads where a fold frame leaves the mat under it
  * (ink on mat is about 2.4:1). `style` is "trace" (the live trace: solid
- * 2 px ink on a 4 px paper edge), "found" (dashed ink on a dashed paper
+ * 2 px ink on a 4 px paper edge), "found" (dashed ink on a solid paper
  * edge), "learned" (solid ink on paper), "mastered" (2 px S.goldInk on a
- * 4 px S.node edge) or "loose" (dashed 1 px ink at 0.5 on a 3 px paper edge
- * at 0.6).
+ * 4 px S.node edge) or "loose" (dashed 1 px ink at 0.5 on a solid 3 px paper
+ * edge at 0.6). The edge is never dashed: a continuous light ground under
+ * the ink's dashes reads as one dashed line on mat and paper alike (two
+ * dashed strokes read as broken double dashes on the mat).
  */
 function traceLine(line, closed, style, g, S) {
   if (!Array.isArray(line) || line.length < 2) return [];
@@ -348,11 +350,11 @@ function traceLine(line, closed, style, g, S) {
     out.push(at(paint(stroke(4), solid(S.node)), "cw-field-edge"));
     out.push(at(paint(stroke(2), solid(S.goldInk)), "cw-field-line"));
   } else if (style === "loose") {
-    out.push(at(paint(stroke(3, [4, 3]), solid(withAlpha(S.sheet, 0.6))), "cw-field-edge"));
+    out.push(at(paint(stroke(3), solid(withAlpha(S.sheet, 0.6))), "cw-field-edge"));
     out.push(at(paint(stroke(1, [4, 3]), solid(withAlpha(S.ink, 0.5))), "cw-field-line"));
   } else {
     const dash = style === "found" ? [5, 3] : null;
-    out.push(at(paint(stroke(4, dash), solid(S.sheet)), "cw-field-edge"));
+    out.push(at(paint(stroke(4), solid(S.sheet)), "cw-field-edge"));
     out.push(at(paint(stroke(2, dash), solid(S.ink)), "cw-field-line"));
   }
   return out.filter(Boolean);
@@ -412,9 +414,11 @@ function creaseField(vm, g, S, click, calm, zoom) {
  * chip (one line) sits over the Sheet's top edge, its foot at the top of the
  * top row's largest ring (20 px on the short mat's 96 px Sheet, where it
  * fits 20 px under the top band); the first-field hint wraps to
- * as few lines as fit `FIELD.hintMaxW` (or the mat) and keeps the same foot,
- * so it may reach up into the top band on the short mat (it shows only
- * until the first match). Never wider than the mat less 8 px.
+ * as few lines as fit `FIELD.hintMaxW` (or the mat) and keeps the same foot.
+ * Neither ever reaches into the top band (the needs-you chips and the shelf
+ * live there): `over` is true when the wrapped hint would, and the caller
+ * then shows the hint's one-line short form instead (the short mat).
+ * Never wider than the mat less 8 px.
  */
 export function fieldChipBox(str, g, hint = false) {
   const maxW = Math.min(g.w - 8, hint ? FIELD.hintMaxW : g.w - 8);
@@ -427,9 +431,17 @@ export function fieldChipBox(str, g, hint = false) {
   const foot = g.sy + dotCentre(g.sheet, 0) - DOT_LOOK.next.ring / 2;
   // one line: 22 px, or as little as 18 where the short mat leaves less under the top band
   const h = lines <= 1 ? Math.max(18, Math.min(FIELD.chipH, foot - TOP_BAND)) : lines * CHIP_TEXT.line + CHIP_TEXT.padY;
-  const y = r1(Math.max(hint ? 2 : TOP_BAND, foot - h));
+  const over = foot - h < TOP_BAND;
+  const y = r1(Math.max(TOP_BAND, foot - h));
   const x = r1(Math.max(4, Math.min(g.w - w - 4, g.sx + g.sheet / 2 - w / 2)));
-  return { x, y, w, h, lines };
+  return { x, y, w, h, lines, over };
+}
+
+/** The result chip's box (fieldChipBox), or null while none shows: fold pieces keep clear of it. */
+export function resultChipBox(vm, g) {
+  const sheet = (vm && vm.sheet) || {};
+  const result = sheet.fieldResult && typeof sheet.fieldResult.text === "string" && sheet.fieldResult.text ? sheet.fieldResult : null;
+  return result ? fieldChipBox(clip(result.text, MAT_CLIP.fieldChip), g, false) : null;
 }
 
 /**
@@ -444,8 +456,13 @@ function fieldChip(vm, g, T, hint) {
   const result = sheet.fieldResult && typeof sheet.fieldResult.text === "string" && sheet.fieldResult.text ? sheet.fieldResult : null;
   const field = !result && sheet.field && typeof sheet.field.hint === "string" && sheet.field.hint ? sheet.field : null;
   if (hint ? !field : !result) return null;
-  const str = result ? clip(result.text, MAT_CLIP.fieldChip) : clip(field.hint, MAT_CLIP.fieldHint);
-  const b = fieldChipBox(str, g, !result);
+  let str = result ? clip(result.text, MAT_CLIP.fieldChip) : clip(field.hint, MAT_CLIP.fieldHint);
+  let b = fieldChipBox(str, g, !result);
+  if (!result && b.over && typeof field.hintShort === "string" && field.hintShort) {
+    // no room for the wrapped hint under the top band (the short mat): its one-line form
+    str = clip(field.hintShort, MAT_CLIP.fieldChip);
+    b = fieldChipBox(str, g, false);
+  }
   return div()
     .id(result ? "cw-field-chip" : "cw-field-hint")
     .absolute()
@@ -466,9 +483,33 @@ function fieldChip(vm, g, T, hint) {
       : text(str, { size: 11, weight: 600, color: T.foreground }).whitespace_normal().line_height("127%").text_center());
 }
 
-/** The fold piece (§4.7): a 28 × 28 hit box like a scrap holding the diagram's 20 px fold, base S.sheet, shade S.sheetShade. */
-function foldPiece(f, g, S, click, calm) {
-  const [x, y] = place(g, f.x, f.y, 28, 28);
+/**
+ * A box (left/top, bw × bh) already off the Sheet, pushed off `r` ({ x, y, w, h }) too by the
+ * shortest move that stays on the mat and off the Sheet. Unmoved when it does not overlap `r`.
+ */
+export function clearOf(g, bx, by, bw, bh, r) {
+  if (!r) return [bx, by];
+  const hits = (ax, ay, q) => Math.min(ax + bw, q.x + q.w) - Math.max(ax, q.x) > 0 && Math.min(ay + bh, q.y + q.h) - Math.max(ay, q.y) > 0;
+  if (!hits(bx, by, r)) return [bx, by];
+  const sheet = { x: g.sx, y: g.sy, w: g.sheet, h: g.sheet };
+  const moves = [[r.x - (bx + bw), 0], [r.x + r.w - bx, 0], [0, r.y - (by + bh)], [0, r.y + r.h - by]]
+    .filter(([dx, dy]) => bx + dx >= 0 && bx + dx + bw <= g.w && by + dy >= 0 && by + dy + bh <= g.h && !hits(bx + dx, by + dy, sheet));
+  if (!moves.length) return [bx, by];
+  moves.sort((a, b) => Math.abs(a[0]) + Math.abs(a[1]) - Math.abs(b[0]) - Math.abs(b[1]));
+  return [r1(bx + moves[0][0]), r1(by + moves[0][1])];
+}
+
+/**
+ * The fold piece (§4.7): a 28 × 28 hit box like a scrap holding the diagram's 20 px fold, base
+ * S.sheet, shade S.sheetShade. It lands right after a match, so it is kept clear of the
+ * result chip (`avoid`, resultChipBox) as of the Sheet: the chip sits above the Sheet where
+ * the top slot rows land on the short mat.
+ */
+function foldPiece(f, g, S, click, calm, avoid) {
+  const [px, py] = place(g, f.x, f.y, 28, 28);
+  const [bx, by] = clearOf(g, r1(px - HALF_HIT), r1(py - HALF_HIT), 28, 28, avoid);
+  const x = bx + HALF_HIT;
+  const y = by + HALF_HIT;
   let art;
   try {
     art = foldSprite(String(f.kind), 20, S.sheet, S.sheetShade);
@@ -1048,7 +1089,7 @@ export function renderMat(vm, ui, ctx) {
   if (mat.ream) root.child(ream(mat.ream, g, S, click));
   if (mat.crane) root.child(crane(mat.crane, g, S, click, calm, zoom));
   if (mat.fold) {
-    const piece = foldPiece(mat.fold, g, S, click, calm);
+    const piece = foldPiece(mat.fold, g, S, click, calm, resultChipBox(vm, g));
     if (piece) root.child(piece);
   }
   root.child(topBand(vm, g, T, S, openHelper, calm));

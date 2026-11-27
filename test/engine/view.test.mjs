@@ -807,6 +807,22 @@ test("mat: nodes at slot centres (due, fading), scraps, ream, crane glide, boat,
   assert.equal(v(s, T0, { short: true }).sheet.short, true);
 });
 
+test("B17 a crane born under Fair wind glides over its whole 1.5× life (lifeOf), as the engine counts it", () => {
+  const s = seeded(3);
+  const sp = s.spawn;
+  const life = engine.CONTENT.K.craneLifeMs * engine.CONTENT.K.windLife;
+  sp.shownMs = 100000;
+  sp.crane = { id: "g7", slot: 9, born: 100000, outcome: "gift", wind: true };
+  const born = v(s).mat.crane;
+  assert.equal(born.msLeft, life);
+  sp.shownMs = 100000 + life / 3; // a third gone: a third of the way, not still at x0
+  const third = v(s).mat.crane;
+  assert.ok(Math.abs((born.x - third.x) - (born.x - born.x1) / 3) < 0.2, `${born.x} → ${third.x} of ${born.x1}`);
+  sp.shownMs = 100000 + life - 1;
+  const end = v(s).mat.crane;
+  assert.ok(Math.abs(end.x - end.x1) < 0.2, "at x1 only at the end of its life");
+});
+
 // ---------------------------------------------------------------------------
 // Strings, purity, shape parity, performance
 
@@ -1259,7 +1275,7 @@ test("B17 sheet.field: nine dots as grid col / row with shape states and tips; t
   assert.equal(typeof engine.view(s, s.clock, { role: "ribbon" }).sheet.frame, "number");
 });
 
-test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fold; the shelf's p: entries; Wind-up and Steady chips", () => {
+test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fold; the shelf's p: entries; the Coil and Ridge chips", () => {
   const { s, me, fid } = bookState();
   let t = T0 + 900;
   for (const i of [0, 1, 2, 2]) me.act({ t: (t += 300), type: "click", target: "dot", id: `${fid}-${i}` });
@@ -1269,7 +1285,7 @@ test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fo
   assert.equal(engine.view(s, t + engine.CONTENT.K.fieldResultMs).sheet.fieldResult, null, "gone after 3 s");
   const fold = vm.mat.fold;
   assert.equal(fold.kind, "ridge");
-  assert.equal(fold.tooltip, "Ridge fold · your next short pause costs no beats");
+  assert.equal(fold.tooltip, "Ridge pleat · your next short pause costs no beats", "the fold piece's one name, as on its book card");
   const pos = engine.slotPos(s.spawn.fold.slot, false);
   assert.deepEqual([fold.x, fold.y], [pos.x, pos.y]);
   assert.equal(engine.view(s, t + 100, { short: true }).mat.fold.y, engine.slotPos(s.spawn.fold.slot, true).y);
@@ -1277,11 +1293,12 @@ test("B17 sheet.fieldResult: 3 s in the tier style with the chip's words; mat.fo
   vm = engine.view(s, t);
   assert.equal(vm.mat.fold, null);
   assert.equal(vm.mat.shelf[vm.mat.shelf.length - 1], "p:ridge");
-  assert.deepEqual(vm.boosts.find((b) => b.type === "steady"), { type: "steady", label: "Steady", msLeft: null, msTotal: null });
+  // chips named after the diagram that gave them, as every other chip is
+  assert.deepEqual(vm.boosts.find((b) => b.type === "steady"), { type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null });
   s.boosts.coilEnd = t + 10000;
-  assert.deepEqual(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), { type: "coil", label: "Wind-up ×2", msLeft: 6000, msTotal: 10000 });
+  assert.deepEqual(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), { type: "coil", label: "Coil ×2", msLeft: 6000, msTotal: 10000 });
   s.boosts.rushEnd = t + 30000;
-  assert.equal(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), undefined, "no Wind-up chip while Rush runs");
+  assert.equal(engine.view(s, t + 4000).boosts.find((b) => b.type === "coil"), undefined, "no Coil chip while Rush runs");
   // the learned / mastered words and styles
   s.book.found.ridge.n = 3;
   s.spawn.field = { id: "p88", born: s.spawn.shownMs, path: [] };
@@ -1314,7 +1331,9 @@ test("B17 vm.book: counts and marks, the tab dot, the line, the help; cards only
   const card = (id) => b.cards.find((c) => c.id === id);
   assert.deepEqual([card("ridge").state, card("ridge").tier, card("ridge").pips, card("ridge").count, card("ridge").status], ["found", 2, [true, true, false], "×4", "ready"]);
   assert.equal(card("napkin").status, "rests 1:40");
-  assert.equal(card("ridge").fold, "Ridge pleat");
+  assert.equal(card("ridge").fold, "Fold piece: Ridge pleat");
+  // the tooltip says the tier counts are thresholds, beside the player's own count
+  assert.equal(card("ridge").tooltip, "Your next short pause costs no beats · traced 4 · learned at 4, mastered at 12");
   assert.equal(card("gull").state, "next");
   assert.deepEqual(card("gull").dots, [[0, 0], [1, 1], [2, 0]]);
   assert.equal(card("gull").hint, "Down, then up: a bird far off");
@@ -1333,6 +1352,10 @@ test("B17 vm.book: counts and marks, the tab dot, the line, the help; cards only
   b = engine.view(s, s.clock, { tab: "book" }).book;
   assert.equal(b.line, "All nine found · next mastery: Hem 9 / 12");
   assert.equal(b.help, null);
+  // the curio not owned this run (after a wish): the Buy line, all nine found or not
+  s.spawn.fieldIn = null;
+  assert.equal(engine.view(s, s.clock, { tab: "book" }).book.line, "Buy Crease Field (Curios) to bring fields back this run");
+  s.spawn.fieldIn = 3;
   // a fold piece on the mat
   s.spawn.fold = { id: "f1", kind: "coil", slot: 1, born: s.spawn.shownMs };
   assert.equal(engine.view(s, s.clock, { tab: "book" }).book.cards.find((c) => c.id === "coil").status, "fold on the mat");

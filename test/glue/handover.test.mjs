@@ -9,6 +9,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { win, SAVE, parsed, agent, term, engine } from "./_util.mjs";
 import { SLOT_KEY } from "../../mods/creaseworks/glue/live.js";
+import * as store from "../../mods/creaseworks/glue/store.js";
 
 let w;
 afterEach(() => w && w.dispose());
@@ -92,6 +93,62 @@ test("hot reload from a state-version-1 generation migrates the live state in pl
   const p = parsed(w.ctl);
   assert.equal(p.state.version, engine.VERSION);
   assert.equal(p.state.stats.hits, before.hits + 1);
+});
+
+test("B17: a window that went read-only on the version-2 save leaves read-only on its hot reload, keeps the other window's progress and saves again", async () => {
+  w = win();
+  const v = await w.copy("panel");
+  await w.advance(1000); // load + first save
+  await w.hits(v, 2);
+  await w.advance(16000); // saved
+  const slot = w.slot;
+  const mine = slot.state.stats.hits;
+  // The other window (on the new build, writer B) plays on and saves.
+  const disk = engine.parseSave(w.ctl.readFile(SAVE)).state;
+  const t = Date.now();
+  for (let i = 1; i <= 3; i++) engine.apply(disk, { w: "B", s: i, t: t + i * 300, type: "click", target: "sheet" });
+  w.ctl.externalWrite(SAVE, engine.serialize(disk));
+  // This window, on the old build, found that save newer than it understood (its CAS merge):
+  // read-only with the banner, its play never recorded, nothing written.
+  slot.readOnly = true;
+  slot.save.status = "readonly";
+  slot.notices.load = { kind: "newer", at: t };
+  store.refreshNotice(slot);
+  assert.equal(slot.notice.kind, "newer");
+  const writes = w.ctl.writes.length;
+  await w.hits(v, 2); // read-only play: shown, never saved
+  await w.advance(16000);
+  assert.equal(w.ctl.writes.length, writes, "read-only: no write");
+  // The reload brings a build that understands the file.
+  await w.reload();
+  assert.equal(slot.readOnly, false, "no longer read-only");
+  assert.ok(!slot.notice || slot.notice.kind !== "newer", "the banner is gone");
+  await w.advance(16000);
+  const p = parsed(w.ctl);
+  assert.ok(p.ok);
+  assert.equal(p.state.applied.B, 3, "the other window's progress is kept");
+  assert.equal(p.state.stats.hits, mine + 3, "its hits and this window's saved ones, once each");
+  assert.equal(slot.save.status, "ok");
+  // and it plays and saves on
+  await w.hits(w.copies[0], 1);
+  await w.advance(16000);
+  assert.equal(parsed(w.ctl).state.stats.hits, mine + 4);
+  assert.equal(slot.readOnly, false);
+});
+
+test("B17: a save still newer than the reloaded build keeps the window read-only", async () => {
+  const s = engine.newGame({ seed: 5, now: Date.now() - 1000 });
+  s.version = 99;
+  const text = engine.serialize(s);
+  w = win({ files: { [SAVE]: text } });
+  await w.copy("panel");
+  await w.flush();
+  assert.equal(w.slot.readOnly, true);
+  await w.reload();
+  await w.advance(20000);
+  assert.equal(w.slot.readOnly, true, "read-only again once it read the file");
+  assert.equal(w.slot.notice.kind, "newer");
+  assert.equal(w.ctl.readFile(SAVE), text, "never written");
 });
 
 for (const variant of [

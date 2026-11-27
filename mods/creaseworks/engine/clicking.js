@@ -123,6 +123,15 @@ function vc(state, E, r, t) {
   return r.V * combo(state, E) * hitBoost(state, E, t);
 }
 
+/**
+ * Vc at `t` with the combo of the rhythm the player sees then (rhythmAt), not
+ * the stored r, which resets only on the next hit. For a pay that lands at a
+ * time no hit refreshed r: a field's trace set at its life's end (§4.7).
+ */
+function vcAt(state, E, r, t) {
+  return r.V * (1 + E.comboMax * Math.min(rhythmAt(state, E, t), K.rMax) / K.rMax) * hitBoost(state, E, t);
+}
+
 function findChain(sp, chainId) {
   if (sp.chain && sp.chain.id === chainId) return "chain";
   if (sp.chain2 && sp.chain2.id === chainId) return "chain2";
@@ -297,11 +306,14 @@ function traceClick(state, ctx, f, i, t, ev) {
 
 /**
  * Set field `f`'s trace (open, or `closed`) at `t`: a match pays
- * matchPerDot · n · Vc (+ firstFindPerDot · n · Vc on the first find) to
- * `pattern`, counts in the book, may drop a fold piece and ends the field; a
- * loose crease pays nothing more and clears the trace for another try.
+ * matchPerNode · chainK · Vc, the same for every diagram (about what the
+ * numbered chain it replaces pays above its folds), + firstFindPerDot · n · Vc
+ * on the first find, to `pattern`; it counts in the book, may drop a fold piece
+ * and ends the field. A loose crease pays nothing more and clears the trace
+ * for another try. `lifeEnd`: set by the field's life running out at `t`, so
+ * Vc is that moment's (vcAt), not the last hit's.
  */
-function setTrace(state, ctx, f, closed, t, ev, rt = state.clock) {
+function setTrace(state, ctx, f, closed, t, ev, rt = state.clock, lifeEnd = false) {
   const sp = state.spawn;
   const path = f.path.slice();
   const id = classifyTrace(path, closed);
@@ -318,11 +330,11 @@ function setTrace(state, ctx, f, closed, t, ev, rt = state.clock) {
   }
   const p = patternOf(id);
   const r = ctx.rates(rt);
-  const v = vc(state, ctx.E, r, t);
+  const v = lifeEnd ? vcAt(state, ctx.E, r, t) : vc(state, ctx.E, r, t);
   const book = state.book;
   let rec = Object.hasOwn(book.found, id) ? book.found[id] : null;
   const first = !rec;
-  earn(state, ev, "pattern", (K.matchPerDot + (first ? K.firstFindPerDot : 0)) * p.n * v);
+  earn(state, ev, "pattern", (K.matchPerNode * ctx.E.chainK + (first ? K.firstFindPerDot * p.n : 0)) * v);
   if (first) {
     rec = { n: 1, at: t, ready: 0 };
     book.found[id] = rec;
@@ -332,9 +344,11 @@ function setTrace(state, ctx, f, closed, t, ev, rt = state.clock) {
   state.ui.hints.field = true;
   const tier = bookTier(rec.n);
   let rest = null;
+  const pulled = p.fx === "pull" && sp.gullFor === sp.cranesSeen;
   if (rec.ready > sp.activeMs) {
     rest = rec.ready - sp.activeMs;
-  } else if (!sp.fold) {
+  } else if (!sp.fold && !pulled) {
+    // (a Gull drops nothing while this crane gap is already pulled: its fold would do nothing)
     const slots = pickSlots(state, sp, 1);
     if (slots) {
       const fid = `f${sp.seq++}`;
@@ -342,7 +356,7 @@ function setTrace(state, ctx, f, closed, t, ev, rt = state.clock) {
       ev.push({ kind: "spawn", what: "fold", id: fid });
     }
   }
-  sp.lastField = { pattern: id, path, closed, tier, first, near: null, more: 0, rest, at: t };
+  sp.lastField = { pattern: id, path, closed, tier, first, near: null, more: 0, rest, pulled: rest === null && pulled, at: t };
   sp.field = null;
   ev.push({ kind: "trace", result: "match", pattern: id, first, tier });
 }
@@ -353,11 +367,14 @@ function foldEffect(state, kind, t, ev) {
   if (!p) return;
   const sp = state.spawn;
   const hand = state.hand;
+  let did = true;
   switch (p.fx) {
     case "steady": hand.steady = 1; break;
     case "pull":
-      // at most once per crane, never closer than gullMinMs, never later than it was
-      if (sp.gullFor !== sp.cranesSeen && sp.nextCraneAt - sp.activeMs > K.gullMinMs) {
+      // at most once per crane, never closer than gullMinMs, never later than it was;
+      // a click that pulls nothing starts no rest
+      did = sp.gullFor !== sp.cranesSeen && sp.nextCraneAt - sp.activeMs > K.gullMinMs;
+      if (did) {
         sp.nextCraneAt = Math.max(sp.activeMs + K.gullMinMs, sp.nextCraneAt - K.gullPullMs);
         sp.gullFor = sp.cranesSeen;
       }
@@ -366,13 +383,17 @@ function foldEffect(state, kind, t, ev) {
     case "finish": hand.frame = Math.max(hand.frame, K.lozengeFrame); break;
     case "lift": hand.r = Math.min(K.rMax, hand.r + K.stairBeats); break;
     case "wind": sp.windUntil = sp.activeMs + K.windMs; break;
-    case "hurry": sp.nextChainAt = Math.min(sp.nextChainAt, sp.activeMs + K.hurryMs); break;
+    case "hurry":
+      // a chain (or field) within 2 s; while one is live the next waits for it to clear (chain-in)
+      sp.nextChainAt = Math.min(sp.nextChainAt, sp.activeMs + K.hurryMs);
+      sp.hurry = 1;
+      break;
     case "margin": sp.fieldIn = 1; break;
     case "windup": state.boosts.coilEnd = Math.max(state.boosts.coilEnd || 0, t + K.coilMs); break;
     default: break;
   }
   const rec = Object.hasOwn(state.book.found, kind) ? state.book.found[kind] : null;
-  if (rec) rec.ready = sp.activeMs + K.patternRestMs;
+  if (rec && did) rec.ready = sp.activeMs + K.patternRestMs;
   shelve(hand, `p:${kind}`);
   ev.push({ kind: "fold", pattern: kind, fx: p.fx });
 }
@@ -504,7 +525,7 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
       case "field-out": {
         // Life end (§4.7): a trace of 3 or more dots sets, open, at Vc of this moment.
         const f = sp.field;
-        if (f.path.length >= 3) setTrace(state, ctx, f, false, at, ev, at);
+        if (f.path.length >= 3) setTrace(state, ctx, f, false, at, ev, at, true);
         sp.field = null;
         ev.push({ kind: "trace", result: "expired" });
         break;
@@ -518,10 +539,17 @@ export function spawnPiece(state, ctx, t, dt, shown, active, ev, storm) {
           sp.nextChainAt = sp.activeMs + K.fieldWaitMs; // a field is up: the chain waits
           break;
         }
+        const key = !sp.chain ? "chain" : storm && !sp.chain2 ? "chain2" : null;
+        if (!key && sp.hurry === 1 && state.settings.nodes !== false) {
+          // Hurry (a Switchback fold) with a chain still live: wait for it to clear, a
+          // second at a time like a field, instead of starting a full interval now
+          sp.nextChainAt = sp.activeMs + K.fieldWaitMs;
+          break;
+        }
         sp.nextChainAt = sp.activeMs + (storm ? K.chainStormMs : E.chainEveryMs);
         if (state.settings.nodes === false) break;
-        const key = !sp.chain ? "chain" : storm && !sp.chain2 ? "chain2" : null;
         if (!key) break;
+        sp.hurry = 0;
         if (fields && sp.fieldIn === 1) {
           const id = `p${sp.seq++}`;
           sp.field = { id, born: sp.shownMs, path: [] };

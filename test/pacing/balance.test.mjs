@@ -187,7 +187,7 @@ test("§8 knobs: the current values in BALANCE.md are the constants in engine/co
     5: [K.awayF, ...away],
     6: [C.GROWTH],
     7: [C.PRESTIGE.minGain, C.PRESTIGE.gateShare],
-    8: [K.matchPerDot, K.fieldEvery, K.patternRestMs / 1000],
+    8: [K.matchPerNode, K.fieldEvery, K.patternRestMs / 1000],
   };
   assert.deepEqual(bal.knobs.map((k) => k.order), [1, 2, 3, 4, 5, 6, 7, 8]);
   for (const k of bal.knobs) assert.deepEqual(k.values, want[k.order], `knob ${k.order} (${k.knob}): "${k.text}"`);
@@ -214,9 +214,9 @@ test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE
   assert.match(p15[1], /\*\*100 %\*\*/);
   assert.match(table(section(md, "Other profiles")).rows.find((r) => r[0].startsWith("P14"))[1], /\*\*75 %\*\*/);
   assert.match(section(md, "P1 typical"), /success \*\*90 %\*\* per attempt/);
-  // §12.3: sixteen rows, each with a bound the evaluator understands
+  // §12.3: seventeen rows, each with a bound the evaluator understands
   const rows = bal.pattern;
-  assert.deepEqual(rows.map((r) => r.id), Array.from({ length: 16 }, (_, i) => `B${i + 1}`));
+  assert.deepEqual(rows.map((r) => r.id), Array.from({ length: 17 }, (_, i) => `B${i + 1}`));
   const B = Object.fromEntries(rows.map((r) => [r.id, r]));
   assert.equal(B.B2.key, "buy:crease-field");
   assert.deepEqual([B.B2.median.lo, B.B2.median.hi], [parseClock("9:20"), parseClock("13:20")]);
@@ -226,6 +226,9 @@ test("§12 Pattern book: P15 and the tracer's success per profile are as BALANCE
   assert.equal(B.B6.provisional, true);
   assert.equal(B.B16.provisional, true);
   assert.deepEqual([B.B7.median.lo, B.B7.median.hi, B.B7.median.base.lo, B.B7.median.base.hi], [0.2, 0.38, -0.005, 0.04]);
+  // B17: a hand that rotates through the book is held to B7's bounds too
+  assert.deepEqual([B.B17.median.lo, B.B17.median.hi, B.B17.median.base.lo, B.B17.median.base.hi], [0.2, 0.38, -0.005, 0.04]);
+  assert.deepEqual([B.B17.every.lo, B.B17.every.hi], [0.2, 0.38]);
   assert.deepEqual([B.B9.median.lo, B.B9.median.hi], [-1800, 600]);
   assert.deepEqual([B.B10.median.hi, B.B11.median.hi, B.B12.median.hi], [0.06, 0.02, 0.01]);
   assert.deepEqual([B.B13.median.ref, B.B13.median.lo, B.B13.median.hi], ["P1", -2700, 0]);

@@ -763,7 +763,7 @@ function checkVm(vm, where) {
   same(vm.header.counts, ["needs", "finished", "working", "resting"], `${where}.header.counts`);
   same(vm.sheet, ["frame", "ticks", "firstRunHint", "short", "field", "fieldResult"], `${where}.sheet`);
   if (vm.sheet.field) {
-    same(vm.sheet.field, ["id", "dots", "line", "fading", "hint", "barHint"], `${where}.sheet.field`);
+    same(vm.sheet.field, ["id", "dots", "line", "fading", "hint", "hintShort", "barHint"], `${where}.sheet.field`);
     assert.equal(vm.sheet.field.dots.length, 9);
     for (const d of vm.sheet.field.dots) {
       same(d, ["i", "col", "row", "state", "tip"], `${where}.sheet.field.dots`);

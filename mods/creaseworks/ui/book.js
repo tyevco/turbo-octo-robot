@@ -163,6 +163,10 @@ const line = (s, T, color = T.muted, weight = 400) => text(s, { size: 11, weight
 const lines = (s, n, T, color = T.muted) =>
   div().w_full().h(n * CARD.line).overflow_hidden().child(text(s, { size: 11, color }, T).whitespace_normal().line_height(`${CARD.line}px`));
 
+/** A card's clue (the hint): `lines` in italic, so it never reads on from the short effect above it. */
+const clue = (s, T) =>
+  div().w_full().h(3 * CARD.line).overflow_hidden().child(text(s, { size: 11, color: T.muted }, T).italic().whitespace_normal().line_height(`${CARD.line}px`));
+
 function card(c, narrow, w, h, ctx) {
   const T = ctx.T;
   const S = ctx.S;
@@ -194,10 +198,10 @@ function card(c, narrow, w, h, ctx) {
   } else if (state === "next") {
     body.child(line(sub, T, T.foreground));
     body.child(line(clip(str(c.short), BOOK_CLIP.short), T));
-    if (c.hint) body.child(lines(clip(str(c.hint), BOOK_CLIP.hint), 3, T));
+    if (c.hint) body.child(clue(clip(str(c.hint), BOOK_CLIP.hint), T).id(`cw-book-${c.id}-clue`));
   } else {
     body.child(line(sub, T, T.foreground));
-    if (c.hint) body.child(lines(clip(str(c.hint), BOOK_CLIP.hint), 3, T));
+    if (c.hint) body.child(clue(clip(str(c.hint), BOOK_CLIP.hint), T).id(`cw-book-${c.id}-clue`));
   }
   const tip = state === "found" ? str(c.tooltip) : state === "next" ? `Next to find · ${sub}${c.hint ? ` · ${c.hint}` : ""}` : `${sub}${c.hint ? ` · ${c.hint}` : ""}`;
   return v_flex()

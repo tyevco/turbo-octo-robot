@@ -166,14 +166,16 @@ function boostBar(vm, ctx) {
   }
   for (const b of boosts) {
     const type = String(b.type ?? "");
-    // Pattern book chips (§4.7) carry their diagram's fold: Wind-up the spring, Steady the ridge pleat.
+    // Pattern book chips (§4.7) carry their diagram's fold: Coil the spring, Ridge the ridge pleat.
     const seal = Object.hasOwn(SEAL, type) ? spritePath("scene", SEAL[type])
       : type === "coil" ? foldPaths("coil").base
         : type === "steady" ? foldPaths("ridge").base
           : spritePath("ui", type === "song" ? "step" : "arrows");
-    // Steady is a static charge (msLeft null): no countdown, a tooltip that says what it does.
+    // Ridge's charge is static (msLeft null): no countdown, a tooltip that says what it does.
     const timed = typeof b.msLeft === "number";
-    const tip = timed ? `${b.label ?? type}: ${Math.ceil(num(b.msLeft) / 1000)} s left` : type === "steady" ? "Steady: your next short pause costs no beats" : String(b.label ?? type);
+    const left = `${Math.ceil(num(b.msLeft) / 1000)} s left`;
+    const tip = type === "coil" && timed ? `Coil: hand hits ×2 · ${left}` : timed ? `${b.label ?? type}: ${left}`
+      : type === "steady" ? "Ridge: your next short pause costs no beats" : String(b.label ?? type);
     const el = h_flex()
       .id(`cw-boostbar-${type}`)
       .h(22)

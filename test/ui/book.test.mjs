@@ -24,7 +24,7 @@ import { graphemes, CONTENT } from "../../mods/creaseworks/engine/index.js";
 import { pickScene, pickHues, S_LIGHT, S_DARK } from "../../mods/creaseworks/ui/palette.js";
 import { contrast } from "../../mods/creaseworks/ui/color.js";
 import { renderPanel, TAB_ROW, bookOpen } from "../../mods/creaseworks/ui/panel.js";
-import { renderMat, matGeometry, fieldBoxes, fieldChipBox, dotCentre, DOT_LOOK, FIELD, MAT_CLIP } from "../../mods/creaseworks/ui/mat.js";
+import { renderMat, matGeometry, fieldBoxes, fieldChipBox, resultChipBox, clearOf, dotCentre, DOT_LOOK, FIELD, MAT_CLIP, MAT_BANDS } from "../../mods/creaseworks/ui/mat.js";
 import { renderBook, BOOK_CLIP, BOOK_HELP, CARD, bookColumns, cardWidth, cardLines, cardHeight } from "../../mods/creaseworks/ui/book.js";
 import { foldPaths, spritePath } from "../../mods/creaseworks/ui/art.js";
 import { CORPUS, hasLoneSurrogate } from "../text/corpus.js";
@@ -245,6 +245,10 @@ test("the trace line and the result line: an edge under the line, each style; th
     assert.equal(styleVal(line, "w"), g.sheet);
     const chip = findById(json, "cw-field-chip");
     assert.ok(chip && texts(chip).includes("Napkin"), `${style}: the chip names it`);
+    // the edge is never dashed (a continuous ground); only the ink is, while found or loose
+    const dashed = (el) => el.args[0].commands.some((c) => c[0] === "dash_array");
+    assert.equal(dashed(findById(json, "cw-field-edge")), false, `${style}: a solid edge`);
+    assert.equal(dashed(line), style === "found" || style === "loose", `${style}: the ink's dash`);
   }
   // the live trace is drawn; the dots fade only when not calm
   for (const calm of [false, true]) {
@@ -273,13 +277,26 @@ test("the result chip sits over the Sheet's top edge, clear of the top band and 
       assert.ok(b.x >= 4 && b.x + b.w <= g.w - 4);
     }
     const hint = fieldChipBox(s.vm.sheet.field.hint, g, true);
-    assert.ok(hint.lines >= 2 && hint.y >= 2 && hint.x >= 4 && hint.x + hint.w <= g.w - 4, `${width}: ${JSON.stringify(hint)}`);
+    assert.ok(hint.lines >= 2 && hint.y >= MAT_BANDS.top && hint.x >= 4 && hint.x + hint.w <= g.w - 4, `${width}: ${JSON.stringify(hint)}`);
+    // the short mat has no room for two lines under the top band: the one-line form, still under it
+    assert.equal(hint.over, g.short, `${width}: over the top band only on the short mat`);
+    if (g.short) {
+      const one = fieldChipBox(s.vm.sheet.field.hintShort, g, false);
+      assert.ok(one.lines === 1 && one.y >= MAT_BANDS.top && one.w <= g.w - 8, `${width}: ${JSON.stringify(one)}`);
+    }
   }
+  // At 1100 × 700 with agents needing you: the hint never covers the top band's chips
   const s = F.scenario("field");
+  assert.ok(s.vm.mat.chips.length >= 2, "needs-you chips in the top band");
   const json = renderMat(s.vm, null, makeCtx("paper", s)).toJSON();
   const hint = findById(json, "cw-field-hint");
-  assert.ok(hint && texts(hint).join("") === s.vm.sheet.field.hint);
+  assert.ok(hint && texts(hint).join("") === s.vm.sheet.field.hintShort, "the one-line form on the short mat");
+  assert.ok(styleVal(hint, "top") >= MAT_BANDS.top, "under the top band");
   assert.equal(json.children.at(-1).id, "cw-field-hint", "painted last");
+  // the wrapped hint where there is room (Standard)
+  const std = fieldScenario(320);
+  const sj = renderMat(std.vm, null, makeCtx("paper", std)).toJSON();
+  assert.equal(texts(findById(sj, "cw-field-hint")).join(""), std.vm.sheet.field.hint);
   // a result showing: the result chip (under the pieces), no hint
   const r = clone(s);
   r.vm.sheet.fieldResult = { line: [[0, 0], [1, 0]], closed: false, style: "loose", text: "Loose crease" };
@@ -322,6 +339,31 @@ test("the fold piece: a 28 px div#cw-fold-<id> with the diagram's two layers, it
     assert.equal(styleVal(el, "opacity"), 0.4);
     assert.equal((el.transitions || []).length, calm ? 0 : 1);
   }
+  // never over the result chip: a piece landing on it is pushed off by the shortest move (off the Sheet too)
+  for (const width of [226, 320]) {
+    const f = clone(s);
+    if (width === 320) { f.width = 320; f.height = 784; f.vm.sheet.short = false; }
+    const g = matGeometry(f.vm, makeCtx("paper", f));
+    const chipB = resultChipBox(f.vm, g);
+    assert.ok(chipB, "a result chip shows");
+    // put the piece's centre right on the chip's right end
+    for (const [cx0, cy0] of [[chipB.x + chipB.w - 4, chipB.y + chipB.h / 2], [chipB.x + 6, chipB.y + 2]]) {
+      const [bx, by] = clearOf(g, cx0 - 14, cy0 - 14, 28, 28, chipB);
+      const over = (r) => Math.min(bx + 28, r.x + r.w) - Math.max(bx, r.x) > 0 && Math.min(by + 28, r.y + r.h) - Math.max(by, r.y) > 0;
+      assert.ok(!over(chipB), `${width}: off the chip`);
+      assert.ok(!over({ x: g.sx, y: g.sy, w: g.sheet, h: g.sheet }), `${width}: off the Sheet`);
+      assert.ok(bx >= 0 && bx + 28 <= g.w && by >= 0 && by + 28 <= g.h, `${width}: on the mat`);
+    }
+  }
+  // as drawn: the fold view's piece (slot 21, by the Sheet's top-left) is clear of its chip
+  {
+    const g = matGeometry(s.vm, makeCtx("paper", s));
+    const chipB = resultChipBox(s.vm, g);
+    const el = findById(renderMat(s.vm, null, makeCtx("paper", s)).toJSON(), "cw-fold-f4");
+    const bx = styleVal(el, "left");
+    const by = styleVal(el, "top");
+    assert.ok(!(Math.min(bx + 28, chipB.x + chipB.w) - Math.max(bx, chipB.x) > 0 && Math.min(by + 28, chipB.y + chipB.h) - Math.max(by, chipB.y) > 0), "drawn clear of the chip");
+  }
   const u = clone(s);
   u.vm.mat.fold.kind = "origami-x";
   u.vm.mat.shelf = ["p:origami-x", "fox"];
@@ -329,7 +371,7 @@ test("the fold piece: a 28 px div#cw-fold-<id> with the diagram's two layers, it
   assert.equal(findById(json, "cw-fold-f4"), null);
 });
 
-test("every fold piece's art: both layers exist, the shade lies on the base, base and shade read on the mat in both scene halves", async () => {
+test("every fold piece's art: both layers exist, base and shade read on the mat in both scene halves (shapes and shade-on-base: test/art/silhouette.test.mjs)", async () => {
   const { buildAssets } = await import("../../tools/art/generate.mjs");
   const assets = new Map(buildAssets().map((a) => [a.path, a]));
   for (const p of CONTENT.PATTERNS) {
@@ -346,20 +388,22 @@ test("every fold piece's art: both layers exist, the shade lies on the base, bas
 // ---------------------------------------------------------------------------
 // The boost bar
 
-test("the boost bar: the field's words when no chip shows; Steady is a static chip, Wind-up counts down", () => {
+test("the boost bar: the field's words when no chip shows; Ridge's charge is a static chip, Coil's ×2 counts down; both named after their diagram", () => {
   const s = F.scenario("field");
   const json = renderPanel(s.vm, s.ui, makeCtx("paper", s)).toJSON();
   const hint = findById(json, "cw-boostbar-hint");
   assert.deepEqual(texts(hint), ["Crease field · next to find: Ridge"]);
   const f = F.scenario("fold");
-  f.vm.boosts.push({ type: "coil", label: "Wind-up ×2", msLeft: 6000, msTotal: 10000 });
+  f.vm.boosts.push({ type: "coil", label: "Coil ×2", msLeft: 6000, msTotal: 10000 });
   for (const calm of [false, true]) {
     const j = renderPanel(f.vm, f.ui, makeCtx("graphite", f, { calm })).toJSON();
     const steady = findById(j, "cw-boostbar-steady");
-    assert.ok(steady && texts(steady).includes("Steady"));
+    assert.ok(steady && texts(steady).includes("Ridge · steady"));
     assert.equal(findById(j, "cw-boostbar-steady-bar"), null, "no countdown");
-    assert.match(styleVal(steady, "tooltip"), /next short pause/);
+    assert.equal(styleVal(steady, "tooltip"), "Ridge: your next short pause costs no beats");
     const coil = findById(j, "cw-boostbar-coil");
+    assert.ok(texts(coil).includes("Coil ×2"));
+    assert.equal(styleVal(coil, "tooltip"), "Coil: hand hits ×2 · 6 s left");
     assert.ok(findById(coil, "cw-boostbar-coil-bar"));
     const icons = [];
     walk(steady, (n) => n.kind === "svg" && icons.push(n.args[0]));
@@ -536,6 +580,11 @@ test("Book cards: found cards name the diagram, status and effect (the short lab
         assert.equal(paths.length, 2, "dots and line: two paint_paths");
       } else if (c.state === "next") {
         assert.ok(t.includes(c.name) && t.includes(c.sub) && t.includes(c.short) && t.includes(c.hint), `${c.id}: ${t}`);
+        // the clue is set apart from the short effect above it (italic), never one run-on sentence
+        const clueEl = findById(el, `cw-book-${c.id}-clue`);
+        let italic = false;
+        walk(clueEl, (n) => { if ((n.styles || []).some((x) => x[0] === "italic")) italic = true; });
+        assert.ok(clueEl && italic, `${c.id}: an italic clue`);
         assert.equal(styleVal(draw, "opacity"), 0.6);
         assert.equal(paths.length, 2);
       } else {

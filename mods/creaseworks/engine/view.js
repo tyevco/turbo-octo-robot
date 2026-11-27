@@ -21,7 +21,7 @@
 import { K, WORKSHOPS, TIERS, UPGRADES, AUTOMATIONS, PERKS, ENVELOPES, SLOT, PRESTIGE, PATTERNS } from "./content.js";
 import { effects, itemInfo, maxAffordable, tierOf, estimateDelta, crowd } from "./economy.js";
 import { indexHelpers, flock } from "./helpers.js";
-import { slotXY, nodeId, lifeLeft, rhythmAt, inStep as inStepAt } from "./clicking.js";
+import { slotXY, nodeId, lifeLeft, lifeOf, rhythmAt, inStep as inStepAt } from "./clicking.js";
 import { stackFactor, envUnit, freshBoostMs } from "./envelopes.js";
 import { stringInfo } from "./prestige.js";
 import { traceMove, bookTier, bookInfo, patternOf, colRow } from "./pattern.js";
@@ -1095,7 +1095,8 @@ function matVm(state, t, E, loops, short, calm, roster) {
   let crane = null;
   if (sp.crane) {
     const pos = slotPos(sp.crane.slot, short);
-    const life = E.craneLifeMs;
+    // its own life (lifeOf: 1.5× under Fair wind), so the glide spans all of it (§13.5)
+    const life = lifeOf(state, E, "crane", sp.crane);
     const msLeft = Math.round(num(lifeLeft(state, E, "crane", sp.crane)));
     const maxX = MAT.w - MAT.craneW - MAT.edge;
     const x0 = Math.max(MAT.edge, Math.min(maxX, pos.x - MAT.craneW / 2));
@@ -1109,7 +1110,7 @@ function matVm(state, t, E, loops, short, calm, roster) {
   }
   let boat = null;
   if (sp.boat) {
-    const life = E.boatLifeMs;
+    const life = lifeOf(state, E, "boat", sp.boat);
     const msLeft = Math.round(num(lifeLeft(state, E, "boat", sp.boat)));
     const x0 = MAT.edge;
     const x1 = MAT.w - MAT.boatW - MAT.edge;
@@ -1130,7 +1131,8 @@ function matVm(state, t, E, loops, short, calm, roster) {
     const left = lifeLeft(state, E, "fold", sp.fold);
     fold = {
       id: sp.fold.id, kind: sp.fold.kind, x: pos.x, y: pos.y,
-      tooltip: pt ? clip(`${pt.name} fold · ${lowerFirst(pt.text)}`, CLIP.notice) : "Fold",
+      // the fold piece's one name (PATTERNS[].fold), as on the book card's fold tile
+      tooltip: pt ? clip(`${pt.fold} · ${lowerFirst(pt.text)}`, CLIP.notice) : "Fold",
       fading: left !== null && left <= 2000,
     };
   }
@@ -1226,9 +1228,10 @@ function boostsVm(state, E, live, t) {
   add("song", `Flock Song ${times(K.songMult)}`, num(b.song) - live);
   add("chorus", `Chorus ${times(K.chorusMult)}`, num(b.chorus) - live);
   if (b.tailwind > 0) add("tailwind", `Tailwind ×2 · ${b.tailwind} left`, num(b.tailwindMs) - live);
-  // Pattern book (§4.7): Wind-up runs only while no Rush or Confetti does; Steady is a static charge
-  if (!(b.stormEnd > t) && !(b.rushEnd > t)) add("coil", `Wind-up ${times(K.coilMult)}`, num(b.coilEnd) - t);
-  if (state.hand.steady === 1) out.push({ type: "steady", label: "Steady", msLeft: null, msTotal: null });
+  // Pattern book (§4.7): named after the diagram that gave them, as the other chips are.
+  // Coil's ×2 runs only while no Rush or Confetti does; Ridge's charge is static.
+  if (!(b.stormEnd > t) && !(b.rushEnd > t)) add("coil", `Coil ${times(K.coilMult)}`, num(b.coilEnd) - t);
+  if (state.hand.steady === 1) out.push({ type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null });
   return out;
 }
 
@@ -1419,6 +1422,8 @@ function stringVm(state, style, t) {
 
 const BOOK_HELP = "Join neighbouring dots on the Sheet's crease field. Click the last dot again to set, or end on the first to close. Any turn or mirror counts.";
 const FIELD_HINT = "Join neighbouring dots. Click the last one again to set.";
+/** Its one-line form, where the wrapped hint has no room under the top band (the short mat). */
+const FIELD_HINT_SHORT = "Join dots, click the last again";
 const DOT_TIP = { free: "Crease field", centre: "Start on any other dot", next: "Next", used: null, last: "Click again to set", close: "Click to close" };
 const TIER_STYLE = ["found", "found", "learned", "mastered"];
 const BOOK_CLIP = { name: 12, short: 16, effect: 44, hint: 44, line: 60, chip: 40 };
@@ -1486,6 +1491,7 @@ function fieldVm(state, t, E) {
       line: lineOf(path),
       fading: left !== null && left <= 2000,
       hint: state.ui.hints.field === true ? null : FIELD_HINT,
+      hintShort: state.ui.hints.field === true ? null : FIELD_HINT_SHORT,
       barHint: clip(info.next !== null ? `Crease field · next to find: ${patternOf(info.next).name}`
         : ready ? `Crease field · ${ready.name} ready` : "Crease field", BOOK_CLIP.chip),
     };
@@ -1505,6 +1511,7 @@ function fieldVm(state, t, E) {
       else if (lf.tier === 3 && n === K.bookMaster) text = `${pt.name} · mastered`;
       else if (lf.tier === 2 && n === K.bookLearn) text = `${pt.name} · learned`;
       else if (typeof lf.rest === "number" && lf.rest > 0) text = `${pt.name} · rests ${mmss(lf.rest)}`;
+      else if (lf.pulled === true) text = `${pt.name} · crane pulled`;
       else text = pt.name;
     }
     fieldResult = { line: lineOf(lf.path), closed: lf.closed === true, style: pt ? TIER_STYLE[lf.tier] || "found" : "loose", text: clip(text, BOOK_CLIP.chip) };
@@ -1519,7 +1526,10 @@ function bookVm(state, t, withCards) {
   const info = bookInfo(state);
   const seen = num(state.ui.hints.book);
   let line;
-  if (info.next === null) {
+  if (sp.fieldIn === null || sp.fieldIn === undefined) {
+    // (first: the curio is not owned this run, whatever the book holds)
+    line = "Buy Crease Field (Curios) to bring fields back this run";
+  } else if (info.next === null) {
     let near = null;
     for (const p of PATTERNS) {
       const rec = foundOf(state, p.id);
@@ -1528,8 +1538,7 @@ function bookVm(state, t, withCards) {
     line = near ? `All nine found · next mastery: ${near[0].name} ${near[1]} / ${K.bookMaster}` : "All nine mastered";
   } else {
     const next = `next to find: ${patternOf(info.next).name}`;
-    if (sp.fieldIn === null || sp.fieldIn === undefined) line = "Buy Crease Field (Curios) to bring fields back this run";
-    else if (sp.field) line = `A field is on the Sheet · ${next}`;
+    if (sp.field) line = `A field is on the Sheet · ${next}`;
     else line = `${sp.fieldIn === 1 ? "Next chain is a field" : `Next field in ${sp.fieldIn} chains`} · ${next}`;
   }
   const cards = [];
@@ -1540,7 +1549,10 @@ function bookVm(state, t, withCards) {
       const st = rec ? "found" : p.id === info.next || p.id === "ridge" ? "next" : "hidden";
       const tier = bookTier(n);
       let status = null;
-      if (rec) status = sp.fold && sp.fold.kind === p.id ? "fold on the mat" : rec.ready > sp.activeMs ? `rests ${mmss(rec.ready - sp.activeMs)}` : "ready";
+      if (rec) {
+        status = sp.fold && sp.fold.kind === p.id ? "fold on the mat" : rec.ready > sp.activeMs ? `rests ${mmss(rec.ready - sp.activeMs)}`
+          : p.fx === "pull" && sp.gullFor === sp.cranesSeen ? "crane pulled" : "ready";
+      }
       const shown = st !== "hidden";
       cards.push({
         id: p.id,
@@ -1557,8 +1569,9 @@ function bookVm(state, t, withCards) {
         effect: shown ? clip(p.text, BOOK_CLIP.effect) : null,
         short: shown ? clip(p.short, BOOK_CLIP.short) : null,
         hint: st === "found" || p.hint === null ? null : clip(p.hint, BOOK_CLIP.hint),
-        fold: rec ? p.fold : null,
-        tooltip: shown ? clip(`${p.text} · found 1 · learned ${K.bookLearn} · mastered ${K.bookMaster}`, CLIP.notice) : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
+        fold: rec ? `Fold piece: ${p.fold}` : null,
+        // the tier thresholds said as thresholds, beside the player's own count
+        tooltip: shown ? clip(`${p.text} · traced ${formatInt(n)} · learned at ${K.bookLearn}, mastered at ${K.bookMaster}`, CLIP.notice) : `${p.n} dots · ${p.closed ? "closed" : "open"}`,
       });
     }
   }

@@ -135,7 +135,7 @@ both were replaced (rows below):
 | Crane outcomes and Confetti (r7 review) | **open, for the owner**: the three outcomes still have the golden cookie's three shapes (an instant payout, a hand-hit boost, a whole-income boost), and Confetti ×6 (×9 with Gale Charm, +3 a charm, 15 s from a crane and 12 s from an envelope, a 30 s cap, chains every 4 s) is Paper Storm ×7 → ×10 lowered by one with its durations kept. No number is a known game's, so it was left as it is; the owner decides whether it reads as a cosmetic change and wants a different boost |
 | Names "gilded", "Lucky", "Storm", "Frenzy" | "Lucky Fold" became Crane's Gift and "Paper Storm" Confetti (the internal ids stay `storm`, and an old save's `lucky` crane pays the Gift); "gilded" is the brief's golden special, a common word (Clicker Heroes' gilds are a hero upgrade, not a clickable); "Frenzy" is not used |
 | mulberry32 PRNG, FNV-1a ids | public algorithms, not game content |
-| Pattern book (issue #2): crease fields, nine diagrams, fold pieces (§4.7) | ours. Joining neighbouring dots on a 3 × 3 grid looks like a phone's unlock screen, which is not a game; games that read drawn shapes (gesture spells, brush strokes) recognise free-hand strokes, not a neighbour trace named up to symmetry, and none is a clicker. The rule set (every dot a fold, loose traces stay for another try, one-shot effects on a 3-minute rest, found / learned / mastered at 1 / 4 / 12) matches no game we checked. The diagrams are plain grid paths with our own names (Ridge, Gull, Napkin, Lozenge, Stair, Sail, Switchback, Hem, Coil); the fold art is flat and abstract and copies no published origami base or model; "pattern book" is a common phrase. Re-check the names in the pre-publish search |
+| Pattern book (issue #2): crease fields, nine diagrams, fold pieces (§4.7) | ours. Joining neighbouring dots on a 3 × 3 grid looks like a phone's unlock screen, which is not a game. The closest game is Niantic's Ingress, whose glyph hacking reads shapes drawn as lines between the fixed points of an 11-point grid, each glyph with its own name, in timed sequences, with a speed bonus. Ours differs in each of those: a 3 × 3 grid with neighbour-only steps (a glyph joins any two points), a shape matched up to turn, mirror and direction (a glyph has one fixed orientation), one shape at a time rather than a timed sequence, and no speed bonus. Keep it that way: the field has no timing rule beyond its life. Games that read free-hand shapes (gesture spells, brush strokes) recognise strokes, not a neighbour trace, and none of these is a clicker. The rule set (every dot a fold, loose traces stay for another try, one-shot effects on a 3-minute rest, found / learned / mastered at 1 / 4 / 12) matches no game we checked. The diagrams are plain grid paths with our own names (Ridge, Gull, Napkin, Lozenge, Stair, Sail, Switchback, Hem, Coil); the fold art is flat and abstract and copies no published origami base or model; "pattern book" is a common phrase. Re-check the names in the pre-publish search |
 
 ---
 
@@ -1007,13 +1007,18 @@ dots). Where the shape sits, how it is turned or mirrored, and which way it was 
 matter. Every diagram fits in 3 × 3 and has a tracing that starts off the centre, so every field
 can make every diagram.
 
-* **Match**: pays `K.matchPerDot · n · Vc` (4 per dot, `Vc` of the setting click; at the life's
-  end, `Vc` at that moment) to a new source `pattern`, plus `K.firstFindPerDot · n · Vc` (10 per
-  dot) the first time that diagram is ever found. The trace counts in the book, the field ends,
-  and a fold piece may land (below). A field then pays about what a numbered chain pays per hit:
-  the 9-dot Coil is 10 hits (9 dots and the setting click, each also a fold) plus `36 · Vc`, 3.6
-  `Vc` a hit above plain folds; a k = 7 chain is 7 hits and `35 · Vc`, 3.5 `Vc` a hit above the 7 folds it
-  replaces. The new value is variety, the effects and the book, not a multiplier.
+* **Match**: pays `K.matchPerNode · k · Vc` (3.5 per node of the chain it replaces: 24.5 `Vc` at
+  k = 7) whatever the diagram, to a new source `pattern` (`Vc` of the setting click; at the life's
+  end, `Vc` at that moment, its combo from the rhythm the player sees then), plus
+  `K.firstFindPerDot · n · Vc` (10 per dot) the first time that diagram is ever found. The trace
+  counts in the book, the field ends, and a fold piece may land (below). A field then pays what
+  the numbered chain it replaces pays above its folds: a k = 7 chain is 7 node hits and `35 · Vc`,
+  24.5 `Vc` above the folds those hits would have made (1.5 `Vc` a fold with the figure's share),
+  while every dot click is itself a fold. The pay does not grow with the dots: the field (one
+  every 5th chain) is the scarce thing, not the hand's hits, so a pay per dot (it was `4 · n · Vc`,
+  12 `Vc` for Ridge to 36 for Coil) made the largest diagram the only paying pick and six of the
+  nine pay less than the chain. The new value is variety, the effects and the book, not a
+  multiplier.
 * **Loose** (it matches nothing): nothing more is paid (its dots were folds), the trace clears and
   the field stays up for another try for the rest of its life. Only a match or the end of its
   life ends a field.
@@ -1025,15 +1030,15 @@ base or model (§1 "Mechanics").
 
 | # | Diagram (`id`) | Dots | Shape | Fold piece it leaves | Effect when the fold piece is clicked | Book hint while hidden |
 |---|---|---|---|---|---|---|
-| 1 | **Ridge** (`ridge`) | 3, open | three in a straight line: `(0,0)(1,0)(2,0)`, or corner to corner `(0,0)(1,1)(2,2)` (two canons) | Ridge pleat: a paper strip with one raised ridge | **Steady**: your next short pause (over the rhythm gap, up to 4 s) costs no beats instead of 10. One charge (`hand.steady`), a static "Steady" chip in the boost bar until used | none: drawn in full from the start, the book's worked example |
-| 2 | **Gull** (`gull`) | 3, open | a shallow V: `(0,0)(1,1)(2,0)` | Paper gull: two wings meeting in a flat V, one wing shaded | **Pull**: the next gilded crane comes 20 active s sooner, never less than 5 s away; at most once per crane (`spawn.gullFor`), so cranes come at most about 10 % more often | "Down, then up: a bird far off" |
+| 1 | **Ridge** (`ridge`) | 3, open | three in a straight line: `(0,0)(1,0)(2,0)`, or corner to corner `(0,0)(1,1)(2,2)` (two canons) | Ridge pleat: a paper strip with one raised ridge | **Steady**: your next short pause (over the rhythm gap, up to 4 s) costs no beats instead of 10. One charge (`hand.steady`), a static "Ridge · steady" chip in the boost bar until used (tooltip "Ridge: your next short pause costs no beats") | none: drawn in full from the start, the book's worked example |
+| 2 | **Gull** (`gull`) | 3, open | a shallow V: `(0,0)(1,1)(2,0)` | Paper gull: two wings meeting in a flat V, one wing shaded | **Pull**: the next gilded crane comes up to 20 active s sooner, never less than 5 s away; at most once per crane (`spawn.gullFor`), so cranes come at most about 10 % more often. While this crane gap is already pulled a Gull match drops no fold piece (the chip says "Gull · crane pulled", the card's status "crane pulled"), and a Gull fold that pulls nothing (the crane under 5 s away) starts no rest | "Down, then up: a bird far off" |
 | 3 | **Napkin** (`napkin`) | 4, closed | a small square: `(0,0)(1,0)(1,1)(0,1)` | Folded napkin: a square with a triangular shade half | **Glow**: banks 90 s of afterglow (§4.3; the 20 min cap holds). Earned by the hand, like all afterglow; nothing to do with agent tasks or how fast anyone answers | "Four sides, back home" |
 | 4 | **Lozenge** (`lozenge`) | 4, closed | a diamond round the centre: `(1,0)(2,1)(1,2)(0,1)` | Lozenge tile: a diamond with one centre crease and two shaded facets | **Finish**: the Sheet jumps to frame 7, so its next fold completes a figure (`5 · Vc`, a figure on the shelf) | "Edge to edge, round the middle" |
 | 5 | **Stair** (`stair`) | 5, open | a staircase: `(0,0)(1,0)(1,1)(2,1)(2,2)` | Stair pleat: three steps seen from the side, treads and risers alternating | **Lift**: rhythm +6 beats (cap 40), on top of the click's own beat | "Across, down, across, down" |
 | 6 | **Sail** (`sail`) | 6, closed | a right triangle with legs of two: `(0,0)(0,1)(0,2)(1,2)(2,2)(1,1)` | Sail: a triangle on a short mast stick | **Fair wind**: scraps and gilded cranes that appear in the next 60 active s stay 50 % longer (catch chance only, like calm's longer lives; payouts unchanged) | "Down the side, along the foot, up the slope" |
-| 7 | **Switchback** (`switchback`) | 7, open | a Z: `(0,0)(1,0)(2,0)(1,1)(0,2)(1,2)(2,2)` | Accordion fan: four panels, sheet and shade alternating | **Hurry**: the next chain (or field) comes within 2 active s (`nextChainAt = min(nextChainAt, activeMs + 2000)`) | "Top, slash, bottom" |
+| 7 | **Switchback** (`switchback`) | 7, open | a Z: `(0,0)(1,0)(2,0)(1,1)(0,2)(1,2)(2,2)` | Accordion fan: four panels, sheet and shade alternating | **Hurry**: the next chain (or field) comes within 2 active s (`nextChainAt = min(nextChainAt, activeMs + 2000)`); while a chain is still live it waits for that one to clear, tried again every active second (`spawn.hurry`), so it is never pushed a full interval later | "Top, slash, bottom" |
 | 8 | **Hem** (`hem`) | 8, closed | the whole outer ring: `(0,0)(1,0)(2,0)(2,1)(2,2)(1,2)(0,2)(0,1)` | Paper frame: four mitred strips round an empty middle | **Margin**: the next chain is a crease field again (`fieldIn = 1`). Neutral in value; it lets a practised hand keep tracing | "Walk the edge and come home" |
-| 9 | **Coil** (`coil`) | 9, open | a spiral into the centre: `(0,0)(1,0)(2,0)(2,1)(2,2)(1,2)(0,2)(0,1)(1,1)`. It ends in the centre: click it again to set (closing it back to the start makes a loose 9-dot loop) | Paper spring: a flat spiral band with a shade edge | **Wind-up**: hand hits ×2 for 10 s while no Rush or Confetti runs. It never stacks: Rush ×3 and Confetti ×6 take over while they run (`boosts.coilEnd`, a countdown chip) | "Walk the edge, then turn in" |
+| 9 | **Coil** (`coil`) | 9, open | a spiral into the centre: `(0,0)(1,0)(2,0)(2,1)(2,2)(1,2)(0,2)(0,1)(1,1)`. It ends in the centre: click it again to set (closing it back to the start makes a loose 9-dot loop) | Paper spring: a flat spiral band with a shade edge | **Wind-up**: hand hits ×2 for 10 s while no Rush or Confetti runs. It never stacks: Rush ×3 and Confetti ×6 take over while they run (`boosts.coilEnd`, a countdown chip "Coil ×2", tooltip "Coil: hand hits ×2 · 7 s left") | "Walk the edge, then turn in" |
 
 Hem and Coil share their route and differ only in the ending: close it, or turn in. Ridge and Gull
 are the two 3-dot shapes, Napkin and Lozenge the two 4-dot loops; a test checks that no two
@@ -1042,14 +1047,17 @@ diagrams share a canon and that every other 3-dot shape is loose.
 **Fold pieces: a new kind of fold on the mat.** When a match's diagram is **ready** (its effect
 is not resting) and no fold piece is on the mat, one lands on a free slot (`pickSlots`, keyed by
 `seq` like a scrap; `freeSlots` leaves its slot out). It is the diagram's own little fold (§3.2
-item 6), static, with the tooltip "Gull fold · the next crane comes sooner". It lives
+item 6), static, with the tooltip of its one name, the fold's (`PATTERNS[].fold`), and its
+effect: "Paper gull · the next crane comes up to 20 s sooner" (the book card's fold tile says
+"Fold piece: Paper gull"). It lives
 `K.foldLifeMs` = 15 s of mat-shown time (30 s in calm) and pauses with the mat. Clicking it is a
 hand hit that pays `K.foldPay · Vc` (1) to a new source `fold`, fires the effect, puts that diagram
 to **rest** for `K.patternRestMs` = 3 active minutes (`book.found[id].ready = spawn.activeMs +
 180000`), and hops the fold onto the shelf (`p:<id>` in `hand.figures`, same 12 cap, drawn with
 its 16 px base layer). A fold piece that expires unclicked starts no rest, so the next match of
 that diagram can drop it again. A match of a resting diagram, or one made while a fold piece is
-up, pays and counts in full but drops nothing. The pay is the same whichever diagram is traced,
+up, pays and counts in full but drops nothing. The pay is the same whichever diagram is traced
+(`matchPerNode · k · Vc`, above),
 so the rest turns the late game into a choice: rotate through the diagrams to keep the effects
 coming.
 
@@ -1084,16 +1092,19 @@ field · next to find: Napkin" (or "· Coil ready" once all nine are found). On 
   over the Sheet's top edge (the first-run chip's style: 11/600 `T.foreground` on `T.popover`;
   its foot at the top of the top row's largest ring, 20 px tall on the short mat, painted under
   the play pieces so a fold piece landing beside it stays whole) names it in words: "Gull",
-  "Gull · new diagram", "Gull · learned", "Gull · mastered" or "Gull · rests 1:40" (no fold
-  dropped).
-* **Loose**: the line turns dashed 1 px `S.ink` at 0.5 (on a dashed 3 px paper edge at 0.6) and the chip reads "Loose crease", or, when
+  "Gull · new diagram", "Gull · learned", "Gull · mastered", "Gull · rests 1:40" (no fold
+  dropped) or "Gull · crane pulled" (no fold dropped: its pull is spent for this crane).
+* **Loose**: the line turns dashed 1 px `S.ink` at 0.5 (on a solid 3 px paper edge at 0.6) and the chip reads "Loose crease", or, when
   the trace is the start of a found diagram or of the next one to find, "Loose · Napkin needs 1
   more". A hidden diagram is never named, so the chip never gives a shape away. The dots clear
   for another try.
 * **The first field ever** shows a static chip, "Join neighbouring dots. Click the last one again
   to set.", until the first match (`ui.hints.field`). It wraps to two lines above the Sheet and
-  is painted last; on the short mat it reaches into the top band's lower half for that one field
-  (there is no other room at 1100×700: the margins beside the 96 px Sheet are 57 px).
+  is painted last, and never reaches into the top band (its needs-you chips and the shelf). On the
+  short mat two lines do not fit between the top band and the Sheet's top row (20 px; the margins
+  beside the 96 px Sheet are 57 px), so it shows its one-line form there, "Join dots, click the
+  last again"; the dots' own looks and tooltips ("Next", "Click again to set") and the book's
+  help line carry the rest.
 
 The setting click's pop (§13.5) shows the fold and the match together; there is no other number.
 
@@ -1147,23 +1158,28 @@ the next one with its three-line hint, 116 for a found card at Narrow; `ui/book.
   diamonds: half the path commands, measured in QuickJS) and one 2 px `S.ink` stroke path for the
   line (closed shapes closed, the start dot ringed). Two paint_paths a card, 18 for the book.
 * Beside it, right-aligned: the fold's 16 px piece on a 20 px `S.mat` tile (its base `S.sheet`,
-  shade `S.sheetShade`, as on the mat; tooltip the fold's name), the three tier pips
+  shade `S.sheetShade`, as on the mat; tooltip "Fold piece: Paper gull", the one name the fold
+  piece's mat tooltip uses too), the three tier pips
   (`status/pip-work` filled and `status/pip-rest` hollow diamonds, 8 px: a shape cue) and the
   count "×7" (11/600).
 * Under it the name 12/600 `T.foreground` (clipped to 12 graphemes), then the status in 11
-  `T.foreground`: "ready", "rests 1:40" or "fold on the mat".
+  `T.foreground`: "ready", "rests 1:40", "fold on the mat" or, for Gull while this crane gap is
+  already pulled, "crane pulled".
 * The effect, up to 3 lines of 11 `T.muted` (clipped to 44 graphemes) at Standard and Wide, the
-  short label (16) at Narrow. The tooltip has the full effect and "found 1 · learned 4 ·
-  mastered 12".
+  short label (16) at Narrow. The tooltip has the full effect, the count and the tier thresholds
+  said as thresholds: "Your rhythm gains 6 beats · traced 7 · learned at 4, mastered at 12".
 * **States.** Found: all of the above. **Next to find** (the first unfound diagram in book order):
   its drawing at 0.6 opacity with a dashed line, its name, "4 dots · closed", its short effect and
-  its hint. Every other unfound diagram: the nine dots only, "???", its dot count and open or
-  closed, and its hint. Ridge is drawn in full from the start. The book always shows one shape to
+  its hint, the hint in italic so it never reads on from the short effect as one sentence. Every
+  other unfound diagram: the nine dots only, "???", its dot count and open or closed, and its
+  hint (italic). Ridge is drawn in full from the start. The book always shows one shape to
   aim for, so no player has to guess; finding the others first is optional sport.
 
-Under the header, the line reads one of: "Next field in 3 chains · next to find: Napkin"; "A
-field is on the Sheet"; "Buy Crease Field (Curios) to bring fields back this run" after a wish;
-"All nine found · next mastery: Hem 9 / 12".
+Under the header, the line reads one of, checked in this order: "Buy Crease Field (Curios) to
+bring fields back this run" whenever the curio is not owned this run (after a wish, all nine
+found or not); "All nine found · next mastery: Hem 9 / 12" ("All nine mastered" at the end); "A
+field is on the Sheet · next to find: Napkin"; "Next chain is a field · next to find: Napkin";
+"Next field in 3 chains · next to find: Napkin".
 
 **Calm mode** (§11.1): presentation only; every formula, value, chance and spawn is the same (P12
 within ±3 %).
@@ -1177,7 +1193,7 @@ within ±3 %).
 * Tracing has no timing rule: a slow, careful trace is as good as a fast one, and a trace still in
   progress sets with full pay at the end of the field's life.
 * Effect sizes, Wind-up's 10 s and the 3-minute rests are earnings rules and stay as they are; the
-  Wind-up chip snaps its bar width each data tick, as boost chips do in calm (r4-13).
+  Coil chip snaps its bar width each data tick, as boost chips do in calm (r4-13).
 * A result chip can stay up to one 5 s calm re-render bucket past its 3 s; that is harmless.
 * No floating numbers. Every cue is a shape and a word (ring sizes, filled dots, the double ring,
   the chip's text), never colour alone.
@@ -1206,7 +1222,7 @@ table (with their full paths), and the views `field`, `field-calm`, `fold`, `boo
 every art path DESIGN names to exist, and the view tests read the §15.3 list.
 
 **Constants** (`K`, BALANCE §12.2 knob 8 once it joins §8): `fieldEvery` 5, `fieldWaitMs` 1000,
-`fieldLifeMs` 16000, `fieldResultMs` 3000, `matchPerDot` 4, `firstFindPerDot` 10, `foldLifeMs`
+`fieldLifeMs` 16000, `fieldResultMs` 3000, `matchPerNode` 3.5, `firstFindPerDot` 10, `foldLifeMs`
 15000, `foldPay` 1, `patternRestMs` 180000, `bookLearn` 4, `bookMaster` 12, `bookCountMax` 9999,
 `gullPullMs` 20000, `gullMinMs` 5000, `napkinGlowMs` 90000, `lozengeFrame` 7, `stairBeats` 6,
 `windMs` 60000, `windLife` 1.5, `hurryMs` 2000, `coilMs` 10000, `coilMult` 2. Crease Field's cost
@@ -2307,9 +2323,9 @@ renders. PRNG: mulberry32 in `state.rng`.
 ### 15.2 Module layout
 
 `main.js` routes `props().role` → `panel` | `ribbon`; `engine/{state,rules,economy,helpers,
-envelopes,prestige,away,prng,format,text,save-codec}.js` (pure); `glue/{session,live,observe,
-store,notify,commands,clock,views}.js`; `ui/{panel,mat,flock,shop,string,settings,ribbon,rail,
-banner,away,color,palette,art,widgets}.js`. Each import on one line (pat §8).
+envelopes,prestige,away,prng,format,text,save-codec,clicking,view,pattern}.js` (pure);
+`glue/{session,live,observe,store,notify,commands,clock,views}.js`; `ui/{panel,mat,flock,shop,
+string,settings,ribbon,rail,banner,away,color,palette,art,widgets,book}.js`. Each import on one line (pat §8).
 
 ### 15.3 Tooling (restated from ARCHITECTURE A7–A12)
 
@@ -2327,7 +2343,7 @@ banner,away,color,palette,art,widgets}.js`. Each import on one line (pat §8).
   `garlands`, `settings`, `away`, `busy`, `banner-{recovered,fresh,conflict,merged,error,newer,clock}`,
   `rail`, `rail-64`, `rail-banner`, `ribbon-{0,4,34,64,130}` at 1100 and 1440 widths, `narrow`,
   `wide`, `short`, `calm`, and the Pattern book's (§4.7) `field` and `fold` at 1100×700 (the first
-  field's hint and every dot state; a match's chip, its fold piece and the Steady chip),
+  field's hint and every dot state; a match's chip, its fold piece and the Ridge chip),
   `field-calm` (a loose set in calm mode), `book` and `book-narrow` (the Book tab at 1440×900 and
   1100×700) — each in **all six shipped themes** at zoom 1 and 1.5 (so are the
   review-state views `tray-fraction`, `boat-tray`, `boat-calm`, `afterglow`, `string-gate` and
@@ -2409,4 +2425,4 @@ folder (and the shared save path if the player sets one); RECIPE says so (share 
 | R18 | "Click the last dot again to set" is the least obvious rule (§4.7) | watch in play | the life-end and dead-end sets, the "Click again to set" tooltip, the first-field chip and the book's help line carry it; a loose set costs nothing and keeps the field, so a wrong guess is safe to try |
 | R19 | Four tabs at Narrow (226 px at 1100×700) | to measure | every tab `px(6)` and Book as an icon (about 197 of 226 px), the Flock count dropped below 220 px; a UI test measures the row at 226 and 200 with "Flock 128"; `npm run shots` at 1100×700 in paper and graphite. If it still does not fit, the Book becomes the first section of the String tab instead of a tab |
 | R20 | The simulator's tracer (90 % / 75 % success, learning in book order, BALANCE §12.1) is a guess about human hands | provisional | the asserted rows are guards against a no-book run, not predictions; P14 and P15 bound an unsteady and a perfect hand; replace the model with play-test numbers once there are some |
-| R21 | Save state version 2 (§4.7): a second window still on the old build reads the shared save as newer and goes read-only until it reloads | intended | never silent (the banner says so); hot reload in one VM migrates the live state in place, so no rollback; RECIPE's upgrade note says to reload both windows |
+| R21 | Save state version 2 (§4.7): a second window still on the old build reads the shared save as newer and goes read-only until it reloads | intended | never silent (the banner says so); hot reload in one VM migrates the live state in place, so no rollback, and a window left read-only by the newer file leaves read-only on that reload and merges the file in at its next save (ARCHITECTURE B17); RECIPE's upgrade note says to reload both windows |

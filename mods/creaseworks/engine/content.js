@@ -92,7 +92,7 @@ export const PATTERNS = f([
   f({ id: "ridge", name: "Ridge", n: 3, closed: false, dots: f([f([0, 0]), f([1, 0]), f([2, 0])]), canon: f(["o:00", "o:11"]),
     fold: "Ridge pleat", short: "Pause kept", text: "Your next short pause costs no beats", hint: null, fx: "steady" }),
   f({ id: "gull", name: "Gull", n: 3, closed: false, dots: f([f([0, 0]), f([1, 1]), f([2, 0])]), canon: f(["o:13"]),
-    fold: "Paper gull", short: "Crane sooner", text: "The next crane comes 20 s sooner", hint: "Down, then up: a bird far off", fx: "pull" }),
+    fold: "Paper gull", short: "Crane sooner", text: "The next crane comes up to 20 s sooner", hint: "Down, then up: a bird far off", fx: "pull" }),
   f({ id: "napkin", name: "Napkin", n: 4, closed: true, dots: f([f([0, 0]), f([1, 0]), f([1, 1]), f([0, 1])]), canon: f(["c:0246"]),
     fold: "Folded napkin", short: "90 s afterglow", text: "Banks 90 s of afterglow", hint: "Four sides, back home", fx: "glow" }),
   f({ id: "lozenge", name: "Lozenge", n: 4, closed: true, dots: f([f([1, 0]), f([2, 1]), f([1, 2]), f([0, 1])]), canon: f(["c:1357"]),
@@ -251,9 +251,11 @@ export const K = f({
   spareKinds: 3, spareDiv: 10, // §9 25-Wish perk: a tenth of the last run's three cheapest workshops
   noticesMax: 12, noteLifeMs: 60000,
   titleMax: 80,
-  // §4.7 Pattern book (BALANCE §12.2, knob 8 "pattern payouts")
+  // §4.7 Pattern book (BALANCE §12.2, knob 8 "pattern payouts"); a match pays
+  // matchPerNode · chainK · Vc whatever the diagram (24.5 Vc at k = 7: the chain it
+  // replaces pays 5·k·Vc over k node hits, 3.5·k above the folds they replace)
   fieldEvery: 5, fieldWaitMs: 1000, fieldLifeMs: 16000, fieldResultMs: 3000,
-  matchPerDot: 4, firstFindPerDot: 10, foldLifeMs: 15000, foldPay: 1, patternRestMs: 180000,
+  matchPerNode: 3.5, firstFindPerDot: 10, foldLifeMs: 15000, foldPay: 1, patternRestMs: 180000,
   bookLearn: 4, bookMaster: 12, bookCountMax: 9999,
   gullPullMs: 20000, gullMinMs: 5000, napkinGlowMs: 90000, lozengeFrame: 7, stairBeats: 6,
   windMs: 60000, windLife: 1.5, hurryMs: 2000, coilMs: 10000, coilMult: 2,

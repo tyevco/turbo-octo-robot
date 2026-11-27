@@ -1448,12 +1448,12 @@ bookInfo(state) → { found, marks, next: diagramId | null }
   else a numbered chain as today and `fieldIn -= 1`. No keyed draw is added or consumed, so
   numbered chains stay seed-for-seed identical.
 * **`field-out`** (life end): a trace of ≥ 3 dots is set open (a match pays at `Vc` of that
-  moment); then `spawn.field = null`. **`fold-out`**: `spawn.fold = null`, no rest started.
+  moment: `vcAt`, the combo of `rhythmAt(t)`, not the stored `r`, which resets only on a hit); then `spawn.field = null`. **`fold-out`**: `spawn.fold = null`, no rest started.
 * **`click` target `dot`** (`id` = `<fieldId>-<i>`): first exactly the `sheet` fold (hand hit,
   frame, figure, `sheet` source; `ignored fast` when not credited, and then nothing else happens).
   Then, if `spawn.field` has that id, `traceMove` decides: start (never `i === 4`), step, set
   (open), close, or none; a dead end after a step sets open. A field that is gone leaves just the
-  fold. On a set: `classifyTrace`; a match pays `matchPerDot · n · Vc` (+ `firstFindPerDot · n · Vc`
+  fold. On a set: `classifyTrace`; a match pays `matchPerNode · chainK · Vc` whatever the diagram (+ `firstFindPerDot · n · Vc`
   on the first find) to `pattern`, bumps `book.found[id]` (`n` up to `bookCountMax`; `at` and
   `ready: 0` on the first find; `ui.hints.field = true`), sets `lastField`, drops a fold when
   `ready ≤ activeMs` and `spawn.fold` is null (`pickSlots(state, sp, 1)`, id `f<seq>`), and ends the
@@ -1463,8 +1463,13 @@ bookInfo(state) → { found, marks, next: diagramId | null }
   `hand.steady = 1`; `nextCraneAt = max(activeMs + gullMinMs, nextCraneAt − gullPullMs)` once per
   `cranesSeen` via `gullFor`; `afterglowMs += napkinGlowMs` to the cap; `frame = max(frame,
   lozengeFrame)`; `r = min(40, r + stairBeats)`; `windUntil = activeMs + windMs`; `nextChainAt =
-  min(nextChainAt, activeMs + hurryMs)`; `fieldIn = 1`; `coilEnd = max(coilEnd, t + coilMs)`);
-  sets `book.found[id].ready = activeMs + patternRestMs`; pushes `p:<id>` onto `hand.figures`.
+  min(nextChainAt, activeMs + hurryMs)` and `spawn.hurry = 1`; `fieldIn = 1`; `coilEnd = max(coilEnd, t + coilMs)`);
+  sets `book.found[id].ready = activeMs + patternRestMs` (not when a Gull fold pulled nothing);
+  pushes `p:<id>` onto `hand.figures`. A Gull match drops no fold while `gullFor === cranesSeen`
+  (`lastField.pulled`, the chip "Gull · crane pulled").
+* **`chain-in`** with `spawn.hurry === 1` and no free chain key (a chain still live): tried again
+  in `fieldWaitMs`, not a full interval later, so Hurry's chain comes within a second of the live
+  one ending; placing a chain or field clears `hurry`.
 * `handHit`: a pause over the rhythm gap but ≤ `K.slipMs` with `hand.steady === 1` keeps `r` and
   clears `steady`. `hitBoost`: Confetti, else Rush, else `coilMult` while `t < coilEnd`, else 1.
   Scrap and crane spawns made while `activeMs < windUntil` carry `wind: true`.
@@ -1472,7 +1477,7 @@ bookInfo(state) → { found, marks, next: diagramId | null }
   rebuy after a wish brings a field at the next chain). `effects()` gains `field` (bool),
   `fieldLifeMs`, `foldLifeMs`; `estimate()` returns 0 for it (no best-buy dot, BALANCE §12.1).
 * **Wish** (`prestige.js`): keeps `book`; clears `crease-field` with the other curios; the new
-  spawn block has `fieldIn: null`, no field, no fold, `gullFor: -1`, `windUntil: 0`;
+  spawn block has `fieldIn: null`, no field, no fold, `gullFor: -1`, `windUntil: 0`, `hurry: 0`;
   `hand.steady = 0`; `boosts.coilEnd = 0`.
 * The Crease Helper never reads `spawn.field`.
 
@@ -1515,9 +1520,16 @@ stats.bySource / stats.runBySource: + pattern, fold
 * A build that knows only version 1 reads a version-2 state as **newer** (the existing
   `st.version > VERSION` path, A4): read-only with the banner, never silent, never written, so it
   can never misread a field, a `dot` action or a `p:` shelf entry. Two windows on mixed builds
-  therefore show the banner in the old one until it reloads.
+  therefore show the banner in the old one until it reloads. Its play while read-only is shown but
+  never recorded or saved.
 * Hot reload (A6): the new generation adopts the slot and migrates the live state in place
   (`glue/store.js adopt` calls `migrate` on a state of a lower version); no disk read, no rollback.
+  A slot the old build left read-only with the `newer` notice leaves read-only in `adopt`: the
+  notice goes, `save.status` is `ok`, the base is dropped (`baseText` null, `baseOk` false) and a
+  save is due at once. That write is a CAS rejection, so `mergeFromDisk` takes the file in and
+  replays what is still pending onto it: the other window's progress is kept, nothing counts
+  twice, and the window saves again. A file still newer than the new build makes it read-only
+  again there, with the banner (the CAS `conflict` notice is dropped for it).
 * `validateHead` checks that `book` is an object with a boolean `open` and that every
   `book.found` entry has an integer `n` in 1..9,999 and finite `at ≥ 0` and `ready ≥ 0`; otherwise
   it returns `"book"`. A present `spawn.field` must have a string `id`, a finite `born` and a
@@ -1534,16 +1546,18 @@ sheet: { …,
   field: null | { id, dots: [{ i, col, row, state: "free"|"centre"|"next"|"used"|"last"|"close", tip }],
                   line: [[col, row]…], fading: bool,
                   hint: string | null,       // the first-field chip, until the first match (ui.hints.field)
+                  hintShort: string | null,  // its one-line form where the wrapped hint has no room under the top band
                   barHint: string },         // the boost bar's muted line: "Crease field · next to find: Napkin"
   fieldResult: null | { line: [[col, row]…], closed, style: "found"|"learned"|"mastered"|"loose", text } },
 mat: { …, fold: null | { id, kind, x, y, tooltip, fading }, shelf: [species | "p:<diagramId>"…] },
-boosts: [ …, { type: "coil", label: "Wind-up ×2", msLeft, msTotal: 10000 },
-             { type: "steady", label: "Steady", msLeft: null, msTotal: null } ],   // static chip
+boosts: [ …, { type: "coil", label: "Coil ×2", msLeft, msTotal: 10000 },
+             { type: "steady", label: "Ridge · steady", msLeft: null, msTotal: null } ],   // static chip
 book: { open, newMarks, found, of: 9, marks, marksOf: 27, count: "5 / 9 · 14 / 27 marks",
         line, help: string | null, cards: [Card] }     // cards only when opts.tab === "book"
 Card = { id, name, state: "found"|"next"|"hidden", n, closed, dots: [[col, row]…] | null,
          sub: "4 dots · closed", tier: 0..3, pips: [bool, bool, bool], count: "×7",
-         status: "ready"|"rests 1:40"|"fold on the mat"|null, effect, short, hint, fold, tooltip }
+         status: "ready"|"rests 1:40"|"fold on the mat"|"crane pulled"|null, effect, short, hint,
+         fold: "Fold piece: Paper gull" | null, tooltip }   // mat.fold.tooltip "Paper gull · …": one name
 ```
 
 Field dots are given as grid `col, row`, not px: the drawn Sheet is 96 or 112 px by the panel's
@@ -1567,8 +1581,10 @@ Shop's Crease Helper row carries `note: "Only your own hands fill the book"`.
   `div#cw-dot-<fieldId>-<i>` (28×28, each mark on a paper disc: `DOT_LOOK`) with
   `on_mouse_down("left", …)` and `cx.stop_propagation()` calling `click("dot", id, pos)`
   (`fieldBoxes`, `dotCentre`); the result chip (`#cw-field-chip`, under the play pieces) and the
-  first-field hint (`#cw-field-hint`, painted last) placed by `fieldChipBox`; `div#cw-fold-<id>`
-  like a scrap calling `click("fold", id, pos)`; `p:` shelf entries drawn with the fold's base
+  first-field hint (`#cw-field-hint`, painted last) placed by `fieldChipBox`, never above the top
+  band (its `hintShort` on one line where the wrapped hint would reach it: the short mat);
+  `div#cw-fold-<id>` like a scrap calling `click("fold", id, pos)`, kept clear of the result chip
+  (`resultChipBox`, `clearOf`) as of the Sheet; `p:` shelf entries drawn with the fold's base
   layer. No `.loop()` or `.spin()`; the dots' and the fold piece's 2 s fade only when not calm.
   `ui/panel.js`'s boost bar shows `sheet.field.barHint` while no chip shows, and the `steady`
   (static, no countdown) and `coil` chips with their diagrams' fold icons.
@@ -1580,7 +1596,7 @@ pos)` as click actions and pops; opening the Book tab dispatches `hint` `book` w
 `field-calm`, `fold`, `book`, `book-narrow` (with `test/fixtures/vm-fixtures.mjs VIEW_NAMES` and
 DESIGN §15.3's list, in one commit).
 
-**Simulator (B12).** BALANCE §12.1: the hit order, the tracer (`trace:<activeMs>:<attempt>`
+**Simulator (B12).** BALANCE §12.1: the hit order, the tracer (`trace:<field.born, mat-shown ms>:<attempt>`, BALANCE §12.1 says why not the active clock;
 draws, success per profile), fold clicks, P15, the flags `--no-book`, `--no-pattern-fx` and
 `--fx-off <id>`, the keys `buy:crease-field` and `book:found|learned|mastered>=N`, and
 `SHARE_BUCKETS.click` with `pattern` and `fold`. §3's table, §8's knob list and

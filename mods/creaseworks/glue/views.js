@@ -618,8 +618,9 @@ const NARROW_SIZE = { width: 226, height: 584 };
 
 // The first field ever at 1100 × 700 (Narrow, the short mat's 96 px Sheet):
 // the first-field hint, and a trace of three dots that shows every dot state
-// (first and closable, used, last, the next steps, free).
-add("field", { roster: STD, size: NARROW_SIZE }, async (v, tools) => {
+// (first and closable, used, last, the next steps, free). Two agents need you,
+// so their chips sit in the top band: the hint keeps under it (its one-line form).
+add("field", { roster: { needs: 2, finished: 1, working: 2, resting: 1 }, size: NARROW_SIZE }, async (v, tools) => {
   bookGame(v);
   await traceDots(v, tools, [0, 1, 4], { set: false });
 });

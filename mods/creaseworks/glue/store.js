@@ -435,6 +435,25 @@ export function adopt(slot, t) {
   // Pattern book, ARCHITECTURE B17) is brought to this build's shape in place:
   // no disk read, so nothing rolls back. A newer one is left as it is.
   if (slot.state && typeof slot.state.version === "number" && slot.state.version < VERSION) migrate(slot.state);
+  // An older build that found the save newer than it understood (a second
+  // window already on the Pattern book's state version 2) went read-only with
+  // the banner. This build may understand the file: the window leaves
+  // read-only and takes the file in at its next save, as a CAS merge (no
+  // base, so the write is rejected and mergeFromDisk replays what is still
+  // pending onto the file). Play while read-only was never recorded (it was
+  // not saving), so the other window's progress is kept and nothing is
+  // counted twice. A file still newer than this build makes it read-only again.
+  const load = slot.notices && slot.notices.load;
+  if (slot.readOnly && slot.state && load && load.kind === "newer") {
+    slot.readOnly = false;
+    S.status = "ok";
+    slot.baseText = null;
+    S.baseOk = false;
+    setNotice(slot, "load", null);
+    markDirty(slot, t, true);
+    S.urgentAt = t;
+    touch(slot);
+  }
   if (S.writing !== null && S.writingGen !== codeGeneration()) {
     // A Settings save tool (Check, Reset, Restore, a share cut off before its
     // pointer write) may not have taken effect: said, never silent (r3-07). A
@@ -1198,6 +1217,8 @@ async function mergeFromDisk(slot, env, stale) {
   if (parsed.reason === "newer") {
     slot.readOnly = true;
     slot.save.status = "readonly";
+    // (not a conflict to merge: the newer banner says why nothing is saved)
+    if (slot.notices.write && slot.notices.write.kind === "conflict") slot.notices.write = null;
     setNotice(slot, "load", { kind: "newer", at: t });
     return { stop: true };
   }

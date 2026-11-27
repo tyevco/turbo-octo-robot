@@ -330,7 +330,7 @@ export function parsePatternCell(cell) {
   throw new Error(`BALANCE §12.3: cannot parse "${cell}"`);
 }
 
-/** BALANCE §12.3's rows B1-B16: { id, what, key, median, every, provisional }. */
+/** BALANCE §12.3's rows B1-B17: { id, what, key, median, every, provisional }. */
 export function parsePatternRows(md) {
   const rows = table(section(md, "12.3")).rows.map((r) => ({
     id: r[0].trim(),
@@ -342,7 +342,7 @@ export function parsePatternRows(md) {
     provisional: /provisional/.test(r[1]),
   }));
   const ids = rows.map((r) => r.id);
-  for (let i = 1; i <= 16; i++) if (!ids.includes(`B${i}`)) throw new Error(`BALANCE §12.3: no row B${i}`);
+  for (let i = 1; i <= 17; i++) if (!ids.includes(`B${i}`)) throw new Error(`BALANCE §12.3: no row B${i}`);
   return rows;
 }
 

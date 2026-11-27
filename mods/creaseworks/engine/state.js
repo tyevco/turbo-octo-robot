@@ -61,8 +61,9 @@ export function newSpawn(activeMs, shownMs, seq, cranesSeen, reamDay, craneAt, s
     lastChain: null,
     // §4.7: primary chains left until a crease field (null: Crease Field not bought this run),
     // the live field and fold piece, the last set trace (its 3 s result), the crane a Gull
-    // fold already pulled (cranesSeen) and the end of Fair wind (active ms)
-    fieldIn: null, field: null, fold: null, lastField: null, gullFor: -1, windUntil: 0,
+    // fold already pulled (cranesSeen), the end of Fair wind (active ms) and a Hurry still
+    // owed (1: a Switchback fold was clicked and no chain or field has come since)
+    fieldIn: null, field: null, fold: null, lastField: null, gullFor: -1, windUntil: 0, hurry: 0,
   };
 }
 

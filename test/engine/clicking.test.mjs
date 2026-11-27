@@ -455,7 +455,7 @@ test("§4.7 a dot click is exactly a Sheet fold, then a trace step; the centre n
   assert.deepEqual(s.spawn.field.path, [0]);
 });
 
-test("§4.7 a match pays matchPerDot·n·Vc (+ firstFindPerDot·n·Vc the first time), counts in the book, drops a fold piece and ends the field", () => {
+test("§4.7 a match pays matchPerNode·chainK·Vc whatever the diagram (+ firstFindPerDot·n·Vc the first time), counts in the book, drops a fold piece and ends the field", () => {
   const { s, me, t } = withField();
   const { ev } = trace(s, me, dotsOf("ridge"), t, dotsOf("ridge")[2]);
   const m = ev.find((e) => e.kind === "trace" && e.result === "match");
@@ -463,7 +463,9 @@ test("§4.7 a match pays matchPerDot·n·Vc (+ firstFindPerDot·n·Vc the first 
   // the setting click's own fold pays Vc (5·Vc on a figure), so the match is a multiple of it
   const fig = ev.some((e) => e.kind === "figure");
   const vc = earned(ev, "sheet") / (fig ? K.figureMult : 1);
-  close(earned(ev, "pattern"), (K.matchPerDot + K.firstFindPerDot) * 3 * vc);
+  const k = engine.effects(s).chainK;
+  assert.equal(k, 7);
+  close(earned(ev, "pattern"), (K.matchPerNode * k + K.firstFindPerDot * 3) * vc);
   assert.equal(s.spawn.field, null, "a match ends the field");
   assert.equal(s.book.found.ridge.n, 1);
   assert.equal(s.book.found.ridge.ready, 0);
@@ -475,9 +477,32 @@ test("§4.7 a match pays matchPerDot·n·Vc (+ firstFindPerDot·n·Vc the first 
   s.spawn.field = { id: "p999", born: s.spawn.shownMs, path: [] };
   const r2 = trace(s, me, [6, 4, 2], t + 3000, 2);
   const vc2 = earned(r2.ev, "sheet") / (r2.ev.some((e) => e.kind === "figure") ? K.figureMult : 1);
-  close(earned(r2.ev, "pattern"), K.matchPerDot * 3 * vc2);
+  close(earned(r2.ev, "pattern"), K.matchPerNode * k * vc2);
   assert.equal(s.book.found.ridge.n, 2);
   assert.ok(r2.ev.every((e) => !(e.kind === "spawn" && e.what === "fold")), "one fold piece at a time");
+  // the same pay for the 9-dot Coil (found before, so no first-find part): the field, not the size, is scarce
+  s.book.found.coil = { n: 1, at: T0, ready: 0 };
+  s.spawn.field = { id: "p998", born: s.spawn.shownMs, path: [] };
+  const r3 = trace(s, me, dotsOf("coil"), r2.t + 3000, dotsOf("coil")[8]);
+  assert.ok(r3.ev.some((e) => e.kind === "trace" && e.result === "match" && e.pattern === "coil"));
+  const vc3 = earned(r3.ev, "sheet") / (r3.ev.some((e) => e.kind === "figure") ? K.figureMult : 1);
+  close(earned(r3.ev, "pattern"), K.matchPerNode * k * vc3);
+});
+
+test("§4.7 a trace set by the field's life end pays at the rhythm the player sees then, not the stored streak", () => {
+  const { s, me, t } = withField(7);
+  s.hand.r = K.rMax;
+  s.hand.lastHitAt = t;
+  const { t: t1 } = trace(s, me, dotsOf("ridge"), t);
+  assert.equal(s.spawn.field.path.length, 3);
+  assert.equal(s.hand.r, K.rMax, "the streak held while tracing");
+  // hands off: the field runs out long after the rhythm has ended
+  const end = s.spawn.field.born + K.fieldLifeMs - s.spawn.shownMs + t1;
+  assert.ok(end - t1 > K.slipMs, "the rhythm is over by the field's end");
+  const ev = engine.advance(s, end + 500);
+  assert.ok(ev.some((e) => e.kind === "trace" && e.result === "match" && e.pattern === "ridge"));
+  const V = engine.rates(s, s.clock).V;
+  close(earned(ev, "pattern"), (K.matchPerNode * engine.effects(s).chainK + K.firstFindPerDot * 3) * V);
 });
 
 test("§4.7 the four ways to set: last dot again, close on the first, a dead end, the field's life end (it pays)", () => {
@@ -635,7 +660,10 @@ test("§4.7 each fold piece's effect; it pays 1·Vc to `fold`, rests its diagram
       case "finish": assert.equal(s.hand.frame, K.lozengeFrame); break;
       case "lift": assert.equal(s.hand.r, Math.min(K.rMax, before.r + 1 + K.stairBeats)); break;
       case "wind": assert.equal(sp.windUntil, sp.activeMs + K.windMs); break;
-      case "hurry": assert.equal(sp.nextChainAt, Math.min(before.chain, sp.activeMs + K.hurryMs)); break;
+      case "hurry":
+        assert.equal(sp.nextChainAt, Math.min(before.chain, sp.activeMs + K.hurryMs));
+        assert.equal(sp.hurry, 1);
+        break;
       case "margin": assert.equal(sp.fieldIn, 1); break;
       case "windup": assert.equal(s.boosts.coilEnd, t + 300 + K.coilMs); break;
       default: assert.fail(p.fx);
@@ -643,6 +671,56 @@ test("§4.7 each fold piece's effect; it pays 1·Vc to `fold`, rests its diagram
     // a gone fold is ignored
     assert.equal(me.act({ t: t + 600, type: "click", target: "fold", id: "f77" })[0].reason, "gone");
   }
+});
+
+test("§4.7 Hurry with a chain still live: the next chain comes within a second of that chain ending, never a full interval later", () => {
+  const { s, me, t } = withField(19);
+  const sp = s.spawn;
+  sp.field = null;
+  sp.fieldIn = 3;
+  sp.nextChainAt = sp.activeMs + 50;
+  let tt = t + 300;
+  me.act({ t: tt, type: "click", target: "sheet" });
+  assert.ok(sp.chain, "a numbered chain is live");
+  const live = sp.chain;
+  s.book.found.switchback = { n: 1, at: T0, ready: 0 };
+  sp.fold = { id: "f88", kind: "switchback", slot: 1, born: sp.shownMs };
+  tt += 3000;
+  me.act({ t: tt, type: "click", target: "fold", id: "f88" });
+  assert.equal(sp.hurry, 1);
+  assert.ok(sp.nextChainAt - sp.activeMs <= K.hurryMs);
+  // keep the hand on the mat (active time) and leave the chain alone until it runs out
+  const ends = live.born + K.nodeLifeMs - sp.shownMs + tt;
+  let spawned = null;
+  while (!spawned && tt < ends + 5000) {
+    tt += 250;
+    const ev = me.act({ t: tt, type: "click", target: "sheet" });
+    if (sp.chain && sp.chain !== live) spawned = tt;
+    if (sp.chain === live) assert.ok(sp.nextChainAt - sp.activeMs <= K.hurryMs, "while it is live the next chain stays due within 2 s");
+    void ev;
+  }
+  assert.ok(spawned, "the hurried chain came");
+  assert.ok(spawned - ends <= K.fieldWaitMs + 250, `within a second of the live chain ending (${spawned - ends} ms)`);
+  assert.equal(sp.hurry, 0, "spent");
+  assert.ok(sp.nextChainAt - sp.activeMs > K.hurryMs, "then the usual interval");
+});
+
+test("§4.7 Gull: no fold piece while this crane gap is already pulled; a Gull fold that pulls nothing starts no rest", () => {
+  const { s, me, t } = withField(25);
+  const sp = s.spawn;
+  sp.gullFor = sp.cranesSeen;
+  s.book.found.gull = { n: 1, at: T0, ready: 0 };
+  const r = trace(s, me, dotsOf("gull"), t, dotsOf("gull")[2]);
+  assert.ok(r.ev.some((e) => e.kind === "trace" && e.result === "match" && e.pattern === "gull"));
+  assert.equal(sp.fold, null, "nothing to pull: no fold piece");
+  assert.equal(engine.view(s, r.t + 10).sheet.fieldResult.text, "Gull · crane pulled");
+  assert.equal(engine.view(s, r.t + 10, { tab: "book" }).book.cards.find((c) => c.id === "gull").status, "crane pulled");
+  // a Gull fold already on the mat when its pull is spent: the click pays its fold but starts no rest
+  sp.fold = { id: "f90", kind: "gull", slot: 1, born: sp.shownMs };
+  const before = sp.nextCraneAt;
+  me.act({ t: r.t + 300, type: "click", target: "fold", id: "f90" });
+  assert.equal(sp.nextCraneAt, before);
+  assert.equal(s.book.found.gull.ready, 0, "no rest");
 });
 
 test("§4.7 rests and fold pieces: a resting diagram's match drops nothing (\"rests 1:40\"); an unclicked fold piece starts no rest", () => {
